@@ -77,6 +77,23 @@ export const HealthResourcesModal: React.FC<HealthResourcesModalProps> = ({ isOp
               <p className="text-[11px] text-slate-500 font-normal mt-0.5 leading-relaxed">
                 {res.desc}
               </p>
+              <div className="mt-2.5 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    window.dispatchEvent(
+                      new CustomEvent('open-health-chat', {
+                        detail: { prompt: `Please explain the protocol: "${res.title}" in simple steps for community health workers.` }
+                      })
+                    );
+                  }}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#E7F7F0] text-[#0A9F68] hover:bg-[#0A9F68] hover:text-white text-[10px] font-bold transition-all"
+                >
+                  <span>Ask Local AI to Explain</span>
+                  <span>→</span>
+                </button>
+              </div>
             </div>
           ))}
         </div>

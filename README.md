@@ -1,118 +1,156 @@
-# RapiDChecK - RuralHealth AI 🏥🤖
+# RapiDChecK — RuralHealth AI 🏥🤖
 
-> **AI-Powered Early Disease Risk Prediction & Rural Health Access Platform**  
-> Designed for ASHA/ANM health workers, Primary Health Centre (PHC) doctors, district health officers, and rural patients across India.
+> **AI-Powered Early Disease Risk Prediction & Kolkata Population Health Intelligence Platform**  
+> Designed for ASHA/ANM community health workers, Primary Health Centre (PHC) medical officers, district health authorities, and rural patients across India.
 
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-19.0+-61DAFB.svg?style=flat&logo=react&logoColor=black)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-3178C6.svg?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Vite](https://img.shields.io/badge/Vite-6.0+-646CFF.svg?style=flat&logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-4.0+-38B2AC.svg?style=flat&logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
-[![SQLite](https://img.shields.io/badge/SQLite-Database-003B57.svg?style=flat&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![Ollama](https://img.shields.io/badge/Ollama-Gemma_3_270M-black.svg?style=flat&logo=ollama&logoColor=white)](https://ollama.com)
 [![Scikit-Learn](https://img.shields.io/badge/scikit--learn-ML_Engine-F7931E.svg?style=flat&logo=scikit-learn&logoColor=white)](https://scikit-learn.org/)
+[![SQLite](https://img.shields.io/badge/SQLite-Database-003B57.svg?style=flat&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
 
 ---
 
 ## 🌟 Executive Summary
 
-**RuralHealth AI** bridges the critical healthcare access gap in low-resource and remote rural environments. In regions with limited network connectivity and scarce specialized medical personnel, the platform empowers grassroots community health workers (ASHA/ANMs) to perform fast, structured triage and early disease risk screening at the patient's doorstep.
+**RuralHealth AI (RapiDChecK)** bridges the critical healthcare access gap in low-resource and remote rural environments. Operating with an **offline-first** philosophy, the platform enables community health workers (ASHA / ANMs) to conduct doorstep screening, early disease risk triage, and data-aware population health inquiry without requiring persistent internet connectivity.
 
-### Core Screening Workflow
-$$\text{Patient Registration} \longrightarrow \text{Vitals \& Symptom Intake} \longrightarrow \text{Dual-Engine AI Screening} \longrightarrow \text{Explainable Risk Report} \longrightarrow \text{Offline/Online Sync} \longrightarrow \text{PHC Doctor Dashboard}$$
+```
+                    ┌─────────────────────────────────────────────────────────┐
+                    │                     RURALHEALTH AI                      │
+                    └────────────────────────────┬────────────────────────────┘
+                                                 │
+                                                 ▼
+                                        INTENT ROUTER LAYER
+                                                 │
+                   ┌─────────────────────────────┴─────────────────────────────┐
+                   │                                                           │
+                   ▼                                                           ▼
+         HEALTH QUESTION / RAG                                        DATASET & ANALYTICS QUERY
+                   │                                                           │
+                   ▼                                                           ▼
+       CLINICAL KNOWLEDGE BASE                                        KOLKATA HEALTH DATA ENGINE
+   • Pathophysiology & symptoms                                  • 14 annual fiscal years (2008–2022)
+   • ASHA screening guidelines                                   • 1955 features (HMIS & NFHS-5)
+   • Multilingual (EN / BN / HI)                                 • Deterministic trends & comparisons
+                   │                                                           │
+                   └─────────────────────────────┬─────────────────────────────┘
+                                                 │
+                                                 ▼
+                                     LOCAL GEMMA 3 270M (Ollama)
+                                     Natural Language Explanation
+                                                 │
+                                                 ▼
+                                      GROUNDED RESPONSE CARD
+                               (Visual Badge + Source + Exact Data)
+```
 
 ---
 
 ## ✨ Key Features & Capabilities
 
-### 1. 📴 Offline-First Resilience
-- **Zero-Internet Operability**: Works seamlessly in remote villages with zero connectivity using **IndexedDB (Dexie.js)**.
-- **Local Fallback Engine**: If the backend is unreachable, the client-side decision engine evaluates risks locally.
-- **Dual-Signal Heartbeat & Auto-Sync**: Monitors browser network state and pings `/api/health` every 5 seconds. Automatically pushes queued records via `POST /api/sync` as soon as connectivity is restored.
+### 1. 📊 Kolkata Health Intelligence & Data Engine
+* **Deterministic Analytics Layer**: Python computes exact statistics, trends, and multi-year comparisons; Gemma explains the findings without doing manual arithmetic or hallucinating numbers.
+* **Dataset Schema & Catalog**:
+  * **14 Annual Rows**: Fiscal years `2008-09` to `2021-22`.
+  * **1957 Columns (1955 Health Features)**: Structured across Communicable diseases, NCDs, Maternal/Child health, Immunization, and Diagnostics.
+  * **8,202 HMIS Numeric Records Processed**: Forming the longitudinal yearly time-series backbone.
+  * **73 NFHS-5 Survey Features**: Cross-sectional factsheet indicators (attached exclusively to `2019–20`).
+* **Statistical Limitation Awareness**: Explicitly labels low-sample high-dimensional properties ($p \gg n$; $1957 > 14$) as exploratory and non-causal.
 
-### 2. 🧠 Dual AI & Machine Learning Architecture
-- **Deterministic Clinical Risk Engine**:
-  - Evaluates vitals (BP, Glucose, HR, Temp, SpO2, BMI), lifestyle factors, duration, and family history.
-  - Multi-domain risk triage: **Diabetes**, **Hypertension & Cardiovascular risks**, **Tuberculosis / Respiratory concerns**, and **Anemia / General Malnutrition**.
-  - Produces structured **LOW / MODERATE / HIGH** risk tiers (0–100%) with human-readable contributing factors and clinical referral recommendations.
-- **Real ML Disease Classification Engine**:
-  - **Dataset**: Kaggle Disease & Symptoms Dataset (246,945+ samples, 377 features, 773 initial classes).
-  - **Model**: Logistic Regression (L-BFGS, balanced weights) trained on 189,647 cleaned records over 328 symptom features and 512 disease classes.
-  - **Performance**: Achieves **95.24% Top-3 Accuracy** (83.99% top-1 accuracy, 0.846 weighted F1).
-  - **Explainability**: Identifies the primary symptom feature weights that influenced the top-3 predictions.
+### 2. 🤖 Offline Local AI Chat Assistant (Gemma 3 270M)
+* **Local Ollama Integration**: Runs entirely on-device via `http://localhost:11434` with zero external cloud dependencies.
+* **Context-Aware Intent Routing**:
+  * `📊 DATASET INSIGHT`: Dataset summary, feature counts, NFHS-5 period, and indicator discovery.
+  * `📊 TREND ANALYSIS`: 14-year time series, net change, % change, and trend direction.
+  * `📊 DATASET COMPARISON`: Deterministic difference between fiscal years (e.g. `2018-19` vs `2020-21`).
+  * `🩺 HEALTH EDUCATION`: Clinically verified medical explanations in simple language.
+  * `📋 WORKFLOW GUIDANCE`: ASHA screening protocols and red-flag escalation triggers.
+  * `🛡️ CLINICAL SAFETY BOUNDARY`: Safe refusal of autonomous prescription and diagnosis requests.
+* **Multilingual Fluency**: Native support for **English**, **Bengali (বাংলা)**, and **Hindi (हिंदी)**.
+* **Multi-Turn Context Window**: Bounded conversational memory that resolves contextual pronouns (e.g., *"What is hypertension?"* $\rightarrow$ *"How does the Kolkata dataset represent it?"*).
 
-### 3. 🗣️ Multilingual Support & Voice Dictation
-- **Instant Language Switching**: Full UI localization in **English**, **Hindi (हिंदी)**, and **Bengali (বাংলা)**.
-- **Hands-Free Speech-to-Text**: Integrates the **Web Speech API** (`webkitSpeechRecognition`) for hands-free symptom entry in regional accents (`hi-IN`, `bn-IN`, `en-IN`).
-- **Graceful Offline Fallback**: Automatically switches to an amber quick-type symptom chip selector when offline.
+### 3. 📴 Offline-First Clinical Screening Engine
+* **IndexedDB (Dexie.js)**: Full offline client-side database allowing continuous screening in zero-connectivity environments.
+* **Deterministic Multi-Domain Risk Stratification**:
+  * Triage for **Cardiovascular / Hypertension**, **Diabetes**, **Respiratory / TB**, and **Maternal Malnutrition**.
+  * Classifies into **Low**, **Moderate**, and **High Risk** tiers with explainable contributing factors.
+* **Machine Learning Disease Classifier**: Scikit-Learn Logistic Regression (328 symptom features, 512 disease classes) with **95.24% Top-3 accuracy**.
+* **Automatic Background Sync**: Reactive heartbeat (`/api/health`) that pushes queued screenings via `POST /api/sync` upon reconnection.
 
-### 4. 🤖 AI Health Assistant Chatbot
-- Floating chat widget powered by **OpenAI GPT-4o mini** via `POST /api/chat`.
-- Provides context-aware home remedies, symptom guidance, and wellness tips.
-- **Strict Clinical Guardrails**: Enforces non-diagnostic guidance, forbids prescriptive medications, promotes PHC visits, and triggers emergency alerts (e.g. calling **108**).
-
-### 5. 🏥 Teleconsultation & Smart Hospital Locator
-- **Dual-Engine Mapping**: Primary integration with **Google Maps Platform** with automated fallback to **OpenStreetMap & Nominatim**.
-- **Interactive Geospatial Search**: Village/district geocoding with bidirectional pan-to-marker and list-highlight interaction.
-
-### 6. 📊 PHC Doctor & Administrator Dashboard
-- **Live Real-Time Metrics**: Total patient census, daily assessments, high-risk flags, and pending referrals.
-- **Risk Distribution Visualizations**: Interactive Recharts breakdown.
-- **High-Risk Priority Queue**: Actionable triage list allowing doctors to review contributing factors and update referral status with a single click.
-- **Searchable Patient Directory**: Filter by village or name, complete with full longitudinal health assessment histories.
-
-### 7. 🎨 Delightful & Context-Aware UI/UX
-- **Dynamic Doctor Mascot**: Interactive vector mascot that reacts dynamically across the 3-step screening workflow (Noting symptoms $\rightarrow$ Thumbs up / Thinking / Urgent alerts).
-- **Medical Trail Cursor**: Interactive canvas particle effect rendering trailing hearts and crosses.
-- **Celebratory Feedback**: Confetti animations upon successful local and cloud saves.
+### 4. 🏥 Community Health Worker & PHC Doctor Dashboards
+* **Census & High-Risk Priority Queue**: Real-time referral management for Primary Health Centre doctors.
+* **Village Coverage & Interactive Mapping**: Google Maps Platform with OpenStreetMap / Nominatim fallback for geospatial facility identification.
+* **Hands-Free Voice Dictation**: Web Speech API for regional voice input (`hi-IN`, `bn-IN`, `en-IN`).
 
 ---
 
 ## 🛠️ Technology Stack
 
-| Layer | Technologies | Purpose |
-|---|---|---|
-| **Frontend** | React 19, TypeScript, Vite, Tailwind CSS v4 | Responsive, performant, mobile-first UI |
-| **State & Offline Storage** | Dexie.js (IndexedDB), dexie-react-hooks | Offline database and reactive live queries |
-| **Data Visualization** | Recharts, Lucide React, Canvas-Confetti | Analytics charts, icons, and UX animations |
-| **Backend Framework** | Python 3.10+, FastAPI, Uvicorn | High-performance asynchronous REST API |
-| **Database & ORM** | SQLite, SQLAlchemy 2.0, Pydantic v2 | Structured schema validation and persistence |
-| **Machine Learning** | Scikit-Learn, Joblib, NumPy, Pandas | ML model training, inference, and serialization |
-| **External APIs** | OpenAI GPT-4o mini, Web Speech API, Google Maps | Generative health assistant, voice, and mapping |
+| Layer | Technologies | Role |
+| :--- | :--- | :--- |
+| **Frontend** | React 19, TypeScript, Vite, Tailwind CSS v4 | Responsive, mobile-first community UI |
+| **Offline Storage** | Dexie.js (IndexedDB), Service Worker PWA | Offline screening persistence |
+| **Local AI Runtime** | Ollama, Gemma 3 270M | On-device multilingual reasoning |
+| **Backend Framework** | Python 3.10+, FastAPI, Uvicorn | Asynchronous REST & Streaming API |
+| **Data Engine** | Pandas, NumPy, JSON Catalogs | Deterministic health data analytics |
+| **ML & Analytics** | Scikit-Learn, Joblib | 512-class clinical disease predictor |
+| **Database & ORM** | SQLite, SQLAlchemy 2.0, Pydantic v2 | Structured relational persistence |
 
 ---
 
 ## 📁 Repository Structure
 
 ```
-Health-AI-main/
-├── backend/
-│   ├── main.py                   # FastAPI application & REST route definitions
-│   ├── ml_engine.py              # Rule-based clinical triage & risk scoring engine
-│   ├── database.py               # SQLAlchemy ORM models & SQLite connection
-│   ├── schemas.py                # Pydantic data schemas & request validators
-│   ├── requirements.txt          # Python backend dependencies
-│   ├── .env.example              # Sample environment configuration
-│   ├── data/                     # Dataset storage for model training
-│   └── ml/
-│       ├── train_model.py        # ML training pipeline (data cleaning, LR & RF models)
-│       ├── predictor.py          # Singleton ML prediction service
-│       ├── test_predictor.py     # Predictor test suite
-│       ├── test_api.py           # API integration tests
-│       └── models/               # Saved model artifacts (.joblib, .json)
-├── frontend/
-│   ├── index.html                # HTML5 entry point
-│   ├── vite.config.ts            # Vite configuration & backend proxy rules
-│   ├── package.json              # Node dependencies and scripts
-│   ├── src/
-│   │   ├── App.tsx               # Main application shell, routing, and sync engine
-│   │   ├── components/           # UI widgets (Mascot, Chatbot, Hospital Finder, Voice Input)
-│   │   ├── db/                   # Dexie.js IndexedDB schema & offline helpers
-│   │   ├── i18n/                 # Localization dictionaries (English, Hindi, Bengali)
-│   │   └── types/                # TypeScript interfaces and type definitions
-│   └── public/                   # Static assets
-├── FEATURES_AND_STACK.md         # Comprehensive feature documentation
-├── FILE_STRUCTURE.md             # Detailed file-by-file architecture breakdown
-└── PROJECT_AUDIT.md              # Project implementation audit log
+.
+├── Health-AI-main/
+│   ├── backend/
+│   │   ├── main.py                     # FastAPI routes & API definitions
+│   │   ├── ml_engine.py                # Deterministic screening risk triage
+│   │   ├── database.py                 # SQLAlchemy models & SQLite setup
+│   │   ├── schemas.py                  # Pydantic schemas & validators
+│   │   ├── requirements.txt            # Python dependencies
+│   │   ├── .env.example                # Safe environment variable template
+│   │   ├── ai/
+│   │   │   └── data_catalog/           # Generated dataset catalogs
+│   │   │       ├── dataset_metadata.json
+│   │   │       ├── feature_catalog.json
+│   │   │       ├── category_catalog.json
+│   │   │       └── year_catalog.json
+│   │   ├── prompts/
+│   │   │   └── ruralhealth_ai.py       # System prompt & clinical safety governance
+│   │   ├── services/
+│   │   │   ├── ollama_service.py       # Ollama LLM integration & memory
+│   │   │   └── kolkata_health_data_service.py # Deterministic data analytics engine
+│   │   └── ml/
+│   │       ├── predictor.py            # ML disease classifier
+│   │       └── population_health.py    # Aggregate health engine
+│   │
+│   ├── frontend/
+│   │   ├── src/
+│   │   │   ├── App.tsx                 # Root application component
+│   │   │   ├── components/
+│   │   │   │   ├── ChatAssistantPage.tsx   # Full-page data-aware chat assistant
+│   │   │   │   ├── HealthChatbot.tsx       # Floating health assistant widget
+│   │   │   │   ├── ScreeningForm.tsx       # Patient intake & vitals form
+│   │   │   │   ├── Dashboard.tsx           # PHC Doctor census & referrals
+│   │   │   │   └── maps/                   # Facility locator components
+│   │   │   ├── db/                     # Dexie.js offline schema
+│   │   │   └── i18n/                   # English, Hindi, Bengali translations
+│   │   ├── package.json
+│   │   └── vite.config.ts
+│   │
+│   └── kolkata_model_output/
+│       ├── kolkata_model_training_dataset.csv  # 14 rows × 1957 columns
+│       ├── feature_dictionary.csv              # 1955 metadata definitions
+│       └── processing_summary.txt              # Data ingestion summary
+│
+├── .gitignore                          # Comprehensive security & build exclusions
+├── .env.example                        # Root environment template
+└── README.md                           # Documentation
 ```
 
 ---
@@ -120,123 +158,73 @@ Health-AI-main/
 ## 🚀 Getting Started
 
 ### Prerequisites
-- **Node.js**: v18.0.0 or higher ([Download Node.js](https://nodejs.org/))
-- **Python**: v3.10 or higher ([Download Python](https://www.python.org/))
-- **Git**: ([Download Git](https://git-scm.com/))
+* **Node.js** (v18+) & **npm**
+* **Python** (3.10+)
+* **Ollama** installed locally ([ollama.com](https://ollama.com))
 
----
-
-### Step 1: Clone the Repository
-
+### 1. Start Local Ollama Model
 ```bash
-git clone https://github.com/Priyam-07-thala/ruralhealth-ai.git
-cd ruralhealth-ai
+# Pull and start the compact local model
+ollama pull gemma3:270m
+ollama serve
 ```
 
----
+### 2. Backend Setup
+```bash
+cd Health-AI-main/backend
 
-### Step 2: Backend Setup & Launch
+# Create and activate virtual environment
+python3 -m venv venv
+source venv/bin/activate
 
-1. Open a terminal and navigate to the `backend` folder:
-   ```bash
-   cd backend
-   ```
+# Install dependencies
+pip install -r requirements.txt
 
-2. Create and activate a virtual environment:
-   ```bash
-   # Windows
-   python -m venv venv
-   venv\Scripts\activate
+# Start FastAPI server
+uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+```
 
-   # macOS / Linux
-   python3 -m venv venv
-   source venv/bin/activate
-   ```
+### 3. Frontend Setup
+```bash
+cd Health-AI-main/frontend
 
-3. Install required Python packages:
-   ```bash
-   pip install -r requirements.txt
-   ```
+# Install dependencies
+npm install
 
-4. Configure environment variables:
-   ```bash
-   cp .env.example .env
-   # Edit .env and supply your OPENAI_API_KEY (optional for chatbot)
-   ```
-
-5. *(Optional)* Train/Rebuild the ML Disease Classification Model:
-   ```bash
-   python ml/train_model.py
-   ```
-
-6. Start the FastAPI server:
-   ```bash
-   python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
-   ```
-
-> 🌐 **Backend API**: `http://127.0.0.1:8000`  
-> 📖 **Interactive Swagger Documentation**: `http://127.0.0.1:8000/docs`
+# Run Vite development server
+npm run dev
+```
+Open **`http://localhost:5173`** in your browser.
 
 ---
 
-### Step 3: Frontend Setup & Launch
+## 📡 Key API Endpoints
 
-1. Open a second terminal window and navigate to the `frontend` folder:
-   ```bash
-   cd frontend
-   ```
-
-2. Install Node.js dependencies:
-   ```bash
-   npm install
-   ```
-
-3. Configure environment variables:
-   ```bash
-   cp .env.example .env
-   # Edit .env to add VITE_GOOGLE_MAPS_API_KEY (optional; defaults to OpenStreetMap)
-   ```
-
-4. Start the Vite development server:
-   ```bash
-   npm run dev
-   ```
-
-> 💻 **Frontend Web App**: `http://localhost:5173` (or `http://127.0.0.1:5173`)
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/api/health` | Backend & database health status |
+| `GET` | `/api/ai/ollama/health` | Local Ollama connection & model status |
+| `GET` | `/api/ai/data/summary` | Factual summary of Kolkata Health Dataset |
+| `GET` | `/api/ai/data/features/search?q={query}` | Semantic search across 1,955 health indicators |
+| `GET` | `/api/ai/data/indicator/{feature}` | Time series values for a specific indicator |
+| `GET` | `/api/ai/data/trend/{feature}` | Deterministic trend statistics across fiscal years |
+| `POST` | `/api/ai/data/compare` | Multi-year comparison (`feature`, `year1`, `year2`) |
+| `POST` | `/api/ai/chat` | Data-aware AI chat with safety guardrails |
+| `POST` | `/api/ai/chat/stream` | Real-time SSE token delivery stream |
+| `POST` | `/api/assess` | Deterministic patient screening risk evaluation |
+| `POST` | `/api/sync` | Batch sync for offline patient screening records |
 
 ---
 
-## 📡 API Reference
+## 🛡️ Clinical Safety & Governance Boundaries
 
-| Method | Route | Description |
-|---|---|---|
-| `GET` | `/api/health` | Server heartbeat and liveness check |
-| `POST` | `/api/patients` | Register a new patient record |
-| `GET` | `/api/patients` | Retrieve all registered patients |
-| `POST` | `/api/assess` | Submit assessment, calculate clinical risk & persist |
-| `GET` | `/api/assessments` | Fetch assessment records (filterable by `patient_id`) |
-| `PUT` | `/api/assessments/{id}/referral` | Update patient referral status (`Referred`, `Completed`) |
-| `POST` | `/api/sync` | Batch-sync offline records from client IndexedDB |
-| `GET` | `/api/dashboard/stats` | Aggregated PHC metrics (totals, high-risk counts, risk breakdown) |
-| `POST` | `/api/ml/predict` | Predict Top-3 likely conditions from a list of symptoms |
-| `POST` | `/api/chat` | OpenAI GPT-4o mini health assistant with safety guardrails |
-
----
-
-## ⚖️ Clinical Safety & Ethical Disclaimer
-
-> [!IMPORTANT]
-> **RuralHealth AI is an assistive decision-support and risk-screening prototype.**
-> - It **does not provide formal medical diagnoses** or prescribe pharmaceutical medications.
-> - It is designed to assist frontline healthcare workers in triaging and identifying patients who require timely evaluation by qualified medical professionals at Primary Health Centres (PHC) and Community Health Centres (CHC).
-> - In case of acute or life-threatening symptoms (e.g., severe chest pain, extreme shortness of breath, loss of consciousness), emergency medical services (**108 Ambulance**) must be contacted immediately.
-
----
-
-## 🎥 Project Demonstration
-- **Video Walkthrough**: [Google Drive Demo Link](https://drive.google.com/file/d/1h_03v0dPRL_zMRVGjCnYnOE2QUSFpCmz/view?usp=drive_link)
+RuralHealth AI adheres to strict medical decision-support principles:
+1. **Non-Diagnostic & Non-Prescribing**: The platform never assigns autonomous clinical diagnoses or issues drug prescriptions.
+2. **Clinical Authority**: All clinical risk stratifications and treatment plans require verification by licensed Primary Health Centre (PHC) Medical Officers.
+3. **Data Separation**: Aggregate population datasets (Kolkata HMIS / NFHS-5) are strictly decoupled from individual patient records.
+4. **No Numerical Hallucinations**: Statistical figures and trends are calculated deterministically by Python prior to natural-language summarization.
 
 ---
 
 ## 📄 License
-Developed for the **RuralHealth AI Hackathon**. Licensed under the [MIT License](LICENSE).
+This project is developed for public health innovation and community health empowerment under the MIT License.

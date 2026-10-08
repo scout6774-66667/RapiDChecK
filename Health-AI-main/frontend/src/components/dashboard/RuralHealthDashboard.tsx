@@ -5,7 +5,6 @@ import { WelcomeHeroBanner } from './WelcomeHeroBanner';
 import { KpiCardsRow } from './KpiCardsRow';
 import { RiskDistributionCard } from './RiskDistributionCard';
 import { ScreeningsTrendCard } from './ScreeningsTrendCard';
-import { VillageCoverageCard } from './VillageCoverageCard';
 import { RecentPatientsTable } from './RecentPatientsTable';
 import { TodayTasksCard } from './TodayTasksCard';
 import { UpcomingAppointmentsCard } from './UpcomingAppointmentsCard';
@@ -15,7 +14,6 @@ import {
   initialKpis,
   initialRiskDistribution,
   initialScreeningsTrend,
-  initialVillageMarkers,
   initialRecentPatients,
   initialTasks,
   initialUpcomingAppointments,
@@ -250,8 +248,8 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
             }}
           />
 
-          {/* Analytics Row: 3 Columns (Risk Distribution, Screenings Trend, Village Coverage) */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-5">
+          {/* Analytics Row: 2 Columns (Risk Distribution, Screenings Trend) */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
             <div className="h-full">
               <RiskDistributionCard
                 data={riskDistribution}
@@ -260,12 +258,6 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
             </div>
             <div className="h-full">
               <ScreeningsTrendCard data={initialScreeningsTrend} />
-            </div>
-            <div className="h-full">
-              <VillageCoverageCard
-                markers={initialVillageMarkers}
-                onSelectVillage={(v) => setSearchQuery(v)}
-              />
             </div>
           </div>
 

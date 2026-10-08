@@ -5,6 +5,7 @@ import { ScreenPatientPage } from './components/screening/ScreenPatientPage';
 import { PhcDashboard } from './components/PhcDashboard';
 import { PatientDirectory } from './components/PatientDirectory';
 import { HealthChatbot } from './components/HealthChatbot';
+import { ChatAssistantPage } from './components/ChatAssistantPage';
 import { TeleconsultBooking } from './components/TeleconsultBooking';
 import { HealthResourcesModal } from './components/dashboard/HealthResourcesModal';
 import type { Language } from './i18n/translations';
@@ -238,10 +239,18 @@ export function App() {
             <PopulationHealthPanel isOnline={isOnline} />
           </div>
         )}
+
+        {currentTab === 'chat' && (
+          <div className="p-4 sm:p-6 max-w-5xl mx-auto">
+            <ChatAssistantPage lang={lang} isOnline={isOnline} />
+          </div>
+        )}
       </div>
 
-      {/* Floating Chat Assistant (Active on any screen) */}
-      <HealthChatbot lang={lang} isOnline={isOnline} />
+      {/* Floating Chat Assistant (Active on any screen except full Chat page) */}
+      {currentTab !== 'chat' && (
+        <HealthChatbot lang={lang} isOnline={isOnline} />
+      )}
 
       {/* Health Resources Modal */}
       <HealthResourcesModal
