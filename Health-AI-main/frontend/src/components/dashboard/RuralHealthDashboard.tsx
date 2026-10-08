@@ -10,15 +10,7 @@ import { TodayTasksCard } from './TodayTasksCard';
 import { UpcomingAppointmentsCard } from './UpcomingAppointmentsCard';
 import { QuickActionsRow } from './QuickActionsRow';
 import { PatientDetailsModal } from './PatientDetailsModal';
-import {
-  initialKpis,
-  initialRiskDistribution,
-  initialScreeningsTrend,
-  initialRecentPatients,
-  initialTasks,
-  initialUpcomingAppointments,
-} from './mockData';
-import type { PatientTableRow } from './types';
+import type { PatientTableRow, TaskItem, UpcomingAppointment, ScreeningTrendItem } from './types';
 import type { Language } from '../../i18n/translations';
 import { db } from '../../db/offlineDb';
 import { useLiveQuery } from 'dexie-react-hooks';
@@ -32,6 +24,7 @@ interface RuralHealthDashboardProps {
   isSyncing: boolean;
   onNavigateToTab: (tab: DashboardNavTab) => void;
   onStartScreeningPatient?: (patientId?: string) => void;
+  onLogout?: () => void;
 }
 
 export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
@@ -43,110 +36,160 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
   isSyncing,
   onNavigateToTab,
   onStartScreeningPatient,
+  onLogout,
 }) => {
   const [activeSidebarTab, setActiveSidebarTab] = useState<DashboardNavTab>('dashboard');
   const [searchQuery, setSearchQuery] = useState('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [selectedPatient, setSelectedPatient] = useState<PatientTableRow | null>(null);
 
-  // Live query from Dexie offline database
+  // Live queries from Dexie offline database (Single Source of Truth)
   const livePatients = useLiveQuery(() => db.patients.toArray()) || [];
   const liveAssessments = useLiveQuery(() => db.assessments.toArray()) || [];
   const liveAppointments = useLiveQuery(() => db.appointments.toArray()) || [];
 
-  // Derived KPI metrics blending live Dexie data with reference data
+  // Derived KPI metrics strictly from real records
   const kpis = useMemo(() => {
-    if (livePatients.length === 0 && liveAssessments.length === 0) {
-      return initialKpis;
-    }
-
-    const totalPatients = Math.max(livePatients.length, 24);
-    const highRisk = liveAssessments.filter((a) => a.risk_level === 'HIGH').length || 6;
-    const referrals =
-      liveAssessments.filter(
-        (a) => a.referral_status === 'REFERRED' || a.referral_status === 'APPOINTMENT_REQUESTED'
-      ).length || 12;
-    const appts = liveAppointments.length || 10;
+    const totalPatients = livePatients.length;
+    const highRisk = liveAssessments.filter((a) => a.risk_level === 'HIGH' || a.risk_level === 'EMERGENCY').length;
+    const referrals = liveAssessments.filter(
+      (a) => a.referral_status === 'REFERRED' || a.referral_status === 'APPOINTMENT_REQUESTED'
+    ).length;
+    const appts = liveAppointments.length;
 
     return {
       patientsScreened: totalPatients,
-      patientsScreenedTrend: '↑ 12% vs. last week',
+      patientsScreenedTrend: totalPatients > 0 ? `${totalPatients} registered` : 'No records yet',
       highRiskCases: highRisk,
-      highRiskTrend: `↑ ${Math.max(2, highRisk > 6 ? highRisk - 6 : 2)} new today`,
+      highRiskTrend: highRisk > 0 ? `${highRisk} flagged cases` : '0 high-risk cases',
       referralsMade: referrals,
-      referralsTrend: `↑ ${Math.max(8, referrals - 4)} pending follow-up`,
+      referralsTrend: referrals > 0 ? `${referrals} active` : '0 referrals',
       appointments: appts,
-      appointmentsTrend: '3 today • 7 upcoming',
+      appointmentsTrend: appts > 0 ? `${appts} scheduled` : '0 appointments',
     };
   }, [livePatients, liveAssessments, liveAppointments]);
 
-  // Derived Risk Distribution
+  // Derived Risk Distribution strictly from real assessments
   const riskDistribution = useMemo(() => {
-    if (liveAssessments.length === 0) {
-      return initialRiskDistribution;
-    }
-
-    const high = liveAssessments.filter((a) => a.risk_level === 'HIGH').length;
+    const high = liveAssessments.filter((a) => a.risk_level === 'HIGH' || a.risk_level === 'EMERGENCY').length;
     const mod = liveAssessments.filter((a) => a.risk_level === 'MODERATE').length;
     const low = liveAssessments.filter((a) => a.risk_level === 'LOW').length;
-    const total = high + mod + low || 1;
+    const review = liveAssessments.filter((a) => a.risk_level === 'INSUFFICIENT_DATA').length;
+    const total = high + mod + low + review || 1;
 
     return [
       {
         name: 'High Risk',
-        count: high || 6,
-        percentage: Math.round(((high || 6) / (total || 24)) * 100),
+        count: high,
+        percentage: liveAssessments.length > 0 ? Math.round((high / total) * 100) : 0,
         color: '#EF4444',
       },
       {
         name: 'Moderate Risk',
-        count: mod || 9,
-        percentage: Math.round(((mod || 9) / (total || 24)) * 100),
+        count: mod,
+        percentage: liveAssessments.length > 0 ? Math.round((mod / total) * 100) : 0,
         color: '#F59E0B',
       },
       {
         name: 'Low Risk',
-        count: low || 8,
-        percentage: Math.round(((low || 8) / (total || 24)) * 100),
+        count: low,
+        percentage: liveAssessments.length > 0 ? Math.round((low / total) * 100) : 0,
         color: '#10B981',
       },
       {
         name: 'Needs Review',
-        count: 1,
-        percentage: 4,
+        count: review,
+        percentage: liveAssessments.length > 0 ? Math.round((review / total) * 100) : 0,
         color: '#94A3B8',
       },
     ];
   }, [liveAssessments]);
 
-  // Combined Patients table list
-  const patientsList: PatientTableRow[] = useMemo(() => {
-    if (livePatients.length === 0) {
-      return initialRecentPatients;
-    }
+  // Derived Screening Trend strictly from real assessment timestamps
+  const screeningsTrend: ScreeningTrendItem[] = useMemo(() => {
+    if (liveAssessments.length === 0) return [];
 
-    // Convert live patients into PatientTableRow format and prepend to initial list
-    const convertedLive: PatientTableRow[] = livePatients.map((p, idx) => {
+    const dateMap = new Map<string, { total: number; highRisk: number; moderateRisk: number; lowRisk: number }>();
+
+    liveAssessments.forEach((ass) => {
+      const d = ass.created_at ? new Date(ass.created_at) : new Date();
+      const dateKey = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+      if (!dateMap.has(dateKey)) {
+        dateMap.set(dateKey, { total: 0, highRisk: 0, moderateRisk: 0, lowRisk: 0 });
+      }
+      const entry = dateMap.get(dateKey)!;
+      entry.total += 1;
+      if (ass.risk_level === 'HIGH' || ass.risk_level === 'EMERGENCY') entry.highRisk += 1;
+      else if (ass.risk_level === 'MODERATE') entry.moderateRisk += 1;
+      else if (ass.risk_level === 'LOW') entry.lowRisk += 1;
+    });
+
+    return Array.from(dateMap.entries()).map(([date, counts]) => ({
+      date,
+      ...counts,
+    }));
+  }, [liveAssessments]);
+
+  // Real Patients table list
+  const patientsList: PatientTableRow[] = useMemo(() => {
+    return livePatients.map((p, idx) => {
       const ass = liveAssessments.find((a) => a.patient_id === p.id);
       return {
         id: p.id,
-        customId: p.patient_id || `PT-2024-${String(idx + 10).padStart(3, '0')}`,
+        customId: p.patient_id || `PT-${String(idx + 1).padStart(3, '0')}`,
         name: p.name,
         age: p.age,
-        gender: (p.gender === 'Female' ? 'F' : p.gender === 'Male' ? 'M' : 'Other') as 'M' | 'F' | 'Other',
-        riskLevel: (ass?.risk_level || 'LOW') as 'HIGH' | 'MODERATE' | 'LOW',
-        keySymptoms: ass?.symptoms?.join(', ') || 'General screening check-up',
+        gender: (p.gender === 'Female' || p.gender === 'F' ? 'F' : p.gender === 'Male' || p.gender === 'M' ? 'M' : 'Other') as 'M' | 'F' | 'Other',
+        riskLevel: (ass?.risk_level === 'HIGH' || ass?.risk_level === 'EMERGENCY' ? 'HIGH' : ass?.risk_level === 'MODERATE' ? 'MODERATE' : 'LOW') as 'HIGH' | 'MODERATE' | 'LOW',
+        keySymptoms: ass?.symptoms?.join(', ') || 'Routine screening assessment',
         status: ass?.referral_status === 'REFERRED' ? 'REFERRED' : ass?.referral_status === 'APPOINTMENT_REQUESTED' ? 'APPOINTMENT' : 'COMPLETED',
         phone: p.phone,
         village: p.village,
       };
     });
-
-    // Merge and deduplicate
-    const combined = [...convertedLive, ...initialRecentPatients];
-    const unique = combined.filter((v, i, a) => a.findIndex((t) => t.name.toLowerCase() === v.name.toLowerCase()) === i);
-    return unique.slice(0, 5);
   }, [livePatients, liveAssessments]);
+
+  // Real Dynamic Tasks derived from workflow state
+  const dynamicTasks: TaskItem[] = useMemo(() => {
+    const list: TaskItem[] = [];
+
+    if (pendingSyncCount > 0) {
+      list.push({
+        id: 'task-sync',
+        title: `Sync ${pendingSyncCount} offline record(s) to cloud`,
+        timeOrSubtext: 'Pending Dexie outbox mutations',
+        status: 'High Priority',
+        completed: false,
+      });
+    }
+
+    const highRiskAssessments = liveAssessments.filter((a) => a.risk_level === 'HIGH' || a.risk_level === 'EMERGENCY');
+    highRiskAssessments.slice(0, 3).forEach((a) => {
+      const p = livePatients.find((pt) => pt.id === a.patient_id);
+      list.push({
+        id: `task-followup-${a.id}`,
+        title: `Follow-up: ${p?.name || 'Patient'} (${a.risk_level} Risk)`,
+        timeOrSubtext: a.likely_conditions?.[0] || 'Urgent Triage Follow-up Required',
+        status: 'High Priority',
+        completed: false,
+      });
+    });
+
+    return list;
+  }, [pendingSyncCount, liveAssessments, livePatients]);
+
+  // Real Upcoming Appointments derived from database
+  const dynamicAppointments: UpcomingAppointment[] = useMemo(() => {
+    return liveAppointments.map((a) => ({
+      id: a.id,
+      time: a.appointment_time || '10:00 AM',
+      patientName: a.patient_name,
+      purpose: a.likely_conditions?.[0] || 'Clinical Consultation',
+      facility: a.doctor_name || a.doctor_address || 'Primary Health Centre',
+      phone: a.patient_phone,
+    }));
+  }, [liveAppointments]);
 
   // Filtered patients based on header search
   const filteredPatients = useMemo(() => {
@@ -195,7 +238,7 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
           currentTab={activeSidebarTab}
           onSelectTab={handleSidebarTabSelect}
           isOnline={isOnline}
-          appointmentCount={3}
+          appointmentCount={liveAppointments.length}
         />
       </div>
 
@@ -211,7 +254,7 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
               currentTab={activeSidebarTab}
               onSelectTab={handleSidebarTabSelect}
               isOnline={isOnline}
-              appointmentCount={3}
+              appointmentCount={liveAppointments.length}
               onCloseMobileMenu={() => setMobileMenuOpen(false)}
             />
           </div>
@@ -231,6 +274,7 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
           onToggleMobileMenu={() => setMobileMenuOpen(true)}
+          onLogout={onLogout}
         />
 
         {/* Dashboard Content Container */}
@@ -257,34 +301,34 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
               />
             </div>
             <div className="h-full">
-              <ScreeningsTrendCard data={initialScreeningsTrend} />
+              <ScreeningsTrendCard data={screeningsTrend} />
             </div>
           </div>
 
           {/* Lower Section: Recent Patients (~62%) + Tasks & Appointments (~38%) */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-            {/* Left Column: Recent Patients Table (7/12 cols on desktop) */}
+            {/* Left Column: Recent Patients Table */}
             <div className="lg:col-span-7 flex flex-col">
               <RecentPatientsTable
                 patients={filteredPatients}
                 onViewAll={() => onNavigateToTab('patients')}
                 onSelectPatient={(p) => setSelectedPatient(p)}
                 onStartScreening={(p) => {
-                  if (onStartScreeningPatient) onStartScreeningPatient(p.id);
+                  if (onStartScreeningPatient && p?.id) onStartScreeningPatient(p.id);
                   else onNavigateToTab('screen');
                 }}
                 onBookAppointment={() => onNavigateToTab('appointments')}
               />
             </div>
 
-            {/* Right Column: Tasks + Appointments (5/12 cols on desktop) */}
+            {/* Right Column: Tasks + Appointments */}
             <div className="lg:col-span-5 flex flex-col gap-4">
               <TodayTasksCard
-                tasks={initialTasks}
+                tasks={dynamicTasks}
                 onViewAll={() => onNavigateToTab('patients')}
               />
               <UpcomingAppointmentsCard
-                appointments={initialUpcomingAppointments}
+                appointments={dynamicAppointments}
                 onViewAll={() => onNavigateToTab('appointments')}
                 onCallPatient={(phone) => {
                   if (phone) window.open(`tel:${phone}`);
@@ -304,7 +348,7 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
         onClose={() => setSelectedPatient(null)}
         onStartScreening={(p) => {
           setSelectedPatient(null);
-          if (onStartScreeningPatient) onStartScreeningPatient(p.id);
+          if (onStartScreeningPatient && p?.id) onStartScreeningPatient(p.id);
           else onNavigateToTab('screen');
         }}
         onBookAppointment={() => {

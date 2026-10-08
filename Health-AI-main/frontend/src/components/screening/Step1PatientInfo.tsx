@@ -3,7 +3,6 @@ import { Search, UserPlus, Users, ArrowRight, CheckCircle2, Phone, MapPin } from
 import type { PatientFormData } from './types';
 import { db, type LocalPatient } from '../../db/offlineDb';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { initialRecentPatients } from '../dashboard/mockData';
 
 interface Step1PatientInfoProps {
   data: PatientFormData;
@@ -16,45 +15,20 @@ export const Step1PatientInfo: React.FC<Step1PatientInfoProps> = ({ data, onChan
   const [searchTerm, setSearchTerm] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  // Query live Dexie patients
+  // Query live Dexie patients (Real database only)
   const livePatients = useLiveQuery(() => db.patients.toArray()) || [];
 
-  // Combine live patients and sample mock patients for instant search
+  // Real searchable patients list
   const searchablePatients = useMemo(() => {
-    const combined: Array<{
-      id: string;
-      customId: string;
-      name: string;
-      age: number;
-      gender: string;
-      village: string;
-      phone: string;
-      preferredLanguage?: string;
-    }> = [
-      ...livePatients.map((p: LocalPatient) => ({
-        id: p.id,
-        customId: p.patient_id || p.id.slice(0, 8),
-        name: p.name,
-        age: p.age,
-        gender: p.gender,
-        village: p.village,
-        phone: p.phone,
-      })),
-      ...initialRecentPatients.map((p) => ({
-        id: p.id,
-        customId: p.customId,
-        name: p.name,
-        age: p.age,
-        gender: p.gender === 'M' ? 'Male' : p.gender === 'F' ? 'Female' : 'Other',
-        village: p.village || 'Sundarpur Block',
-        phone: p.phone || '',
-      })),
-    ];
-
-    // Deduplicate by name
-    return combined.filter(
-      (v, i, a) => a.findIndex((t) => t.name.toLowerCase() === v.name.toLowerCase()) === i
-    );
+    return livePatients.map((p: LocalPatient) => ({
+      id: p.id,
+      customId: p.patient_id || p.id.slice(0, 8),
+      name: p.name,
+      age: p.age,
+      gender: p.gender,
+      village: p.village,
+      phone: p.phone,
+    }));
   }, [livePatients]);
 
   // Filtered search results
@@ -79,7 +53,7 @@ export const Step1PatientInfo: React.FC<Step1PatientInfoProps> = ({ data, onChan
       gender: (patient.gender as any) || 'Male',
       phone: patient.phone,
       village: patient.village,
-      preferredLanguage: patient.preferredLanguage || 'English',
+      preferredLanguage: (patient as any).preferredLanguage || 'English',
       emergencyContact: '',
       isExisting: true,
     });
@@ -139,7 +113,7 @@ export const Step1PatientInfo: React.FC<Step1PatientInfoProps> = ({ data, onChan
                 if (data.isExisting) {
                   onChange({
                     id: `PAT-${Date.now().toString().slice(-6)}`,
-                    customId: `PT-2024-${Math.floor(100 + Math.random() * 900)}`,
+                    customId: `PT-${Date.now().toString().slice(-4)}`,
                     name: '',
                     age: '',
                     gender: '',

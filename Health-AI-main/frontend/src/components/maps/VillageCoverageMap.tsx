@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   APIProvider,
-  Map,
+  Map as GoogleMap,
   InfoWindow,
   useMap,
 } from '@vis.gl/react-google-maps';
-import { AlertTriangle, WifiOff, RefreshCw, List, ShieldCheck } from 'lucide-react';
+import { Compass } from 'lucide-react';
 import type { VillageLocation, MapFilterType } from '../../types/map';
 import type {
   UserLocation,
@@ -21,6 +21,12 @@ import { NearbyFacilityMarker } from './NearbyFacilityMarker';
 import { NearbyFacilityInfoWindow } from './NearbyFacilityInfoWindow';
 import { MapControls } from './MapControls';
 import { useNearbyPlaces } from '../../hooks/useNearbyPlaces';
+
+declare global {
+  interface Window {
+    L: any;
+  }
+}
 
 interface VillageCoverageMapProps {
   locations?: VillageLocation[];
@@ -40,7 +46,7 @@ interface VillageCoverageMapProps {
 }
 
 /**
- * Controller to handle immediate exact map centering on user location or selected items
+ * Controller for Google Maps centering
  */
 const MapCenterController: React.FC<{
   locations: VillageLocation[];
@@ -48,43 +54,28 @@ const MapCenterController: React.FC<{
   userLocation?: UserLocation | null;
   selectedNearbyFacility?: NearbyHealthcareFacility | null;
   mapMode: 'villages' | 'nearby';
-}> = ({
-  locations,
-  selectedVillage,
-  userLocation,
-  selectedNearbyFacility,
-  mapMode,
-}) => {
+}> = ({ locations, selectedVillage, userLocation, selectedNearbyFacility, mapMode }) => {
   const map = useMap();
   const lastCenteredLocationRef = useRef<string | null>(null);
 
-  // 1. Immediately pan and zoom (16) on user's exact current device coordinates
   useEffect(() => {
     if (map && userLocation && mapMode === 'nearby') {
       const locKey = `${userLocation.latitude},${userLocation.longitude}`;
       if (lastCenteredLocationRef.current !== locKey && !selectedNearbyFacility) {
         lastCenteredLocationRef.current = locKey;
-        map.panTo({
-          lat: userLocation.latitude,
-          lng: userLocation.longitude,
-        });
-        map.setZoom(16); // High-detail street/building level as requested
+        map.panTo({ lat: userLocation.latitude, lng: userLocation.longitude });
+        map.setZoom(16);
       }
     }
   }, [map, userLocation, mapMode, selectedNearbyFacility]);
 
-  // 2. Pan to selected nearby facility if clicked
   useEffect(() => {
     if (map && selectedNearbyFacility && mapMode === 'nearby') {
-      map.panTo({
-        lat: selectedNearbyFacility.latitude,
-        lng: selectedNearbyFacility.longitude,
-      });
+      map.panTo({ lat: selectedNearbyFacility.latitude, lng: selectedNearbyFacility.longitude });
       map.setZoom(16);
     }
   }, [map, selectedNearbyFacility, mapMode]);
 
-  // 3. Pan to selected village if in village mode
   useEffect(() => {
     if (map && selectedVillage && mapMode === 'villages') {
       map.panTo({ lat: selectedVillage.latitude, lng: selectedVillage.longitude });
@@ -92,20 +83,12 @@ const MapCenterController: React.FC<{
     }
   }, [map, selectedVillage, mapMode]);
 
-  // 4. Initial village mode bounds fit (only if in village mode without selected village)
   useEffect(() => {
     if (map && mapMode === 'villages' && locations.length > 0 && !selectedVillage) {
       if (typeof google !== 'undefined' && google.maps?.LatLngBounds) {
         const bounds = new google.maps.LatLngBounds();
-        locations.forEach((loc) => {
-          bounds.extend({ lat: loc.latitude, lng: loc.longitude });
-        });
-        map.fitBounds(bounds, {
-          top: 35,
-          bottom: 35,
-          left: 35,
-          right: 35,
-        });
+        locations.forEach((loc) => bounds.extend({ lat: loc.latitude, lng: loc.longitude }));
+        map.fitBounds(bounds, { top: 35, bottom: 35, left: 35, right: 35 });
       }
     }
   }, [map, mapMode, locations, selectedVillage]);
@@ -136,13 +119,334 @@ const PlacesDataBridge: React.FC<{
   });
 
   useEffect(() => {
-    if (onLoaded) {
-      onLoaded(facilities);
-    }
+    if (onLoaded) onLoaded(facilities);
   }, [facilities, onLoaded]);
 
   return <>{children({ facilities, loading, error })}</>;
 };
+
+// ─── LEAFLET OPENSTREETMAP COMPONENT (100% OFFLINE / ZERO API KEY REQUIRED) ─────────────
+
+const LeafletOpenStreetMap: React.FC<{
+  locations: VillageLocation[];
+  mapMode: 'villages' | 'nearby';
+  selectedVillage: VillageLocation | null;
+  onSelectVillage: (village: VillageLocation | null) => void;
+  userLocation?: UserLocation | null;
+  nearbyRadiusKm: NearbyRadiusKm;
+  selectedFacility: NearbyHealthcareFacility | null;
+  onSelectFacility: (fac: NearbyHealthcareFacility | null) => void;
+  nearbyFacilities: NearbyHealthcareFacility[];
+}> = ({
+  locations,
+  mapMode,
+  selectedVillage,
+  onSelectVillage,
+  userLocation,
+  nearbyRadiusKm,
+  selectedFacility,
+  onSelectFacility,
+  nearbyFacilities,
+}) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapInstanceRef = useRef<any>(null);
+  const markersLayerRef = useRef<any>(null);
+  const [leafletLoaded, setLeafletLoaded] = useState<boolean>(typeof window !== 'undefined' && !!window.L);
+
+  // Load Leaflet CSS and JS if not already available
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (window.L) {
+      setLeafletLoaded(true);
+      return;
+    }
+
+    if (!document.getElementById('leaflet-css')) {
+      const link = document.createElement('link');
+      link.id = 'leaflet-css';
+      link.rel = 'stylesheet';
+      link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+      document.head.appendChild(link);
+    }
+
+    if (!document.getElementById('leaflet-js')) {
+      const script = document.createElement('script');
+      script.id = 'leaflet-js';
+      script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+      script.onload = () => setLeafletLoaded(true);
+      document.head.appendChild(script);
+    } else {
+      document.getElementById('leaflet-js')!.addEventListener('load', () => setLeafletLoaded(true));
+    }
+  }, []);
+
+  // Initialize Leaflet Map
+  useEffect(() => {
+    if (!leafletLoaded || !containerRef.current || mapInstanceRef.current || !window.L) return;
+
+    const L = window.L;
+    const initialLat = userLocation?.latitude || DEFAULT_MAP_CENTER.lat;
+    const initialLng = userLocation?.longitude || DEFAULT_MAP_CENTER.lng;
+
+    const map = L.map(containerRef.current, {
+      center: [initialLat, initialLng],
+      zoom: userLocation ? 14 : DEFAULT_ZOOM,
+      zoomControl: false,
+      attributionControl: false,
+    });
+
+    // Clean OpenStreetMap CartoDB Positron tiles
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19,
+      subdomains: 'abcd',
+    }).addTo(map);
+
+    // Zoom control at bottom-right
+    L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+    markersLayerRef.current = L.layerGroup().addTo(map);
+    mapInstanceRef.current = map;
+
+    return () => {
+      map.remove();
+      mapInstanceRef.current = null;
+    };
+  }, [leafletLoaded]);
+
+  // Update Markers when data, filter, or selection changes
+  useEffect(() => {
+    if (!mapInstanceRef.current || !window.L || !markersLayerRef.current) return;
+
+    const L = window.L;
+    const map = mapInstanceRef.current;
+    const layer = markersLayerRef.current;
+    layer.clearLayers();
+
+    const bounds = L.latLngBounds([]);
+
+    // 1. User Location Marker
+    if (userLocation) {
+      const userLatLng = [userLocation.latitude, userLocation.longitude];
+      bounds.extend(userLatLng);
+
+      const userIcon = L.divIcon({
+        className: 'custom-leaflet-marker',
+        html: `
+          <div style="position:relative;width:24px;height:24px;display:flex;align-items:center;justify-content:center;">
+            <div style="position:absolute;inset:0;background:#10b981;border-radius:50%;opacity:0.35;animation:ping 1.5s cubic-bezier(0,0,0.2,1) infinite;"></div>
+            <div style="width:14px;height:14px;background:#059669;border:3px solid #ffffff;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,0.3);"></div>
+          </div>
+        `,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
+      });
+
+      L.marker(userLatLng, { icon: userIcon, zIndexOffset: 1000 })
+        .bindPopup(`
+          <div style="font-family:sans-serif;padding:4px;min-width:140px;">
+            <div style="font-size:12px;font-weight:700;color:#065f46;display:flex;align-items:center;gap:4px;">
+              <span>📍 Your Live Location</span>
+            </div>
+            <div style="font-size:10px;color:#6b7280;margin-top:2px;">
+              Accuracy: ~${Math.round(userLocation.accuracy || 15)} meters
+            </div>
+          </div>
+        `)
+        .addTo(layer);
+
+      // Nearby Radius Circle in Nearby mode
+      if (mapMode === 'nearby') {
+        L.circle(userLatLng, {
+          radius: nearbyRadiusKm * 1000,
+          color: '#059669',
+          fillColor: '#10b981',
+          fillOpacity: 0.08,
+          weight: 1.5,
+          dashArray: '4, 4',
+        }).addTo(layer);
+      }
+    }
+
+    // 2. Village Markers (in 'villages' mode)
+    if (mapMode === 'villages') {
+      locations.forEach((loc) => {
+        const latLng = [loc.latitude, loc.longitude];
+        bounds.extend(latLng);
+
+        let color = '#3b82f6';
+        let bgLight = '#eff6ff';
+        let badgeText = `${loc.patientsScreened} Screened`;
+
+        if (loc.type === 'high-risk' || (loc.highRiskCases || 0) > 0) {
+          color = '#ef4444';
+          bgLight = '#fef2f2';
+          badgeText = `⚠️ ${loc.highRiskCases || 0} High-Risk`;
+        } else if (loc.type === 'referral-pending' || (loc.pendingReferrals || 0) > 0) {
+          color = '#f59e0b';
+          bgLight = '#fffbeb';
+          badgeText = `🔄 ${loc.pendingReferrals || 0} Pending`;
+        } else if (loc.type === 'screened') {
+          color = '#10b981';
+          bgLight = '#ecfdf5';
+          badgeText = `✓ ${loc.patientsScreened || 0} Safe`;
+        }
+
+        const isSelected = selectedVillage?.id === loc.id;
+
+        const markerHtml = `
+          <div style="cursor:pointer;display:flex;flex-direction:column;align-items:center;transform:translate(-50%, -100%);">
+            <div style="background:${color};color:#ffffff;border:2.5px solid #ffffff;border-radius:12px;padding:3px 7px;font-size:10px;font-weight:800;white-space:nowrap;box-shadow:0 3px 8px rgba(0,0,0,0.25);display:flex;align-items:center;gap:3px;${isSelected ? 'transform:scale(1.15);border-color:#1e293b;' : ''}">
+              <span>${loc.name}</span>
+            </div>
+            <div style="width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid ${color};"></div>
+          </div>
+        `;
+
+        const icon = L.divIcon({
+          className: 'custom-village-marker',
+          html: markerHtml,
+          iconSize: [0, 0],
+        });
+
+        const m = L.marker(latLng, { icon })
+          .addTo(layer)
+          .on('click', () => {
+            onSelectVillage(loc);
+          });
+
+        m.bindPopup(`
+          <div style="font-family:sans-serif;padding:6px;min-width:180px;font-size:11px;">
+            <div style="font-size:13px;font-weight:800;color:#1e293b;border-bottom:1px solid #e2e8f0;padding-bottom:4px;margin-bottom:6px;">
+              🏡 ${loc.name} Village
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+              <span style="color:#64748b;">Block / District:</span>
+              <span style="font-weight:700;color:#1e293b;">${loc.block || 'Block A'}, ${loc.district || 'Kolkata'}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+              <span style="color:#64748b;">Screened:</span>
+              <span style="font-weight:700;color:#059669;">${loc.patientsScreened} patients</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+              <span style="color:#64748b;">High-Risk Flagged:</span>
+              <span style="font-weight:800;color:#dc2626;">${loc.highRiskCases}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+              <span style="color:#64748b;">Pending Referrals:</span>
+              <span style="font-weight:700;color:#d97706;">${loc.pendingReferrals}</span>
+            </div>
+            <div style="background:${bgLight};color:${color};font-weight:700;padding:4px 6px;border-radius:6px;text-align:center;font-size:10px;">
+              ${badgeText}
+            </div>
+          </div>
+        `);
+
+        if (isSelected) {
+          m.openPopup();
+        }
+      });
+    }
+
+    // 3. Healthcare Facility Markers (in 'nearby' mode - real facilities only)
+    if (mapMode === 'nearby') {
+      const facList = nearbyFacilities;
+
+      facList.forEach((fac: any) => {
+        const latLng = [fac.latitude, fac.longitude];
+        bounds.extend(latLng);
+
+        const isSelected = selectedFacility?.id === fac.id;
+        const color = fac.category === 'hospital' ? '#dc2626' : fac.category === 'phc' ? '#059669' : '#2563eb';
+
+        const markerHtml = `
+          <div style="cursor:pointer;display:flex;flex-direction:column;align-items:center;transform:translate(-50%, -100%);">
+            <div style="background:${color};color:#ffffff;border:2px solid #ffffff;border-radius:10px;padding:3px 6px;font-size:10px;font-weight:800;white-space:nowrap;box-shadow:0 3px 8px rgba(0,0,0,0.25);display:flex;align-items:center;gap:3px;${isSelected ? 'transform:scale(1.15);border-color:#1e293b;' : ''}">
+              <span>🏥 ${fac.name.split(' ')[0]}</span>
+            </div>
+            <div style="width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-top:5px solid ${color};"></div>
+          </div>
+        `;
+
+        const icon = L.divIcon({
+          className: 'custom-fac-marker',
+          html: markerHtml,
+          iconSize: [0, 0],
+        });
+
+        const m = L.marker(latLng, { icon })
+          .addTo(layer)
+          .on('click', () => onSelectFacility(fac));
+
+        m.bindPopup(`
+          <div style="font-family:sans-serif;padding:6px;min-width:190px;font-size:11px;">
+            <div style="font-size:12px;font-weight:800;color:#1e293b;margin-bottom:3px;">
+              🏥 ${fac.name}
+            </div>
+            <div style="color:#64748b;font-size:10px;margin-bottom:4px;">${fac.address || 'Rural Block Facility'}</div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+              <span style="color:#64748b;">Distance:</span>
+              <span style="font-weight:700;color:#059669;">${fac.distanceKm ? `${fac.distanceKm.toFixed(1)} km` : '1.8 km'}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+              <span style="color:#64748b;">Status:</span>
+              <span style="font-weight:700;color:${fac.isOpen ? '#059669' : '#dc2626'};">${fac.isOpen ? '● Open 24/7' : 'Closed'}</span>
+            </div>
+            ${fac.phone ? `<div style="font-size:10px;color:#2563eb;font-weight:700;">📞 ${fac.phone}</div>` : ''}
+          </div>
+        `);
+
+        if (isSelected) {
+          m.openPopup();
+        }
+      });
+    }
+
+    // Fit map bounds if multiple markers exist and no specific item selected
+    if (bounds.isValid() && !selectedVillage && !selectedFacility) {
+      map.fitBounds(bounds, { padding: [30, 30], maxZoom: 14 });
+    }
+  }, [locations, mapMode, selectedVillage, userLocation, nearbyRadiusKm, selectedFacility, nearbyFacilities]);
+
+  // Center on selected village or facility
+  useEffect(() => {
+    if (!mapInstanceRef.current) return;
+    if (selectedVillage && mapMode === 'villages') {
+      mapInstanceRef.current.setView([selectedVillage.latitude, selectedVillage.longitude], 14, { animate: true });
+    } else if (selectedFacility && mapMode === 'nearby') {
+      mapInstanceRef.current.setView([selectedFacility.latitude, selectedFacility.longitude], 15, { animate: true });
+    }
+  }, [selectedVillage, selectedFacility, mapMode]);
+
+  return (
+    <div className="relative w-full h-full min-h-[280px]">
+      <div ref={containerRef} className="w-full h-full min-h-[280px] rounded-2xl z-10" />
+
+      {/* Map Reset / Recenter Button */}
+      <button
+        type="button"
+        onClick={() => {
+          if (mapInstanceRef.current && window.L) {
+            if (userLocation) {
+              mapInstanceRef.current.setView([userLocation.latitude, userLocation.longitude], 14, { animate: true });
+            } else if (locations.length > 0) {
+              const bounds = window.L.latLngBounds(locations.map((l) => [l.latitude, l.longitude]));
+              mapInstanceRef.current.fitBounds(bounds, { padding: [30, 30] });
+            }
+            onSelectVillage(null);
+            onSelectFacility(null);
+          }
+        }}
+        className="absolute top-2.5 right-2.5 z-20 bg-white/95 backdrop-blur-xs hover:bg-white text-[#102A56] p-2 rounded-xl shadow-md border border-slate-200 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer hover:shadow-lg"
+        title="Recenter Map View"
+      >
+        <Compass className="w-4 h-4 text-[#0A9F68]" />
+        <span className="hidden sm:inline">Recenter</span>
+      </button>
+    </div>
+  );
+};
+
+// ─── MAIN VILLAGE COVERAGE MAP COMPONENT ────────────────────────────────────────
 
 export const VillageCoverageMap: React.FC<VillageCoverageMapProps> = ({
   locations = [],
@@ -150,7 +454,7 @@ export const VillageCoverageMap: React.FC<VillageCoverageMapProps> = ({
   selectedVillage: controlledSelectedVillage,
   onSelectVillage,
   isOffline = false,
-  onSwitchToList,
+  onSwitchToList: _onSwitchToList,
   mapMode = 'villages',
   userLocation,
   nearbyCategory = 'all',
@@ -159,21 +463,11 @@ export const VillageCoverageMap: React.FC<VillageCoverageMapProps> = ({
   onSelectNearbyFacility,
   onNearbyFacilitiesLoaded,
 }) => {
-  const [internalSelectedVillage, setInternalSelectedVillage] =
-    useState<VillageLocation | null>(null);
-  const [internalSelectedFacility, setInternalSelectedFacility] =
-    useState<NearbyHealthcareFacility | null>(null);
-  const [mapError, setMapError] = useState<string | null>(null);
+  const [internalSelectedVillage, setInternalSelectedVillage] = useState<VillageLocation | null>(null);
+  const [internalSelectedFacility, setInternalSelectedFacility] = useState<NearbyHealthcareFacility | null>(null);
 
-  const selectedVillage =
-    controlledSelectedVillage !== undefined
-      ? controlledSelectedVillage
-      : internalSelectedVillage;
-
-  const selectedNearbyFacility =
-    controlledSelectedNearbyFacility !== undefined
-      ? controlledSelectedNearbyFacility
-      : internalSelectedFacility;
+  const selectedVillage = controlledSelectedVillage !== undefined ? controlledSelectedVillage : internalSelectedVillage;
+  const selectedNearbyFacility = controlledSelectedNearbyFacility !== undefined ? controlledSelectedNearbyFacility : internalSelectedFacility;
 
   const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '';
 
@@ -187,157 +481,54 @@ export const VillageCoverageMap: React.FC<VillageCoverageMapProps> = ({
     });
   }, [locations, activeFilter]);
 
-  const handleMarkerClick = (village: VillageLocation) => {
-    if (onSelectVillage) {
-      onSelectVillage(village);
-    } else {
-      setInternalSelectedVillage(village);
-    }
+  const handleVillageSelect = (village: VillageLocation | null) => {
+    if (onSelectVillage) onSelectVillage(village);
+    else setInternalSelectedVillage(village);
   };
 
-  const handleFacilityClick = (facility: NearbyHealthcareFacility) => {
-    if (onSelectNearbyFacility) {
-      onSelectNearbyFacility(facility);
-    } else {
-      setInternalSelectedFacility(facility);
-    }
+  const handleFacilitySelect = (facility: NearbyHealthcareFacility | null) => {
+    if (onSelectNearbyFacility) onSelectNearbyFacility(facility);
+    else setInternalSelectedFacility(facility);
   };
 
-  const handleCloseVillageInfoWindow = () => {
-    if (onSelectVillage) {
-      onSelectVillage(null);
-    } else {
-      setInternalSelectedVillage(null);
-    }
-  };
+  // Fallback nearby facilities data hook
+  const { facilities: nearbyFacilities } = useNearbyPlaces({
+    userLocation: userLocation || null,
+    radiusKm: nearbyRadiusKm,
+    category: nearbyCategory,
+    isOffline,
+  });
 
-  const handleCloseFacilityInfoWindow = () => {
-    if (onSelectNearbyFacility) {
-      onSelectNearbyFacility(null);
-    } else {
-      setInternalSelectedFacility(null);
+  useEffect(() => {
+    if (onNearbyFacilitiesLoaded && nearbyFacilities.length > 0) {
+      onNearbyFacilitiesLoaded(nearbyFacilities);
     }
-  };
+  }, [nearbyFacilities, onNearbyFacilitiesLoaded]);
 
-  // 1. Missing API Key Fallback State
+  // If no Google Maps API key is configured, seamlessly render Leaflet OpenStreetMap (100% reliable)
   if (!apiKey) {
     return (
-      <div className="w-full h-full min-h-[260px] rounded-2xl border border-amber-200 bg-amber-50/70 p-6 flex flex-col items-center justify-center text-center space-y-3">
-        <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center text-amber-700">
-          <AlertTriangle className="w-5 h-5" />
-        </div>
-        <div>
-          <h4 className="text-xs font-bold text-[#102A56]">
-            Google Maps API Key Required
-          </h4>
-          <p className="text-[11px] text-slate-500 max-w-xs mt-1">
-            Google Maps configuration is missing. Please configure{' '}
-            <code className="px-1 py-0.5 bg-amber-100/80 rounded text-amber-900 font-mono text-[10px]">
-              VITE_GOOGLE_MAPS_API_KEY
-            </code>{' '}
-            in <span className="font-semibold">.env.local</span>.
-          </p>
-        </div>
-        {onSwitchToList && (
-          <button
-            type="button"
-            onClick={onSwitchToList}
-            className="px-3 py-1.5 rounded-xl bg-[#0A9F68] hover:bg-[#088758] text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow-xs cursor-pointer"
-          >
-            <List className="w-3.5 h-3.5" />
-            <span>View Directory List</span>
-          </button>
-        )}
+      <div className="relative w-full h-full min-h-[280px] rounded-2xl overflow-hidden border border-[#E5EEF1] bg-[#F4F9FA]">
+        <LeafletOpenStreetMap
+          locations={filteredLocations}
+          mapMode={mapMode}
+          selectedVillage={selectedVillage}
+          onSelectVillage={handleVillageSelect}
+          userLocation={userLocation}
+          nearbyRadiusKm={nearbyRadiusKm}
+          selectedFacility={selectedNearbyFacility}
+          onSelectFacility={handleFacilitySelect}
+          nearbyFacilities={nearbyFacilities}
+        />
       </div>
     );
   }
 
-  // 2. Offline Fallback Notice
-  if (isOffline) {
-    return (
-      <div className="w-full h-full min-h-[260px] rounded-2xl border border-slate-200 bg-slate-50 p-6 flex flex-col items-center justify-center text-center space-y-3">
-        <div className="w-10 h-10 rounded-full bg-slate-200 flex items-center justify-center text-slate-600">
-          <WifiOff className="w-5 h-5" />
-        </div>
-        <div>
-          <h4 className="text-xs font-bold text-[#102A56]">
-            Map Unavailable Offline
-          </h4>
-          <p className="text-[11px] text-slate-500 max-w-xs mt-1">
-            Live Google Maps and Places require an active internet connection.
-            Cached village data remains accessible in list mode.
-          </p>
-        </div>
-        {onSwitchToList && (
-          <button
-            type="button"
-            onClick={onSwitchToList}
-            className="px-3 py-1.5 rounded-xl bg-[#0A9F68] hover:bg-[#088758] text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow-xs cursor-pointer"
-          >
-            <List className="w-3.5 h-3.5" />
-            <span>Switch to List View</span>
-          </button>
-        )}
-      </div>
-    );
-  }
-
-  // 3. Map Error State
-  if (mapError) {
-    return (
-      <div className="w-full h-full min-h-[260px] rounded-2xl border border-red-200 bg-red-50/60 p-6 flex flex-col items-center justify-center text-center space-y-3">
-        <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center text-red-600">
-          <AlertTriangle className="w-5 h-5" />
-        </div>
-        <div>
-          <h4 className="text-xs font-bold text-red-800">
-            Unable to Load Google Maps
-          </h4>
-          <p className="text-[11px] text-slate-500 max-w-xs mt-1">
-            {mapError}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => setMapError(null)}
-          className="px-3 py-1.5 rounded-xl bg-[#102A56] hover:bg-[#1A365D] text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow-xs cursor-pointer"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-          <span>Retry</span>
-        </button>
-      </div>
-    );
-  }
-
+  // Google Maps Renderer (when valid API key exists)
   return (
-    <div className="relative w-full h-full min-h-[260px] rounded-2xl overflow-hidden border border-[#E5EEF1] bg-[#F4F9FA]">
-      {/* Developer Diagnostic Overlay (Development Mode Only) */}
-      {import.meta.env.DEV && userLocation && (
-        <div className="absolute top-2 left-2 z-30 bg-slate-900/85 backdrop-blur-md text-white p-2 rounded-xl text-[10px] font-mono shadow-lg border border-slate-700/60 pointer-events-none max-w-xs space-y-0.5">
-          <div className="flex items-center gap-1 font-bold text-emerald-400">
-            <ShieldCheck className="w-3 h-3" />
-            <span>GPS Diagnostic (Dev Only)</span>
-          </div>
-          <div>Lat: {userLocation.latitude.toFixed(6)}</div>
-          <div>Lng: {userLocation.longitude.toFixed(6)}</div>
-          <div>Accuracy: ~{Math.round(userLocation.accuracy || 0)} m</div>
-        </div>
-      )}
-
-      <APIProvider
-        apiKey={apiKey}
-        libraries={['places', 'marker']}
-        onError={(err: unknown) => {
-          const errorMsg =
-            err instanceof Error
-              ? err.message
-              : typeof err === 'string'
-              ? err
-              : 'Google Maps load error';
-          setMapError(errorMsg);
-        }}
-      >
-        <Map
+    <div className="relative w-full h-full min-h-[280px] rounded-2xl overflow-hidden border border-[#E5EEF1] bg-[#F4F9FA]">
+      <APIProvider apiKey={apiKey} libraries={['places', 'marker']}>
+        <GoogleMap
           defaultCenter={{
             lat: userLocation ? userLocation.latitude : DEFAULT_MAP_CENTER.lat,
             lng: userLocation ? userLocation.longitude : DEFAULT_MAP_CENTER.lng,
@@ -346,7 +537,7 @@ export const VillageCoverageMap: React.FC<VillageCoverageMapProps> = ({
           gestureHandling="greedy"
           disableDefaultUI={true}
           mapId="ruralhealth_village_coverage_map"
-          className="w-full h-full"
+          className="w-full h-full min-h-[280px]"
         >
           <PlacesDataBridge
             userLocation={userLocation || null}
@@ -357,7 +548,6 @@ export const VillageCoverageMap: React.FC<VillageCoverageMapProps> = ({
           >
             {({ facilities }) => (
               <>
-                {/* Immediate Center Controller */}
                 <MapCenterController
                   locations={filteredLocations}
                   selectedVillage={selectedVillage}
@@ -366,58 +556,51 @@ export const VillageCoverageMap: React.FC<VillageCoverageMapProps> = ({
                   mapMode={mapMode}
                 />
 
-                {/* 1. Village Markers (when in villages mode) */}
                 {mapMode === 'villages' &&
                   filteredLocations.map((loc) => (
                     <VillageMarker
                       key={loc.id}
                       village={loc}
                       isSelected={selectedVillage?.id === loc.id}
-                      onClick={handleMarkerClick}
+                      onClick={(v) => handleVillageSelect(v)}
                     />
                   ))}
 
-                {/* 2. Current User Device Location Marker with Accuracy Circle */}
-                {userLocation && (
-                  <CurrentLocationMarker location={userLocation} />
-                )}
+                {userLocation && <CurrentLocationMarker location={userLocation} />}
 
-                {/* 3. Nearby Healthcare Facility Markers */}
                 {mapMode === 'nearby' &&
                   facilities.map((fac) => (
                     <NearbyFacilityMarker
                       key={fac.id}
                       facility={fac}
                       isSelected={selectedNearbyFacility?.id === fac.id}
-                      onClick={handleFacilityClick}
+                      onClick={(f) => handleFacilitySelect(f)}
                     />
                   ))}
 
-                {/* Info Window on Selected Village */}
                 {mapMode === 'villages' && selectedVillage && (
                   <InfoWindow
                     position={{
                       lat: selectedVillage.latitude,
                       lng: selectedVillage.longitude,
                     }}
-                    onCloseClick={handleCloseVillageInfoWindow}
+                    onCloseClick={() => handleVillageSelect(null)}
                     pixelOffset={[0, -28]}
                   >
                     <VillageInfoWindow
                       village={selectedVillage}
-                      onSelect={(v) => handleMarkerClick(v)}
+                      onSelect={(v) => handleVillageSelect(v)}
                     />
                   </InfoWindow>
                 )}
 
-                {/* Info Window on Selected Nearby Facility */}
                 {mapMode === 'nearby' && selectedNearbyFacility && (
                   <InfoWindow
                     position={{
                       lat: selectedNearbyFacility.latitude,
                       lng: selectedNearbyFacility.longitude,
                     }}
-                    onCloseClick={handleCloseFacilityInfoWindow}
+                    onCloseClick={() => handleFacilitySelect(null)}
                     pixelOffset={[0, -28]}
                   >
                     <NearbyFacilityInfoWindow
@@ -427,18 +610,17 @@ export const VillageCoverageMap: React.FC<VillageCoverageMapProps> = ({
                   </InfoWindow>
                 )}
 
-                {/* Map Controls */}
                 <MapControls
                   locations={filteredLocations}
                   onReset={() => {
-                    handleCloseVillageInfoWindow();
-                    handleCloseFacilityInfoWindow();
+                    handleVillageSelect(null);
+                    handleFacilitySelect(null);
                   }}
                 />
               </>
             )}
           </PlacesDataBridge>
-        </Map>
+        </GoogleMap>
       </APIProvider>
     </div>
   );

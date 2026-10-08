@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ArrowRight, Check } from 'lucide-react';
 import type { TaskItem } from './types';
 
@@ -14,6 +14,10 @@ export const TodayTasksCard: React.FC<TodayTasksCardProps> = ({
   onToggleTask,
 }) => {
   const [tasks, setTasks] = useState(initialTasks);
+
+  useEffect(() => {
+    setTasks(initialTasks);
+  }, [initialTasks]);
 
   const handleToggle = (id: string) => {
     setTasks((prev) =>
@@ -66,48 +70,57 @@ export const TodayTasksCard: React.FC<TodayTasksCardProps> = ({
         </button>
       </div>
 
-      {/* Task List */}
-      <div className="space-y-2.5">
-        {tasks.map((task) => (
-          <div
-            key={task.id}
-            onClick={() => handleToggle(task.id)}
-            className={`p-2.5 rounded-xl border transition-all flex items-center justify-between gap-3 cursor-pointer ${
-              task.completed
-                ? 'bg-slate-50/50 border-slate-100 opacity-60'
-                : 'bg-white border-slate-100 hover:border-[#0A9F68]/30 hover:bg-slate-50/40'
-            }`}
-          >
-            <div className="flex items-center gap-3">
-              {/* Rounded Checkbox */}
-              <div
-                className={`w-4.5 h-4.5 rounded-md border flex items-center justify-center transition-all ${
-                  task.completed
-                    ? 'bg-[#0A9F68] border-[#0A9F68] text-white'
-                    : 'border-slate-300 hover:border-[#0A9F68]'
-                }`}
-              >
-                {task.completed && <Check className="w-3 h-3 stroke-[3]" />}
-              </div>
-
-              <div>
-                <p
-                  className={`text-xs font-bold text-[#102A56] leading-tight ${
-                    task.completed ? 'line-through text-slate-400' : ''
+      {/* Task List or Empty State */}
+      {tasks.length === 0 ? (
+        <div className="py-7 flex flex-col items-center justify-center text-center">
+          <p className="text-xs font-bold text-[#102A56]">No tasks for today.</p>
+          <p className="text-[11px] text-slate-500 mt-1 max-w-xs">
+            Offline sync reminders, high-risk follow-ups, and scheduled teleconsultations will appear here.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2.5">
+          {tasks.map((task) => (
+            <div
+              key={task.id}
+              onClick={() => handleToggle(task.id)}
+              className={`p-2.5 rounded-xl border transition-all flex items-center justify-between gap-3 cursor-pointer ${
+                task.completed
+                  ? 'bg-slate-50/50 border-slate-100 opacity-60'
+                  : 'bg-white border-slate-100 hover:border-[#0A9F68]/30 hover:bg-slate-50/40'
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                {/* Rounded Checkbox */}
+                <div
+                  className={`w-4.5 h-4.5 rounded-md border flex items-center justify-center transition-all ${
+                    task.completed
+                      ? 'bg-[#0A9F68] border-[#0A9F68] text-white'
+                      : 'border-slate-300 hover:border-[#0A9F68]'
                   }`}
                 >
-                  {task.title}
-                </p>
-                <p className="text-[10px] text-slate-400 font-medium mt-0.5">
-                  {task.timeOrSubtext}
-                </p>
-              </div>
-            </div>
+                  {task.completed && <Check className="w-3 h-3 stroke-[3]" />}
+                </div>
 
-            <div>{getStatusBadge(task.status)}</div>
-          </div>
-        ))}
-      </div>
+                <div>
+                  <p
+                    className={`text-xs font-bold text-[#102A56] leading-tight ${
+                      task.completed ? 'line-through text-slate-400' : ''
+                    }`}
+                  >
+                    {task.title}
+                  </p>
+                  <p className="text-[10px] text-slate-400 font-medium mt-0.5">
+                    {task.timeOrSubtext}
+                  </p>
+                </div>
+              </div>
+
+              <div>{getStatusBadge(task.status)}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 };

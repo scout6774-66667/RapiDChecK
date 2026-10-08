@@ -1,54 +1,62 @@
 import React, { useState, useEffect } from 'react';
-import { Header } from './components/Header';
-import { AshaScreeningFlow } from './components/AshaScreeningFlow';
+import { RuralHealthDashboard } from './components/dashboard/RuralHealthDashboard';
+import type { DashboardNavTab } from './components/dashboard/DashboardSidebar';
+import { ScreenPatientPage } from './components/screening/ScreenPatientPage';
 import { PhcDashboard } from './components/PhcDashboard';
 import { PatientDirectory } from './components/PatientDirectory';
 import { HealthChatbot } from './components/HealthChatbot';
+import { ChatAssistantPage } from './components/ChatAssistantPage';
 import { TeleconsultBooking } from './components/TeleconsultBooking';
-import { HealthResourcesPage } from './healthResources/HealthResourcesPage';
-import type { Language } from './i18n/translations';
+import { HealthResourcesModal } from './components/dashboard/HealthResourcesModal';
+import { PopulationHealthPanel } from './components/dashboard/population/PopulationHealthPanel';
+import { RuralHealthHomepage } from './components/home/RuralHealthHomepage';
+import { LoginPage } from './components/auth/LoginPage';
+import { useAuth } from './auth/AuthContext';
+import { useLanguage } from './i18n';
 import { db } from './db/offlineDb';
-import { syncManager } from './sync/SyncManager';
 import { useLiveQuery } from 'dexie-react-hooks';
 import WaterDropClick from './components/WaterDropClick';
+import { ArrowLeft } from 'lucide-react';
+
+export type AppView = 'home' | 'login' | 'app';
 
 export function App() {
-  const [currentTab, setCurrentTab] = useState<'asha' | 'phc' | 'patients' | 'high-risk' | 'teleconsult' | 'resources'>('asha');
-  const [activePatientContextId] = useState<string | null>(null);
-  const [activeAssessmentContextId] = useState<string | null>(null);
-  const [lang, setLang] = useState<Language>('en');
+  const { isAuthenticated, logout } = useAuth();
+  const { language: lang, setLanguage: setLang } = useLanguage();
+
+  // Track high-level view (home, login, app)
+  const [currentView, setCurrentView] = useState<AppView>(() => {
+    const hash = window.location.hash.replace('#', '');
+    if (hash === 'login') return 'login';
+    if (hash === 'dashboard' || hash === 'screen' || hash === 'patients' || hash === 'referrals' || hash === 'appointments' || hash === 'population_health' || hash === 'analytics' || hash === 'chat') {
+      const savedUser = localStorage.getItem('rapidcheck_user');
+      const savedToken = localStorage.getItem('rapidcheck_token');
+      return savedUser && savedToken ? 'app' : 'login';
+    }
+    return 'home';
+  });
+
+  const [currentTab, setCurrentTab] = useState<DashboardNavTab>(() => {
+    const hash = window.location.hash.replace('#', '') as DashboardNavTab;
+    const validTabs: DashboardNavTab[] = ['dashboard', 'screen', 'patients', 'referrals', 'appointments', 'analytics', 'population_health', 'chat', 'resources'];
+    return validTabs.includes(hash) ? hash : 'dashboard';
+  });
+
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [notification, setNotification] = useState<string | null>(null);
+  const [showResourcesModal, setShowResourcesModal] = useState<boolean>(false);
 
-  // ── Dark Mode ──────────────────────────────────────────────────────────────
-  const [darkMode, setDarkMode] = useState<boolean>(() => {
-    const saved = localStorage.getItem('ruralhealth-dark-mode');
-    if (saved !== null) return saved === 'true';
-    return window.matchMedia('(prefers-color-scheme: dark)').matches;
-  });
-
-  useEffect(() => {
-    const root = document.documentElement;
-    if (darkMode) {
-      root.classList.add('dark');
-    } else {
-      root.classList.remove('dark');
-    }
-    localStorage.setItem('ruralhealth-dark-mode', String(darkMode));
-  }, [darkMode]);
-
-  // Unsynced outbox count from Dexie IndexedDB (TASK-004, TASK-005, TASK-006)
-  const queuedOutbox = useLiveQuery(() => db.outbox.where('status').equals('QUEUED').toArray()) || [];
-  const pendingSyncCount = queuedOutbox.length;
+  // Unsynced count from Dexie IndexedDB
+  const unsyncedPatients = useLiveQuery(() => db.patients.where('synced').equals(0).toArray()) || [];
+  const unsyncedAssessments = useLiveQuery(() => db.assessments.where('synced').equals(0).toArray()) || [];
+  const unsyncedAppointments = useLiveQuery(() => db.appointments.where('synced').equals(0).toArray()) || [];
+  const pendingSyncCount = unsyncedPatients.length + unsyncedAssessments.length + unsyncedAppointments.length;
 
   useEffect(() => {
     let heartbeatTimer: ReturnType<typeof setInterval>;
 
-    // Start background periodic sync when online
-    syncManager.startPeriodicSync(20000);
-
-    // Check if the backend is actually reachable (not just internet connectivity)
+    // Check if the backend is actually reachable
     const checkBackend = async () => {
       try {
         const res = await fetch('http://127.0.0.1:8000/api/health', {
@@ -73,9 +81,34 @@ export function App() {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
       clearInterval(heartbeatTimer);
-      syncManager.stopPeriodicSync();
     };
   }, []);
+
+  // Sync hash routing
+  useEffect(() => {
+    const handleHashChange = () => {
+      const hash = window.location.hash.replace('#', '');
+      if (hash === 'login') {
+        if (isAuthenticated) {
+          setCurrentView('app');
+        } else {
+          setCurrentView('login');
+        }
+      } else if (hash === 'home' || hash === '') {
+        setCurrentView('home');
+      } else if (['dashboard', 'screen', 'patients', 'referrals', 'appointments', 'population_health', 'analytics', 'chat'].includes(hash)) {
+        if (!isAuthenticated) {
+          setCurrentView('login');
+        } else {
+          setCurrentView('app');
+          setCurrentTab(hash as DashboardNavTab);
+        }
+      }
+    };
+
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, [isAuthenticated]);
 
   // Show toast + trigger sync whenever online status changes
   const prevOnlineRef = React.useRef<boolean | null>(null);
@@ -85,11 +118,11 @@ export function App() {
       return;
     }
     if (isOnline && prevOnlineRef.current === false) {
-      showNotification('Backend connected. Syncing offline records via V2 Push/Pull...');
+      showNotification('Backend connected. Syncing offline records...');
       triggerSync();
     }
     if (!isOnline && prevOnlineRef.current === true) {
-      showNotification('Operating in OFFLINE mode. All mutations queued durably in Outbox.');
+      showNotification('Operating in OFFLINE mode. All data saved locally.');
     }
     prevOnlineRef.current = isOnline;
   }, [isOnline]);
@@ -106,12 +139,41 @@ export function App() {
     setIsSyncing(true);
 
     try {
-      const { push, pull } = await syncManager.runFullSync();
-      if (push.applied > 0 || pull.appliedCount > 0) {
-        showNotification(`Sync Complete! Pushed ${push.applied} changes, pulled ${pull.appliedCount} updates.`);
-      } else if (push.conflicts > 0) {
-        showNotification(`Sync Alert: ${push.conflicts} conflict(s) detected and staged for resolution.`);
+      const pList = await db.patients.where('synced').equals(0).toArray();
+      const aList = await db.assessments.where('synced').equals(0).toArray();
+      const apptList = await db.appointments.where('synced').equals(0).toArray();
+
+      if (pList.length === 0 && aList.length === 0 && apptList.length === 0) {
+        setIsSyncing(false);
+        return;
       }
+
+      if (pList.length > 0 || aList.length > 0) {
+        const response = await fetch('http://127.0.0.1:8000/api/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ patients: pList, assessments: aList })
+        });
+        if (response.ok) {
+          for (const p of pList) await db.patients.update(p.id, { synced: true });
+          for (const a of aList) await db.assessments.update(a.id, { synced: true });
+        }
+      }
+
+      let syncedAppts = 0;
+      for (const appt of apptList) {
+        try {
+          await fetch(`http://127.0.0.1:8000/api/appointments`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...appt, likely_conditions: appt.likely_conditions || [] })
+          });
+          await db.appointments.update(appt.id, { synced: true });
+          syncedAppts++;
+        } catch { /* skip */ }
+      }
+
+      showNotification(`Sync Complete! ${pList.length} patients, ${aList.length} assessments, ${syncedAppts} appointments synced.`);
     } catch (err) {
       console.warn('Sync failed', err);
     } finally {
@@ -119,103 +181,215 @@ export function App() {
     }
   };
 
-  return (
-    <div className="min-h-screen bg-slate-100 dark:bg-slate-900 text-slate-900 dark:text-slate-100 flex flex-col font-sans selection:bg-emerald-500 dark:selection:bg-emerald-400 selection:text-white dark:selection:text-slate-900 transition-colors duration-300">
-      <WaterDropClick />
-      
-      {/* Top Header */}
-      <Header
-        currentTab={currentTab}
-        onTabChange={setCurrentTab}
-        lang={lang}
-        onLangChange={setLang}
-        isOnline={isOnline}
-        pendingSyncCount={pendingSyncCount}
-        onSyncTrigger={triggerSync}
-        isSyncing={isSyncing}
-        darkMode={darkMode}
-        onDarkModeToggle={() => setDarkMode(!darkMode)}
-      />
+  const handleNavigateTab = (tab: DashboardNavTab) => {
+    if (tab === 'resources') {
+      setShowResourcesModal(true);
+      return;
+    }
+    setCurrentTab(tab);
+    window.location.hash = tab;
+  };
 
-      {/* Persistent Offline Banner */}
-      {!isOnline && (
-        <div className="bg-gradient-to-r from-amber-600 to-orange-600 dark:from-amber-700 dark:to-orange-700 text-white px-4 py-2 text-center text-xs sm:text-sm font-bold shadow-lg flex items-center justify-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span>
-          <span>📡 OFFLINE MODE — All data saved locally. Auto-syncs when connection restores.</span>
-          {pendingSyncCount > 0 && (
-            <span className="bg-white/20 px-2 py-0.5 rounded-full text-[11px]">{pendingSyncCount} pending</span>
-          )}
-        </div>
-      )}
+  const handleSignIn = () => {
+    if (isAuthenticated) {
+      setCurrentView('app');
+      setCurrentTab('dashboard');
+      window.location.hash = 'dashboard';
+    } else {
+      setCurrentView('login');
+      window.location.hash = 'login';
+    }
+  };
+
+  const handleGetStarted = () => {
+    if (isAuthenticated) {
+      setCurrentView('app');
+      setCurrentTab('dashboard');
+      window.location.hash = 'dashboard';
+    } else {
+      setCurrentView('login');
+      window.location.hash = 'login';
+    }
+  };
+
+  const handleLoginSuccess = () => {
+    setCurrentView('app');
+    setCurrentTab('dashboard');
+    window.location.hash = 'dashboard';
+  };
+
+  const handleLogout = () => {
+    logout();
+    setCurrentView('home');
+    window.location.hash = 'home';
+  };
+
+  // 1. PUBLIC HOMEPAGE VIEW
+  if (currentView === 'home') {
+    return (
+      <>
+        <WaterDropClick />
+        <RuralHealthHomepage
+          onSignIn={handleSignIn}
+          onGetStarted={handleGetStarted}
+          lang={lang}
+          onLangChange={setLang}
+          isAuthenticated={isAuthenticated}
+        />
+      </>
+    );
+  }
+
+  // 2. AUTHENTICATION / LOGIN VIEW
+  if (currentView === 'login') {
+    return (
+      <>
+        <WaterDropClick />
+        <LoginPage
+          onSuccess={handleLoginSuccess}
+          onBackToHome={() => {
+            setCurrentView('home');
+            window.location.hash = 'home';
+          }}
+          lang={lang}
+        />
+      </>
+    );
+  }
+
+  // 3. PROTECTED APPLICATION DASHBOARD VIEWS
+  // Guard check: if unauthenticated in app view, redirect to login
+  if (!isAuthenticated) {
+    return (
+      <>
+        <WaterDropClick />
+        <LoginPage
+          onSuccess={handleLoginSuccess}
+          onBackToHome={() => {
+            setCurrentView('home');
+            window.location.hash = 'home';
+          }}
+          lang={lang}
+        />
+      </>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-[#F4F9FA] text-[#102A56] flex flex-col font-sans selection:bg-[#0A9F68] selection:text-white">
+      <WaterDropClick />
 
       {/* Toast Notification Banner */}
       {notification && (
-        <div className="bg-slate-900 dark:bg-slate-800 text-emerald-400 border-b border-emerald-500/40 px-4 py-2.5 text-center text-xs sm:text-sm font-bold shadow-lg animate-fade-in flex items-center justify-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+        <div className="fixed top-3 right-4 z-50 bg-[#102A56] text-[#10B981] border border-[#10B981]/40 px-4 py-2.5 rounded-2xl shadow-xl animate-in fade-in slide-in-from-top-2 duration-200 flex items-center gap-2 text-xs font-bold">
+          <span className="w-2 h-2 rounded-full bg-[#10B981] animate-ping"></span>
           <span>{notification}</span>
         </div>
       )}
 
-      {/* Main Content View */}
-      <main className="flex-1 pb-12">
-        {currentTab === 'asha' && (
-          <AshaScreeningFlow
+      {/* Top Breadcrumb Bar when viewing Sub-Screens */}
+      {currentTab !== 'dashboard' && currentTab !== 'screen' && (
+        <div className="bg-white border-b border-[#E5EEF1] px-4 sm:px-6 py-2.5 flex items-center justify-between sticky top-0 z-40 shadow-xs">
+          <button
+            onClick={() => handleNavigateTab('dashboard')}
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#E7F7F0] text-[#0A9F68] hover:bg-[#0A9F68] hover:text-white font-bold text-xs transition-all"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>Back to Dashboard</span>
+          </button>
+
+          <div className="flex items-center gap-1.5 text-xs font-semibold">
+            <span className="text-slate-400">RuralHealth AI</span>
+            <span className="text-slate-300">/</span>
+            <span className="text-[#102A56] capitalize font-bold">
+              {currentTab === 'patients'
+                ? 'Patient Directory'
+                : currentTab === 'referrals'
+                ? 'IDRC Referrals & Care'
+                : currentTab === 'appointments'
+                ? 'Doctor Appointments'
+                : currentTab === 'population_health'
+                ? 'Population Health Intelligence (HMIS + NFHS-5)'
+                : currentTab === 'analytics'
+                ? 'Analytics'
+                : 'Chat Assistant'}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Main View Switcher */}
+      <div className="flex-1">
+        {currentTab === 'dashboard' && (
+          <RuralHealthDashboard
             lang={lang}
+            onLangChange={setLang}
             isOnline={isOnline}
-            onAssessmentComplete={() => {
-              if (isOnline && pendingSyncCount > 0) {
-                triggerSync();
-              }
+            pendingSyncCount={pendingSyncCount}
+            onSyncTrigger={triggerSync}
+            isSyncing={isSyncing}
+            onNavigateToTab={handleNavigateTab}
+            onStartScreeningPatient={() => {
+              handleNavigateTab('screen');
             }}
-            onBookTeleconsult={() => setCurrentTab('teleconsult')}
+            onLogout={handleLogout}
           />
         )}
 
-        {(currentTab === 'phc' || currentTab === 'high-risk') && (
-          <PhcDashboard
+        {currentTab === 'screen' && (
+          <ScreenPatientPage
             lang={lang}
+            onLangChange={setLang}
             isOnline={isOnline}
-            defaultRiskFilter={currentTab === 'high-risk' ? 'HIGH' : 'ALL'}
+            pendingSyncCount={pendingSyncCount}
+            onSyncTrigger={triggerSync}
+            isSyncing={isSyncing}
+            onNavigateToTab={handleNavigateTab}
+            onBookTeleconsult={() => handleNavigateTab('appointments')}
           />
         )}
 
         {currentTab === 'patients' && (
-          <PatientDirectory
-            lang={lang}
-            isOnline={isOnline}
-          />
+          <div className="p-4 sm:p-6 max-w-7xl mx-auto">
+            <PatientDirectory lang={lang} isOnline={isOnline} />
+          </div>
         )}
 
-        {currentTab === 'teleconsult' && (
-          <TeleconsultBooking
-            lang={lang}
-            isOnline={isOnline}
-          />
+        {(currentTab === 'referrals' || currentTab === 'analytics') && (
+          <div className="p-4 sm:p-6 max-w-7xl mx-auto">
+            <PhcDashboard
+              lang={lang}
+              isOnline={isOnline}
+              defaultRiskFilter={currentTab === 'referrals' ? 'HIGH' : 'ALL'}
+            />
+          </div>
         )}
 
-        {currentTab === 'resources' && (
-          <HealthResourcesPage
-            lang={lang}
-            isOnline={isOnline}
-            preselectedPatientId={activePatientContextId}
-            preselectedAssessmentId={activeAssessmentContextId}
-          />
+        {currentTab === 'appointments' && (
+          <div className="p-4 sm:p-6 max-w-7xl mx-auto">
+            <TeleconsultBooking lang={lang} isOnline={isOnline} />
+          </div>
         )}
-      </main>
 
-      {/* Floating Health Chatbot */}
+        {currentTab === 'population_health' && (
+          <div className="p-4 sm:p-6 max-w-7xl mx-auto">
+            <PopulationHealthPanel isOnline={isOnline} />
+          </div>
+        )}
+
+        {currentTab === 'chat' && (
+          <ChatAssistantPage lang={lang} isOnline={isOnline} />
+        )}
+      </div>
+
+      {/* Floating Chat Assistant (Active on any dashboard screen) */}
       <HealthChatbot lang={lang} isOnline={isOnline} />
 
-      {/* Footer */}
-      <footer className="bg-slate-900 dark:bg-slate-950 text-slate-400 dark:text-slate-500 text-[11px] py-4 text-center border-t border-slate-800 dark:border-slate-800 transition-colors">
-        <p className="font-semibold">
-          RuralHealth AI • Hackathon Prototype for Early Disease Risk Prediction & Rural Access
-        </p>
-        <p className="text-slate-500 dark:text-slate-600 mt-0.5">
-          Decision Support Tool only • Not a substitute for professional clinical diagnosis
-        </p>
-      </footer>
-
+      {/* Health Resources Modal */}
+      <HealthResourcesModal
+        isOpen={showResourcesModal}
+        onClose={() => setShowResourcesModal(false)}
+      />
     </div>
   );
 }

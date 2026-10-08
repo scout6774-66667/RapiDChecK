@@ -75,75 +75,83 @@ export const ScreeningsTrendCard: React.FC<ScreeningsTrendCardProps> = ({
         </div>
       </div>
 
-      {/* Trend Area Chart */}
-      <div className="w-full h-44 mt-1">
-        <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={data} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
-            <defs>
-              <linearGradient id="colorTotal" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#0A9F68" stopOpacity={0.25} />
-                <stop offset="95%" stopColor="#0A9F68" stopOpacity={0.0} />
-              </linearGradient>
-              <linearGradient id="colorHigh" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#EF4444" stopOpacity={0.2} />
-                <stop offset="95%" stopColor="#EF4444" stopOpacity={0.0} />
-              </linearGradient>
-              <linearGradient id="colorMod" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#F59E0B" stopOpacity={0.2} />
-                <stop offset="95%" stopColor="#F59E0B" stopOpacity={0.0} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
-            <XAxis
-              dataKey="date"
-              axisLine={false}
-              tickLine={false}
-              tick={{ fill: '#94A3B8', fontSize: 10 }}
-            />
-            <YAxis
-              axisLine={false}
-              tickLine={false}
-              tick={{ fill: '#94A3B8', fontSize: 10 }}
-              domain={[0, 40]}
-              ticks={[0, 10, 20, 30, 40]}
-            />
-            <Tooltip
-              contentStyle={{
-                backgroundColor: '#FFFFFF',
-                borderRadius: '0.75rem',
-                border: '1px solid #E2E8F0',
-                boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
-                fontSize: '11px',
-                padding: '8px 12px',
-              }}
-            />
-            <Area
-              type="monotone"
-              dataKey="total"
-              stroke="#0A9F68"
-              strokeWidth={2}
-              fillOpacity={1}
-              fill="url(#colorTotal)"
-            />
-            <Area
-              type="monotone"
-              dataKey="moderateRisk"
-              stroke="#F59E0B"
-              strokeWidth={1.8}
-              fillOpacity={1}
-              fill="url(#colorMod)"
-            />
-            <Area
-              type="monotone"
-              dataKey="highRisk"
-              stroke="#EF4444"
-              strokeWidth={1.8}
-              fillOpacity={1}
-              fill="url(#colorHigh)"
-            />
-          </AreaChart>
-        </ResponsiveContainer>
-      </div>
+      {/* Trend Area Chart or Empty State */}
+      {data.length === 0 || data.every((d) => d.total === 0) ? (
+        <div className="w-full h-44 flex flex-col items-center justify-center text-center my-auto">
+          <p className="text-xs font-bold text-[#102A56]">No screening trend data available yet.</p>
+          <p className="text-[11px] text-slate-500 mt-1 max-w-xs">
+            Daily screening and risk volumes will dynamically graph as assessments are performed.
+          </p>
+        </div>
+      ) : (
+        <div className="w-full h-44 mt-1">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={data} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
+              <defs>
+                <linearGradient id="colorTotal" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#0A9F68" stopOpacity={0.25} />
+                  <stop offset="95%" stopColor="#0A9F68" stopOpacity={0.0} />
+                </linearGradient>
+                <linearGradient id="colorHigh" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#EF4444" stopOpacity={0.2} />
+                  <stop offset="95%" stopColor="#EF4444" stopOpacity={0.0} />
+                </linearGradient>
+                <linearGradient id="colorMod" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#F59E0B" stopOpacity={0.2} />
+                  <stop offset="95%" stopColor="#F59E0B" stopOpacity={0.0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
+              <XAxis
+                dataKey="date"
+                axisLine={false}
+                tickLine={false}
+                tick={{ fill: '#94A3B8', fontSize: 10 }}
+              />
+              <YAxis
+                axisLine={false}
+                tickLine={false}
+                tick={{ fill: '#94A3B8', fontSize: 10 }}
+                allowDecimals={false}
+              />
+              <Tooltip
+                contentStyle={{
+                  backgroundColor: '#FFFFFF',
+                  borderRadius: '0.75rem',
+                  border: '1px solid #E2E8F0',
+                  boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+                  fontSize: '11px',
+                  padding: '8px 12px',
+                }}
+              />
+              <Area
+                type="monotone"
+                dataKey="total"
+                stroke="#0A9F68"
+                strokeWidth={2}
+                fillOpacity={1}
+                fill="url(#colorTotal)"
+              />
+              <Area
+                type="monotone"
+                dataKey="moderateRisk"
+                stroke="#F59E0B"
+                strokeWidth={1.8}
+                fillOpacity={1}
+                fill="url(#colorMod)"
+              />
+              <Area
+                type="monotone"
+                dataKey="highRisk"
+                stroke="#EF4444"
+                strokeWidth={1.8}
+                fillOpacity={1}
+                fill="url(#colorHigh)"
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      )}
     </div>
   );
 };

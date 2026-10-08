@@ -59,53 +59,62 @@ export const RiskDistributionCard: React.FC<RiskDistributionCardProps> = ({
       </div>
 
       {/* Main Body: Donut Chart + Legend */}
-      <div className="flex flex-col sm:flex-row items-center justify-between gap-2 my-auto">
-        {/* Donut Chart with Center Text */}
-        <div className="relative w-40 h-40 flex items-center justify-center shrink-0">
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <Pie
-                data={data}
-                cx="50%"
-                cy="50%"
-                innerRadius={48}
-                outerRadius={68}
-                paddingAngle={3}
-                dataKey="count"
-                stroke="none"
-              >
-                {data.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={entry.color} />
-                ))}
-              </Pie>
-            </PieChart>
-          </ResponsiveContainer>
+      {totalPatients === 0 || data.every((d) => d.count === 0) ? (
+        <div className="py-10 flex flex-col items-center justify-center text-center my-auto">
+          <p className="text-xs font-bold text-[#102A56]">No risk assessment data available yet.</p>
+          <p className="text-[11px] text-slate-500 mt-1">
+            Risk distributions are dynamically computed from patient clinical assessments.
+          </p>
+        </div>
+      ) : (
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-2 my-auto">
+          {/* Donut Chart with Center Text */}
+          <div className="relative w-40 h-40 flex items-center justify-center shrink-0">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={data}
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={48}
+                  outerRadius={68}
+                  paddingAngle={3}
+                  dataKey="count"
+                  stroke="none"
+                >
+                  {data.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={entry.color} />
+                  ))}
+                </Pie>
+              </PieChart>
+            </ResponsiveContainer>
 
-          {/* Centered Counter */}
-          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-            <span className="text-2xl font-black text-[#102A56] leading-none">{totalPatients}</span>
-            <span className="text-[10px] font-semibold text-slate-400 mt-0.5">Total Patients</span>
+            {/* Centered Counter */}
+            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+              <span className="text-2xl font-black text-[#102A56] leading-none">{totalPatients}</span>
+              <span className="text-[10px] font-semibold text-slate-400 mt-0.5">Total Patients</span>
+            </div>
+          </div>
+
+          {/* Legend List */}
+          <div className="w-full sm:w-auto flex flex-col gap-2 pl-2 text-xs">
+            {data.map((item) => (
+              <div key={item.name} className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-2">
+                  <span
+                    className="w-2.5 h-2.5 rounded-full shrink-0"
+                    style={{ backgroundColor: item.color }}
+                  />
+                  <span className="text-slate-600 font-medium text-[11px]">{item.name}</span>
+                </div>
+                <span className="text-[11px] font-bold text-[#102A56]">
+                  {item.count} <span className="text-slate-400 font-normal">({item.percentage}%)</span>
+                </span>
+              </div>
+            ))}
           </div>
         </div>
-
-        {/* Legend List */}
-        <div className="w-full sm:w-auto flex flex-col gap-2 pl-2 text-xs">
-          {data.map((item) => (
-            <div key={item.name} className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-2">
-                <span
-                  className="w-2.5 h-2.5 rounded-full shrink-0"
-                  style={{ backgroundColor: item.color }}
-                />
-                <span className="text-slate-600 font-medium text-[11px]">{item.name}</span>
-              </div>
-              <span className="text-[11px] font-bold text-[#102A56]">
-                {item.count} <span className="text-slate-400 font-normal">({item.percentage}%)</span>
-              </span>
-            </div>
-          ))}
-        </div>
-      </div>
+      )}
     </div>
   );
 };

@@ -27,11 +27,11 @@ For in-depth architectural and technical specifications, refer to our comprehens
 
 | Document | Description | Key Topics Covered |
 |---|---|---|
-| [**`docs/PROJECT.md`**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/PROJECT.md) | **Master Engineering & System Architecture** | Component topology, directory structure, Docker Compose stack, CI/CD validation gates. |
-| [**`docs/DATABASE.md`**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/DATABASE.md) | **Database Architecture & Schema Specification** | PostgreSQL 16 engine enforcement, connection pooling, full relational schemas, Alembic migrations, ETL migration pipeline. |
-| [**`docs/AUTH.md`**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/AUTH.md) | **Authentication, RBAC & Cryptographic Attestation** | PBKDF2-HMAC-SHA256 (600k iter), JWT claims, fine-grained RBAC matrix, facility isolation, HMAC-SHA256 attestation, 23 adversarial tests. |
-| [**`docs/FEATURE.md`**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/FEATURE.md) | **Features, Capabilities & Clinical Engine** | Dexie v4 outbox, 20 offline failure scenarios, 10/10 golden vectors, ML disease classifier, clinician review queue, voice dictation. |
-| [**`docs/validation/`**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/validation/) | **Production Validation Records & Test Artifacts** | Baseline runtime report, requirements-to-test matrix, live validation records, and machine-readable JSON artifacts. |
+| [**`docs/PROJECT.md`**](docs/PROJECT.md) | **Master Engineering & System Architecture** | Component topology, directory structure, Docker Compose stack, CI/CD validation gates. |
+| [**`docs/DATABASE.md`**](docs/DATABASE.md) | **Database Architecture & Schema Specification** | PostgreSQL 16 engine enforcement, connection pooling, full relational schemas, Alembic migrations, ETL migration pipeline. |
+| [**`docs/AUTH.md`**](docs/AUTH.md) | **Authentication, RBAC & Cryptographic Attestation** | PBKDF2-HMAC-SHA256 (600k iter), JWT claims, fine-grained RBAC matrix, facility isolation, HMAC-SHA256 attestation, 23 adversarial tests. |
+| [**`docs/FEATURE.md`**](docs/FEATURE.md) | **Features, Capabilities & Clinical Engine** | Dexie v4 outbox, 20 offline failure scenarios, 10/10 golden vectors, ML disease classifier, clinician review queue, voice dictation. |
+| [**`docs/validation/`**](docs/validation/) | **Production Validation Records & Test Artifacts** | Baseline runtime report, requirements-to-test matrix, live validation records, and machine-readable JSON artifacts. |
 
 ---
 
