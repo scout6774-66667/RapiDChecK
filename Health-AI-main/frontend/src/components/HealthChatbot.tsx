@@ -16,7 +16,7 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
-  X, MessageCircleHeart, Send, Loader2, AlertCircle, Bot, User, Cpu, Sparkles, Database, Copy, Check
+  X, MessageCircleHeart, Send, Loader2, AlertCircle, Bot, User, Sparkles, Database, Copy, Check
 } from 'lucide-react';
 import { type Language } from '../i18n/translations';
 
@@ -300,34 +300,198 @@ export const HealthChatbot: React.FC<Props> = ({ lang }) => {
 
   const displayModelName = ollamaStatus.model.includes('gemma') ? 'Gemma 3 270M' : ollamaStatus.model;
 
+  // ─── DRAGGABLE FLOATING POSITION & POINTER HANDLING ─────────────────────────
+  const [position, setPosition] = useState<{ x: number; y: number } | null>(() => {
+    try {
+      const saved = localStorage.getItem('rapidcheck_assistant_pos');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (typeof parsed.x === 'number' && typeof parsed.y === 'number') {
+          return parsed;
+        }
+      }
+    } catch {}
+    return null;
+  });
+
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    initialPosX: number;
+    initialPosY: number;
+    hasMoved: boolean;
+  } | null>(null);
+
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  const clampPosition = useCallback((x: number, y: number, btnSize = 64) => {
+    const minX = 8;
+    const minY = 8;
+    const maxX = Math.max(minX, (typeof window !== 'undefined' ? window.innerWidth : 800) - btnSize - 8);
+    const maxY = Math.max(minY, (typeof window !== 'undefined' ? window.innerHeight : 600) - btnSize - 8);
+    return {
+      x: Math.min(Math.max(x, minX), maxX),
+      y: Math.min(Math.max(y, minY), maxY),
+    };
+  }, []);
+
+  // Handle window resize and orientation change
+  useEffect(() => {
+    const handleResize = () => {
+      setPosition((prev) => {
+        if (!prev) return null;
+        return clampPosition(prev.x, prev.y, buttonRef.current?.offsetWidth || 64);
+      });
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [clampPosition]);
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+    const rect = buttonRef.current?.getBoundingClientRect();
+    const currentPosX = rect ? rect.left : (position?.x ?? 0);
+    const currentPosY = rect ? rect.top : (position?.y ?? 0);
+
+    dragStartRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      initialPosX: currentPosX,
+      initialPosY: currentPosY,
+      hasMoved: false,
+    };
+
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
+    if (!dragStartRef.current || dragStartRef.current.pointerId !== e.pointerId) return;
+
+    const deltaX = e.clientX - dragStartRef.current.startX;
+    const deltaY = e.clientY - dragStartRef.current.startY;
+    const distance = Math.hypot(deltaX, deltaY);
+
+    if (!dragStartRef.current.hasMoved && distance > 6) {
+      dragStartRef.current.hasMoved = true;
+      setIsDragging(true);
+    }
+
+    if (dragStartRef.current.hasMoved) {
+      const newX = dragStartRef.current.initialPosX + deltaX;
+      const newY = dragStartRef.current.initialPosY + deltaY;
+      const clamped = clampPosition(newX, newY, buttonRef.current?.offsetWidth || 64);
+      setPosition(clamped);
+    }
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLButtonElement>) => {
+    if (!dragStartRef.current || dragStartRef.current.pointerId !== e.pointerId) return;
+    const hasMoved = dragStartRef.current.hasMoved;
+
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {}
+
+    dragStartRef.current = null;
+    setIsDragging(false);
+
+    if (hasMoved) {
+      if (position) {
+        try {
+          localStorage.setItem('rapidcheck_assistant_pos', JSON.stringify(position));
+        } catch {}
+      }
+    } else {
+      setIsOpen((prev) => !prev);
+    }
+  };
+
+  const handlePointerCancel = (e: React.PointerEvent<HTMLButtonElement>) => {
+    if (dragStartRef.current && dragStartRef.current.pointerId === e.pointerId) {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {}
+      dragStartRef.current = null;
+      setIsDragging(false);
+    }
+  };
+
   return (
-    <div className="fixed bottom-6 right-6 z-50 font-sans">
+    <>
+      {/* ── Compact Movable Circular Assistant Button ── */}
       {!isOpen && (
-        <button
-          type="button"
-          onClick={() => setIsOpen(true)}
-          className="group relative flex items-center gap-2.5 bg-gradient-to-r from-[#102A56] to-[#0A9F68] text-white px-4 py-3.5 rounded-full shadow-2xl hover:shadow-emerald-500/25 hover:scale-105 active:scale-95 transition-all border border-white/20"
+        <div
+          style={
+            position
+              ? { position: 'fixed', left: `${position.x}px`, top: `${position.y}px` }
+              : { position: 'fixed', bottom: '24px', right: '24px' }
+          }
+          className="z-50 font-sans"
         >
-          <div className="relative">
-            <MessageCircleHeart className="w-5 h-5 text-emerald-300 group-hover:rotate-12 transition-transform" />
+          <button
+            ref={buttonRef}
+            type="button"
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerCancel}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                setIsOpen(true);
+              }
+            }}
+            aria-label="Open RuralHealth AI Assistant"
+            style={{ touchAction: 'none' }}
+            className={`group relative w-14 h-14 sm:w-15 sm:h-15 lg:w-16 lg:h-16 rounded-full bg-gradient-to-tr from-[#102A56] via-[#0D5C58] to-[#0A9F68] text-white flex items-center justify-center shadow-2xl hover:shadow-teal-500/30 border-2 border-white/30 transition-all select-none focus:outline-none focus-visible:ring-4 focus-visible:ring-teal-400/50 ${
+              isDragging ? 'cursor-grabbing scale-105 shadow-teal-500/40' : 'cursor-grab hover:scale-105 active:scale-95'
+            }`}
+          >
+            {/* Assistant Icon */}
+            <MessageCircleHeart className="w-7 h-7 text-emerald-300 group-hover:scale-110 transition-transform pointer-events-none" />
+
+            {/* Gemma Status Indicator Dot */}
             <span
-              className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full border-2 border-[#102A56] ${
-                ollamaStatus.status === 'connected' ? 'bg-emerald-400' : 'bg-amber-400'
+              className={`absolute top-0.5 right-0.5 w-3.5 h-3.5 rounded-full border-2 border-[#102A56] pointer-events-none transition-colors ${
+                ollamaStatus.status === 'connected' ? 'bg-emerald-400' : 'bg-slate-400'
               }`}
+              title={ollamaStatus.status === 'connected' ? 'Local AI Connected (Gemma 3 270M)' : 'Local AI Unavailable'}
             />
-          </div>
-          <span className="text-xs font-bold tracking-wide">
-            {ui.title}
-          </span>
-          <span className="hidden sm:inline-flex items-center gap-1 text-[10px] bg-white/15 px-2 py-0.5 rounded-full font-mono text-emerald-200">
-            <Cpu className="w-2.5 h-2.5" />
-            {displayModelName}
-          </span>
-        </button>
+
+            {/* Desktop Tooltip */}
+            <div className="absolute right-full mr-3 px-3 py-1.5 bg-[#0F172A] border border-slate-700 text-white rounded-xl shadow-xl pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap hidden sm:flex flex-col items-start gap-0.5">
+              <span className="text-xs font-bold text-white flex items-center gap-1">
+                <Sparkles className="w-3 h-3 text-emerald-400" />
+                {ui.title}
+              </span>
+              <span className="text-[10px] text-slate-300 font-medium">
+                {displayModelName} • {ollamaStatus.status === 'connected' ? 'Local AI Ready' : 'Local AI Offline'}
+              </span>
+            </div>
+          </button>
+        </div>
       )}
 
+      {/* ── Open Chat Assistant Panel ── */}
       {isOpen && (
-        <div className="w-[92vw] sm:w-[420px] h-[580px] max-h-[85vh] bg-[#0F172A] border border-slate-700/80 rounded-3xl shadow-2xl flex flex-col overflow-hidden text-slate-100 animate-in fade-in slide-in-from-bottom-4 duration-200">
+        <div
+          style={
+            position
+              ? {
+                  position: 'fixed',
+                  left: `${Math.min(position.x, Math.max(8, (typeof window !== 'undefined' ? window.innerWidth : 800) - 430))}px`,
+                  top: `${Math.min(position.y, Math.max(8, (typeof window !== 'undefined' ? window.innerHeight : 600) - 590))}px`,
+                }
+              : { position: 'fixed', bottom: '24px', right: '24px' }
+          }
+          className="z-50 font-sans"
+        >
+          <div className="w-[92vw] sm:w-[420px] h-[580px] max-h-[85vh] bg-[#0F172A] border border-slate-700/80 rounded-3xl shadow-2xl flex flex-col overflow-hidden text-slate-100 animate-in fade-in slide-in-from-bottom-4 duration-200">
 
           {/* Header */}
           <div className="bg-gradient-to-r from-[#102A56] via-[#1E293B] to-[#0A9F68] px-4 py-3.5 flex items-center justify-between border-b border-slate-700/60 shrink-0">
@@ -521,9 +685,10 @@ export const HealthChatbot: React.FC<Props> = ({ lang }) => {
             </div>
           </div>
 
+          </div>
         </div>
       )}
-    </div>
+    </>
   );
 };
 

@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Search, Globe, Bell, ChevronDown, Wifi, WifiOff, RefreshCw, Menu } from 'lucide-react';
+import { Search, Globe, Bell, ChevronDown, Wifi, WifiOff, RefreshCw, Menu, LogOut } from 'lucide-react';
 import type { Language } from '../../i18n/translations';
 import sunitaAvatar from '../../assets/sunita_avatar.jpg';
+import { useAuth } from '../../auth/AuthContext';
 
 interface DashboardHeaderProps {
   lang: Language;
@@ -13,6 +14,7 @@ interface DashboardHeaderProps {
   searchQuery: string;
   onSearchChange: (q: string) => void;
   onToggleMobileMenu?: () => void;
+  onLogout?: () => void;
 }
 
 export const DashboardHeader: React.FC<DashboardHeaderProps> = ({
@@ -25,10 +27,20 @@ export const DashboardHeader: React.FC<DashboardHeaderProps> = ({
   searchQuery,
   onSearchChange,
   onToggleMobileMenu,
+  onLogout,
 }) => {
+  const { user, logout } = useAuth();
   const [showLangMenu, setShowLangMenu] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
+
+  const handleSignOut = () => {
+    setShowProfileMenu(false);
+    logout();
+    if (onLogout) {
+      onLogout();
+    }
+  };
 
   return (
     <header className="h-[74px] bg-white border-b border-[#E5EEF1] px-4 sm:px-6 lg:px-8 flex items-center justify-between sticky top-0 z-30 shadow-[0_1px_3px_rgba(0,0,0,0.02)]">
@@ -185,21 +197,36 @@ export const DashboardHeader: React.FC<DashboardHeaderProps> = ({
           >
             <img
               src={sunitaAvatar}
-              alt="Sunita Devi"
+              alt={user?.full_name || 'User Profile'}
               className="w-9 h-9 rounded-full object-cover border-2 border-[#0A9F68]/20 shadow-2xs"
             />
             <div className="hidden md:block">
-              <div className="text-xs font-bold text-[#102A56] leading-tight">Sunita Devi</div>
-              <div className="text-[11px] text-slate-400 font-medium">ASHA Worker</div>
+              <div className="text-xs font-bold text-[#102A56] leading-tight">
+                {user?.full_name || 'Sunita Devi'}
+              </div>
+              <div className="text-[11px] text-slate-400 font-medium">
+                {user?.role === 'PHC_DOCTOR'
+                  ? 'PHC Medical Officer'
+                  : user?.role === 'DISTRICT_OFFICER'
+                  ? 'District CMO'
+                  : user?.role === 'SYSTEM_ADMIN'
+                  ? 'System Admin'
+                  : 'ASHA Worker'}
+              </div>
             </div>
             <ChevronDown className="w-3.5 h-3.5 text-slate-400 hidden sm:block" />
           </button>
 
           {showProfileMenu && (
-            <div className="absolute right-0 mt-1.5 w-48 bg-white rounded-2xl shadow-xl border border-slate-100 py-2 z-50 text-xs">
-              <div className="px-3 py-1.5 border-b border-slate-100">
-                <p className="font-bold text-[#102A56]">Sunita Devi</p>
-                <p className="text-[11px] text-slate-400">Sundarpur PHC Block A</p>
+            <div className="absolute right-0 mt-1.5 w-52 bg-white rounded-2xl shadow-xl border border-slate-100 py-2 z-50 text-xs">
+              <div className="px-3 py-2 border-b border-slate-100">
+                <p className="font-bold text-[#102A56]">{user?.full_name || 'Sunita Devi'}</p>
+                <p className="text-[11px] text-slate-400">
+                  {user?.facility_id || 'Sundarpur PHC Block A'}
+                </p>
+                {user?.email && (
+                  <p className="text-[10px] text-slate-400 truncate">{user.email}</p>
+                )}
               </div>
               <button
                 onClick={() => setShowProfileMenu(false)}
@@ -219,6 +246,15 @@ export const DashboardHeader: React.FC<DashboardHeaderProps> = ({
               >
                 Settings & Language
               </button>
+              <div className="border-t border-slate-100 mt-1 pt-1">
+                <button
+                  onClick={handleSignOut}
+                  className="w-full text-left px-3 py-2 text-rose-600 hover:bg-rose-50 font-bold flex items-center gap-2"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>Sign Out</span>
+                </button>
+              </div>
             </div>
           )}
         </div>

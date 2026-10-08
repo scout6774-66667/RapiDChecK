@@ -205,20 +205,8 @@ async function fetchNearbyHospitals(lat: number, lng: number, radiusM = 15000): 
     }
   }
 
-  if (!data) {
-    console.warn('All Overpass API endpoints failed, falling back to mock data');
-    const mockHospitals: NearbyDoctor[] = [
-      { id: 'mock1', name: 'City Central Hospital', specialty: 'Multi-Specialty Hospital', address: 'Main Road, Center', distance: '1.2 km', lat: lat + 0.01, lng: lng + 0.01, amenity: 'hospital' },
-      { id: 'mock2', name: 'Care Health Clinic', specialty: 'General Practice', address: 'Market Street', distance: '2.5 km', lat: lat - 0.015, lng: lng + 0.005, amenity: 'clinic' },
-      { id: 'mock3', name: 'Life Line Nursing Home', specialty: 'Hospital', address: 'Station Road', distance: '3.1 km', lat: lat + 0.005, lng: lng - 0.02, amenity: 'hospital' },
-      { id: 'mock4', name: 'Apex Medical Center', specialty: 'Advanced Care', address: 'North Avenue', distance: '4.8 km', lat: lat + 0.03, lng: lng - 0.01, amenity: 'hospital' },
-      { id: 'mock5', name: 'Family Care Clinic', specialty: 'Primary Care', address: 'South Extension', distance: '5.2 km', lat: lat - 0.02, lng: lng - 0.03, amenity: 'clinic' },
-    ];
-    // Recalculate true distances based on center
-    return mockHospitals.map(h => ({
-      ...h,
-      distance: `${haversineKm(lat, lng, h.lat!, h.lng!).toFixed(1)} km`
-    })).sort((a, b) => parseFloat(a.distance!) - parseFloat(b.distance!));
+  if (!data || !data.elements || data.elements.length === 0) {
+    return [];
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

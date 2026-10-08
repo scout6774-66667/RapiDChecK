@@ -54,7 +54,7 @@ export const ScreenPatientPage: React.FC<ScreenPatientPageProps> = ({
   // ── Form State ─────────────────────────────────────────────────────────────
   const [patientData, setPatientData] = useState<PatientFormData>({
     id: `PAT-${Date.now().toString().slice(-6)}`,
-    customId: `PT-2024-${Math.floor(100 + Math.random() * 900)}`,
+    customId: `PT-${Date.now().toString().slice(-4)}`,
     name: '',
     age: '',
     gender: '',

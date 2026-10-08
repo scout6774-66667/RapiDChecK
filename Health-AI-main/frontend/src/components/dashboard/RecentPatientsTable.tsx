@@ -103,9 +103,27 @@ export const RecentPatientsTable: React.FC<RecentPatientsTableProps> = ({
         </button>
       </div>
 
-      {/* Table Container */}
-      <div className="overflow-x-auto">
-        <table className="w-full text-left text-xs">
+      {/* Table / Empty State Container */}
+      {patients.length === 0 ? (
+        <div className="py-12 flex flex-col items-center justify-center text-center">
+          <div className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center text-slate-400 mb-3">
+            <UserCheck className="w-6 h-6" />
+          </div>
+          <h4 className="text-xs font-bold text-[#102A56]">No Patients Screened Yet</h4>
+          <p className="text-[11px] text-slate-500 max-w-xs mt-1 mb-4">
+            Patient health assessments recorded in the field will appear here.
+          </p>
+          <button
+            onClick={() => onStartScreening?.(null as any)}
+            className="px-3.5 py-1.5 rounded-xl bg-[#0A9F68] hover:bg-[#088758] text-white text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+          >
+            <Stethoscope className="w-3.5 h-3.5" />
+            <span>Screen First Patient</span>
+          </button>
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
           <thead>
             <tr className="border-b border-[#E5EEF1] text-slate-400 font-semibold text-[11px]">
               <th className="pb-3 font-semibold pl-2">Patient</th>
@@ -216,6 +234,7 @@ export const RecentPatientsTable: React.FC<RecentPatientsTableProps> = ({
           </tbody>
         </table>
       </div>
+      )}
     </div>
   );
 };

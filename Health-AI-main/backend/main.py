@@ -1,6 +1,6 @@
 import uuid
 import os
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -194,7 +194,7 @@ def delete_patient(patient_id: str, db: Session = Depends(get_db)):
     existing = db.query(PatientModel).filter(PatientModel.id == patient_id).first()
     if not existing or existing.is_deleted:
         raise HTTPException(status_code=404, detail="Patient not found")
-    
+
     existing.is_deleted = 1
     existing.server_version += 1
     existing.updated_at = datetime.utcnow().isoformat()
@@ -227,7 +227,7 @@ def create_assessment(assessment: AssessmentCreate, db: Session = Depends(get_db
     # 3. Store in DB
     ass_id = assessment.id or str(uuid.uuid4())
     existing = db.query(AssessmentModel).filter(AssessmentModel.id == ass_id).first()
-    
+
     if not existing:
         db_ass = AssessmentModel(
             id=ass_id,
@@ -270,7 +270,7 @@ def create_assessment(assessment: AssessmentCreate, db: Session = Depends(get_db
         db_ass.likely_conditions = eval_result["likely_conditions"]
         db_ass.contributing_factors = eval_result["contributing_factors"]
         db_ass.red_flags = eval_result.get("red_flags", [])
-        
+
         db.add(db_ass)
         db.flush()
 
@@ -399,11 +399,11 @@ def update_referral_status(assessment_id: str, body: ReferralUpdate, db: Session
     ass = db.query(AssessmentModel).filter(AssessmentModel.id == assessment_id).first()
     if not ass or ass.is_deleted:
         raise HTTPException(status_code=404, detail="Assessment not found")
-    
+
     valid_statuses = ["NOT_REFERRED", "REFERRED", "APPOINTMENT_REQUESTED", "CONSULTATION_COMPLETED"]
     if body.referral_status not in valid_statuses:
         raise HTTPException(status_code=400, detail=f"Invalid referral status. Must be one of {valid_statuses}")
-    
+
     ass.referral_status = body.referral_status
     ass.server_version += 1
     ass.updated_at = datetime.utcnow().isoformat()
@@ -501,52 +501,127 @@ def batch_sync(payload: SyncPayload, db: Session = Depends(get_db)):
         message=f"Sync completed. Processed {p_synced} patients and {a_synced} health assessments."
     )
 
-# --- PHC DASHBOARD STATS ---
+# --- PHC & DISTRICT HEALTH DASHBOARD STATS ---
 
 @app.get("/api/dashboard/stats")
-def get_dashboard_stats(db: Session = Depends(get_db)):
-    total_patients = db.query(PatientModel).count()
-    assessments = db.query(AssessmentModel).all()
-    
+def get_dashboard_stats(
+    facility_id: Optional[str] = None,
+    village: Optional[str] = None,
+    date_range: Optional[str] = "all",
+    db: Session = Depends(get_db)
+):
+    # Base query for non-deleted assessments
+    query = db.query(AssessmentModel).filter(AssessmentModel.is_deleted == 0)
+
+    if facility_id and facility_id != "ALL":
+        query = query.filter(AssessmentModel.facility_id == facility_id)
+
+    # Date range filtering
+    now = datetime.utcnow()
+    if date_range == "today":
+        today_start = datetime(now.year, now.month, now.day).isoformat()
+        query = query.filter(AssessmentModel.created_at >= today_start)
+    elif date_range == "7d":
+        seven_days_ago = (now - timedelta(days=7)).isoformat()
+        query = query.filter(AssessmentModel.created_at >= seven_days_ago)
+    elif date_range == "30d":
+        thirty_days_ago = (now - timedelta(days=30)).isoformat()
+        query = query.filter(AssessmentModel.created_at >= thirty_days_ago)
+
+    assessments = query.order_by(AssessmentModel.created_at.desc()).all()
+
+    # Filter by village if specified
+    if village and village != "ALL":
+        filtered_ass = []
+        for a in assessments:
+            p = db.query(PatientModel).filter(PatientModel.id == a.patient_id).first()
+            if p and (p.village == village or getattr(a, 'village', None) == village):
+                filtered_ass.append(a)
+        assessments = filtered_ass
+
     total_assessments = len(assessments)
+    unique_patient_ids = set(a.patient_id for a in assessments)
+    total_patients = len(unique_patient_ids)
+
     high_risk_count = sum(1 for a in assessments if a.risk_level == "HIGH")
     moderate_risk_count = sum(1 for a in assessments if a.risk_level == "MODERATE")
     low_risk_count = sum(1 for a in assessments if a.risk_level == "LOW")
+    emergency_count = sum(1 for a in assessments if bool(a.is_emergency) or a.triage_state == "EMERGENCY")
+
+    pending_doctor_review = sum(
+        1 for a in assessments
+        if getattr(a, 'review_state', 'NOT_REQUIRED') in ["REVIEW_REQUIRED", "ASSIGNED", "IN_REVIEW"]
+        or (
+            (bool(a.is_emergency) or a.risk_level == "HIGH" or (a.red_flags and len(a.red_flags) > 0))
+            and getattr(a, 'review_state', 'NOT_REQUIRED') not in ["APPROVED", "MODIFIED", "REJECTED"]
+        )
+    )
 
     pending_referrals = sum(1 for a in assessments if a.referral_status in ["REFERRED", "APPOINTMENT_REQUESTED"])
     completed_consultations = sum(1 for a in assessments if a.referral_status == "CONSULTATION_COMPLETED")
+    not_referred_count = sum(1 for a in assessments if a.referral_status == "NOT_REFERRED")
 
-    # Risk Distribution for charts
-    risk_distribution = [
-        {"name": "High Risk", "value": high_risk_count, "color": "#f43f5e"},
-        {"name": "Moderate Risk", "value": moderate_risk_count, "color": "#f59e0b"},
-        {"name": "Low Risk", "value": low_risk_count, "color": "#10b981"}
-    ]
+    # Risk Distribution for charts (only if real assessments exist)
+    risk_distribution = []
+    if total_assessments > 0:
+        if high_risk_count > 0:
+            risk_distribution.append({"name": "High Risk", "value": high_risk_count, "color": "#f43f5e"})
+        if moderate_risk_count > 0:
+            risk_distribution.append({"name": "Moderate Risk", "value": moderate_risk_count, "color": "#f59e0b"})
+        if low_risk_count > 0:
+            risk_distribution.append({"name": "Low Risk", "value": low_risk_count, "color": "#10b981"})
 
-    # Village distribution
+    # Village distribution from actual patient records
     village_counts: dict = {}
     for a in assessments:
-        patient = db.query(PatientModel).filter(PatientModel.id == a.patient_id).first()
-        v = patient.village if patient else "Unknown"
-        village_counts[v] = village_counts.get(v, 0) + 1
-    
-    village_data = [{"village": k, "count": v} for k, v in village_counts.items()]
+        p = db.query(PatientModel).filter(PatientModel.id == a.patient_id).first()
+        v = p.village if p and p.village else "Unknown"
+        if v and v.strip():
+            village_counts[v] = village_counts.get(v, 0) + 1
+
+    village_data = [{"village": k, "count": v} for k, v in sorted(village_counts.items(), key=lambda x: x[1], reverse=True)]
+
+    # Available distinct facilities & villages
+    all_patients = db.query(PatientModel).filter(PatientModel.is_deleted == 0).all()
+    available_villages = sorted(list(set(p.village for p in all_patients if p.village and p.village.strip())))
+    available_facilities = sorted(list(set(p.facility_id for p in all_patients if p.facility_id and p.facility_id.strip())))
 
     return {
         "total_patients": total_patients,
         "total_assessments": total_assessments,
         "high_risk_count": high_risk_count,
+        "moderate_risk_count": moderate_risk_count,
+        "low_risk_count": low_risk_count,
+        "emergency_count": emergency_count,
+        "pending_doctor_review": pending_doctor_review,
         "pending_referrals": pending_referrals,
         "completed_consultations": completed_consultations,
+        "not_referred_count": not_referred_count,
         "risk_distribution": risk_distribution,
-        "village_distribution": village_data
+        "village_distribution": village_data,
+        "available_villages": available_villages,
+        "available_facilities": available_facilities
     }
+
+
+@app.get("/api/v2/dashboard/phc")
+def get_phc_dashboard_data(
+    facility_id: Optional[str] = None,
+    village: Optional[str] = None,
+    date_range: Optional[str] = "all",
+    db: Session = Depends(get_db)
+):
+    """
+    Dedicated endpoint for PHC Doctor & District Health Dashboard.
+    Returns complete real analytics, KPI metrics, and clinical review status.
+    """
+    return get_dashboard_stats(facility_id=facility_id, village=village, date_range=date_range, db=db)
 
 
 # ─── HEALTH CHATBOT ENDPOINT ─────────────────────────────────────────────────
 
 CHAT_SYSTEM_PROMPT = """
-You are a rural health assistant AI integrated into the RuralHealth AI platform used by ASHA 
+You are a rural health assistant AI integrated into the RuralHealth AI platform used by ASHA
 (Accredited Social Health Activist) workers and patients in rural India.
 
 Your role:
@@ -563,7 +638,7 @@ Diarrhoea, Respiratory infections, Snake bite, Malnutrition, Maternal health iss
 STRICT RULES:
 1. NEVER prescribe specific medicines or dosages
 2. ALWAYS recommend consulting a qualified doctor or PHC (Primary Health Centre) for any concerning symptom
-3. For emergency symptoms (chest pain, breathing difficulty, unconsciousness, severe bleeding, high fever >104°F), 
+3. For emergency symptoms (chest pain, breathing difficulty, unconsciousness, severe bleeding, high fever >104°F),
    IMMEDIATELY tell the user to call 108 (India emergency) or go to the nearest hospital
 4. Always end your response with: "\n\n⚕️ *This is AI guidance only — not a medical diagnosis. Please consult a doctor for proper evaluation.*"
 5. Keep responses concise and structured (use bullet points)
@@ -590,42 +665,42 @@ async def health_chat(request: ChatRequest):
     The API key is read server-side from .env — never exposed to the browser.
     """
     api_key = os.getenv("OPENAI_API_KEY", "")
-    
+
     if not api_key or api_key == "your_openai_api_key_here":
         raise HTTPException(
             status_code=503,
             detail="OpenAI API key not configured. Please add OPENAI_API_KEY to backend/.env"
         )
-    
+
     try:
         from openai import OpenAI
         client = OpenAI(api_key=api_key)
-        
+
         # Build message list: system prompt + conversation history
         lang_hint = {
             "hi": "Please respond in Hindi (हिंदी).",
             "bn": "Please respond in Bengali (বাংলা).",
             "en": "Please respond in English."
         }.get(request.language or "en", "Please respond in English.")
-        
+
         openai_messages = [
             {"role": "system", "content": CHAT_SYSTEM_PROMPT + f"\n\nLanguage instruction: {lang_hint}"}
         ]
-        
+
         # Add conversation history (last 20 messages max to stay within token limits)
         for msg in request.messages[-20:]:
             openai_messages.append({"role": msg.role, "content": msg.content})
-        
+
         response = client.chat.completions.create(
             model="gpt-4o-mini",   # Fast and cost-effective
             messages=openai_messages,
             max_tokens=600,
             temperature=0.4,        # More deterministic for medical guidance
         )
-        
+
         reply = response.choices[0].message.content or "I could not generate a response. Please try again."
         return ChatResponse(reply=reply)
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -633,7 +708,7 @@ async def health_chat(request: ChatRequest):
         if "insufficient_quota" in err_str or "credit_balance_exhausted" in err_str or "429" in err_str:
             # Fallback response for offline / credit-exhausted state
             user_msg = (request.messages[-1].content if request.messages else "").lower()
-            
+
             # Simple rule-based guidance for hackathon demo resilience
             advice = []
             if "fever" in user_msg or "बुखार" in user_msg or "জ্বর" in user_msg:
@@ -683,11 +758,11 @@ class MLPredictResponse(BaseModel):
 def ml_predict(request: MLPredictRequest):
     """
     Symptom-based disease classification using the trained Logistic Regression model.
-    
+
     INPUT:  list of symptom strings
     OUTPUT: Top-3 predicted conditions with model confidence scores and
             model contributing features (NOT clinical probabilities or diagnoses).
-    
+
     IMPORTANT:
     - Scores are model softmax outputs, NOT clinical probabilities.
     - Predictions are for decision-support only, NOT medical diagnosis.
@@ -766,13 +841,13 @@ class HybridPredictResponse(BaseModel):
 def hybrid_predict(request: HybridPredictRequest):
     """
     Hybrid disease prediction combining ML model + Google Search.
-    
+
     Uses consensus engine to:
     1. Get predictions from Logistic Regression ML model
     2. Search Google for medical information about symptoms
     3. Combine using weighted voting with consensus bonus
     4. Return unified top-3 predictions
-    
+
     This provides more robust and explainable predictions than either system alone.
     """
     if _CONSENSUS_ENGINE is None:
@@ -780,22 +855,22 @@ def hybrid_predict(request: HybridPredictRequest):
             status_code=503,
             detail="Consensus engine not available. Check backend logs."
         )
-    
+
     if not request.symptoms:
         raise HTTPException(
             status_code=400,
             detail="Request must include at least one symptom."
         )
-    
+
     # Get system status
     systems_status = _CONSENSUS_ENGINE.is_ready
-    
+
     # Run consensus prediction
     result = _CONSENSUS_ENGINE.predict(
         symptoms=request.symptoms,
         use_google=request.use_google
     )
-    
+
     # Format ML predictions for response
     ml_predictions = []
     for pred in result.get("ml_predictions", []):
@@ -805,7 +880,7 @@ def hybrid_predict(request: HybridPredictRequest):
             score=pred.get("score", 0),
             contributingSymptoms=pred.get("contributingSymptoms", [])
         ))
-    
+
     # Format consensus predictions
     consensus_predictions = []
     for pred in result.get("predictions", []):
@@ -821,7 +896,7 @@ def hybrid_predict(request: HybridPredictRequest):
             source=pred.get("source"),
             sources_agree=pred.get("sources_agree", False)
         ))
-    
+
     return HybridPredictResponse(
         predictions=consensus_predictions,
         ml_predictions=ml_predictions,
@@ -849,24 +924,24 @@ def unified_predict(request: UnifiedPredictRequest):
     1. ML Model: Logistic Regression on 246K+ symptom-disease records
     2. Gemini AI: Google's medical reasoning
     3. Google Search: Medical knowledge base + web search
-    
+
     Tally: Weighted consensus (ML 40%, Gemini 30%, Search 30%) with agreement boost.
     Returns top-3 diseases with per-source scores and combined consensus.
     """
     if not request.symptoms:
         raise HTTPException(status_code=400, detail="At least one symptom required.")
-    
+
     CONFIDENCE_MAP = {"high": 0.9, "medium": 0.6, "low": 0.3}
     ML_W = 0.40
     GEMINI_W = 0.30
     SEARCH_W = 0.30
-    
+
     ml_preds = []
     gemini_preds = []
     search_preds = []
     gemini_urgency = None
     gemini_advice = None
-    
+
     # ── 1. ML Model ────────────────────────────────────────────────────────
     if _ML_PREDICTOR and _ML_PREDICTOR.is_ready:
         try:
@@ -874,7 +949,7 @@ def unified_predict(request: UnifiedPredictRequest):
             ml_preds = ml_result.get("predictions", [])
         except Exception as e:
             print(f"[unified] ML error: {e}")
-    
+
     # ── 2. Gemini AI ───────────────────────────────────────────────────────
     if _GEMINI and _GEMINI.is_ready:
         try:
@@ -887,7 +962,7 @@ def unified_predict(request: UnifiedPredictRequest):
                 print(f"[unified] Gemini warning: {gemini_result['error']}")
         except Exception as e:
             print(f"[unified] Gemini error: {e}")
-    
+
     # ── 3. Google Search / Knowledge Base (works without API key) ──────────
     try:
         from ml.google_search import google_search as _gs
@@ -899,15 +974,15 @@ def unified_predict(request: UnifiedPredictRequest):
                 print(f"[unified] Search warning: {search_result.get('error')}")
     except Exception as e:
         print(f"[unified] Search error: {e}")
-    
+
     # ── TALLY ALL 3 SOURCES ────────────────────────────────────────────────
     condition_scores = {}
     condition_details = {}
-    
+
     def _norm(cond: str) -> str:
         import re
         return re.sub(r'[^\w\s]', '', cond.lower().strip())
-    
+
     def _add_or_merge(cond_key: str, display: str, source: str, score: float, rank: int, reasoning: str):
         if cond_key not in condition_details:
             condition_details[cond_key] = {
@@ -921,14 +996,14 @@ def unified_predict(request: UnifiedPredictRequest):
         d[f"{source}_rank"] = rank
         if reasoning and not d["reasoning"]:
             d["reasoning"] = reasoning
-    
+
     # Process ML
     for pred in ml_preds:
         ck = _norm(pred["condition"])
         sc = pred.get("score", 0.5) * ML_W
         condition_scores[ck] = condition_scores.get(ck, 0) + sc
         _add_or_merge(ck, pred["condition"], "ml", pred.get("score", 0), pred.get("rank"), ", ".join(pred.get("contributingSymptoms", [])))
-    
+
     # Process Gemini
     for rank, pred in enumerate(gemini_preds):
         ck = _norm(pred.get("condition", ""))
@@ -936,7 +1011,7 @@ def unified_predict(request: UnifiedPredictRequest):
         sc = conf * GEMINI_W
         condition_scores[ck] = condition_scores.get(ck, 0) + sc
         _add_or_merge(ck, pred.get("condition", ck), "gemini", conf, rank + 1, pred.get("reasoning", ""))
-    
+
     # Process Search
     for rank, pred in enumerate(search_preds):
         ck = _norm(pred.get("condition", ""))
@@ -944,7 +1019,7 @@ def unified_predict(request: UnifiedPredictRequest):
         sc = conf * SEARCH_W
         condition_scores[ck] = condition_scores.get(ck, 0) + sc
         _add_or_merge(ck, pred.get("condition", ck), "search", conf, rank + 1, pred.get("reasoning", ""))
-    
+
     # Boost: sources_agree bonus
     for ck in condition_scores:
         d = condition_details[ck]
@@ -952,10 +1027,10 @@ def unified_predict(request: UnifiedPredictRequest):
         d["source_count"] = sources_present
         if sources_present >= 2:
             condition_scores[ck] *= (1 + 0.15 * sources_present)  # 30% boost for 2, 45% for 3
-    
+
     # Sort and take top 3
     sorted_conds = sorted(condition_scores.items(), key=lambda x: x[1], reverse=True)[:3]
-    
+
     combined = []
     for rank, (ck, score) in enumerate(sorted_conds):
         d = condition_details[ck]
@@ -973,7 +1048,7 @@ def unified_predict(request: UnifiedPredictRequest):
             "source_count": d["source_count"],
             "sources_agree": d["source_count"] >= 2
         })
-    
+
     return {
         "ml_predictions": [{"rank": p.get("rank"), "condition": p["condition"], "score": p.get("score", 0)} for p in ml_preds],
         "gemini_predictions": gemini_preds,
@@ -1172,7 +1247,7 @@ def update_appointment(
         appt.notes = body["notes"]
     if "status" in body:
         appt.status = body["status"]
-    
+
     appt.server_version += 1
     appt.updated_at = datetime.utcnow().isoformat()
 
@@ -1211,7 +1286,7 @@ def delete_appointment(
     appt = db.query(AppointmentModel).filter(AppointmentModel.id == appointment_id).first()
     if not appt or appt.is_deleted:
         raise HTTPException(status_code=404, detail="Appointment not found")
-    
+
     appt.is_deleted = 1
     appt.server_version += 1
     appt.updated_at = datetime.utcnow().isoformat()
@@ -1283,14 +1358,14 @@ def haversine_km(lat1, lon1, lat2, lon2):
 @app.get("/api/hospitals/search")
 def search_hospitals(location: str):
     """
-    Searches for real hospitals using open-source mapping data or fallback mock data.
+    Searches for real hospitals using open-source OpenStreetMap / Nominatim mapping data.
     """
     geocode_url = f"https://nominatim.openstreetmap.org/search?format=json&q={urllib.parse.quote(location)}&limit=1"
     req = urllib.request.Request(geocode_url, headers={'User-Agent': 'RuralHealthAI/2.0'})
-    
+
     base_lat = 22.723
     base_lng = 88.483
-    
+
     try:
         with urllib.request.urlopen(req, timeout=3) as response:
             geo_data = json.loads(response.read().decode())
@@ -1302,7 +1377,7 @@ def search_hospitals(location: str):
 
     search_url = f"https://nominatim.openstreetmap.org/search?format=json&q=hospital+in+{urllib.parse.quote(location)}&limit=15"
     req_hosp = urllib.request.Request(search_url, headers={'User-Agent': 'RuralHealthAI/2.0'})
-    
+
     try:
         with urllib.request.urlopen(req_hosp, timeout=3) as response:
             hosp_data = json.loads(response.read().decode())
@@ -1327,13 +1402,7 @@ def search_hospitals(location: str):
     except Exception as e:
         pass
 
-    # Fallback hospitals
-    hospitals = [
-        {'id': '1', 'name': 'City General Hospital', 'specialty': 'Multi-specialty', 'address': f'{location} Main Road', 'phone': '9876543210', 'rating': 4.5, 'distance': '2.5 km', 'isOpen': True, 'lat': base_lat + 0.003, 'lng': base_lng - 0.003, 'amenity': 'hospital'},
-        {'id': '2', 'name': 'Rural Health Care Center', 'specialty': 'General Medicine', 'address': f'{location} Village Square', 'phone': '9876543211', 'rating': 4.2, 'distance': '5.0 km', 'isOpen': True, 'lat': base_lat - 0.01, 'lng': base_lng + 0.007, 'amenity': 'clinic'},
-        {'id': '3', 'name': 'Sunrise Primary Health Clinic', 'specialty': 'Primary Care', 'address': f'{location} East Side', 'phone': '9876543212', 'rating': 4.8, 'distance': '1.2 km', 'isOpen': True, 'lat': base_lat + 0.007, 'lng': base_lng - 0.013, 'amenity': 'clinic'}
-    ]
-    return {'center': {'lat': base_lat, 'lng': base_lng}, 'hospitals': hospitals}
+    return {'center': {'lat': base_lat, 'lng': base_lng}, 'hospitals': []}
 
 
 # ─── AUTHENTICATION & RBAC ENDPOINTS (TASK-010 & TASK-011) ─────────────────────
@@ -1548,3 +1617,74 @@ def get_assessment_review_history(
     Retrieves the complete immutable audit trail of clinical reviews and attestations for an assessment.
     """
     return get_review_history(db=db, assessment_id=assessment_id)
+
+
+# ─── LOCAL AI ASSISTANT & KOLKATA HEALTH DATA INTELLIGENCE ROUTES ──────────────
+
+from services.ollama_service import ollama_service
+from services.kolkata_health_data_service import kolkata_data_service
+from fastapi.responses import StreamingResponse
+
+class AIChatRequest(BaseModel):
+    message: str
+    messages: Optional[List[Dict[str, str]]] = None
+    language: Optional[str] = "en"
+    district: Optional[str] = "Kolkata"
+    temperature: Optional[float] = 0.2
+
+@app.get("/api/ai/ollama/health")
+async def ai_ollama_health():
+    """Returns the connectivity status and active model of the local Ollama instance."""
+    return await ollama_service.check_health()
+
+@app.post("/api/ai/chat")
+async def ai_chat_endpoint(payload: AIChatRequest):
+    """
+    Direct non-streaming chat endpoint powered by Gemma 3 270M + Kolkata Health Data Engine.
+    """
+    history = payload.messages or []
+    if payload.message and not any(m.get("content") == payload.message for m in history):
+        history = list(history) + [{"role": "user", "content": payload.message}]
+    return await ollama_service.chat(
+        messages=history,
+        language=payload.language or "en",
+        temperature=payload.temperature or 0.2
+    )
+
+@app.post("/api/ai/chat/stream")
+async def ai_chat_stream_endpoint(payload: AIChatRequest):
+    """
+    Streaming NDJSON chat endpoint for low-latency token generation.
+    """
+    history = payload.messages or []
+    if payload.message and not any(m.get("content") == payload.message for m in history):
+        history = list(history) + [{"role": "user", "content": payload.message}]
+    return StreamingResponse(
+        ollama_service.chat_stream(
+            messages=history,
+            language=payload.language or "en",
+            temperature=payload.temperature or 0.2
+        ),
+        media_type="application/x-ndjson"
+    )
+
+@app.get("/api/ai/data/summary")
+def ai_data_summary(district: str = "Kolkata"):
+    """
+    Returns curated summary statistics from Kolkata health dataset.
+    """
+    return kolkata_data_service.get_dataset_summary()
+
+@app.get("/api/ai/data/search")
+def ai_data_search(query: str):
+    """
+    Semantic and keyword search across Kolkata HMIS and NFHS indicators.
+    """
+    return kolkata_data_service.search_indicators(query)
+
+@app.get("/api/ai/data/categories")
+def ai_data_categories():
+    """
+    Returns catalog categories from the Kolkata dataset.
+    """
+    return kolkata_data_service.get_category_catalog()
