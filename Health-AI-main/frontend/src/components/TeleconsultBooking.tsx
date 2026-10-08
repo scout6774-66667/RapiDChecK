@@ -4,7 +4,7 @@ import {
   Video, Stethoscope, AlertTriangle, Heart, Wind, Droplets,
   UserCheck, Loader2, Navigation2, RefreshCw,
   CalendarCheck, XCircle, Building2, Zap, Phone, Search, Route,
-  Pencil, Trash2, AlertOctagon
+  Pencil, Trash2
 } from 'lucide-react';
 import { db, type LocalAssessment, type LocalAppointment } from '../db/offlineDb';
 import { useLiveQuery } from 'dexie-react-hooks';
@@ -170,7 +170,7 @@ function loadLeaflet(): Promise<void> {
 }
 
 // ─── OVERPASS API ─────────────────────────────────────────────────────────────
-async function fetchNearbyHospitals(lat: number, lng: number, radiusM = 15000): Promise<NearbyDoctor[]> {
+export async function fetchNearbyHospitals(lat: number, lng: number, radiusM = 15000): Promise<NearbyDoctor[]> {
   const query = `
     [out:json][timeout:30];
     (
@@ -273,7 +273,7 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
   const [routeLoading,     setRouteLoading]       = useState<string | null>(null);
   
   // DUAL MAP ENGINE STATE
-  const [mapProvider, setMapProvider] = useState<'google' | 'leaflet'>('leaflet');
+  const [mapProvider] = useState<'google' | 'leaflet'>('leaflet');
 
   const [modal,            setModal]             = useState<BookingModalState>({ isOpen: false, doctor: null });
   const [selectedDate,     setSelectedDate]       = useState('');
@@ -503,180 +503,9 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
     setTimeout(() => map.invalidateSize(), 100);
   }, []);
 
-  // ─── INIT GOOGLE MAPS ────────────────────────────────────────────────────────
-  const initGoogleMap = useCallback(async (lat: number, lng: number) => {
-    if (!mapRef.current || !window.google) return [];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const G = window.google as any;
-
-    if (mapObjRef.current?.remove) {
-      mapObjRef.current.remove();
-    }
-    markersRef.current.forEach(m => m.marker?.setMap?.(null));
-    markersRef.current = [];
-
-    if (!infoWindowRef.current) {
-      infoWindowRef.current = new G.maps.InfoWindow();
-    }
-
-    const map = new G.maps.Map(mapRef.current, {
-      center: { lat, lng },
-      zoom: 13,
-      mapTypeControl: false,
-      streetViewControl: false,
-      styles: [
-        { featureType: 'all', elementType: 'geometry', stylers: [{ color: '#f0f4f8' }] },
-        { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#bfdbf7' }] },
-        { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#ffffff' }] },
-        { featureType: 'poi.medical', elementType: 'geometry', stylers: [{ color: '#fde8e8' }] }
-      ]
-    });
-    mapObjRef.current = map;
-
-    // User marker
-    new G.maps.Marker({
-      position: { lat, lng },
-      map,
-      title: 'Your Location',
-      icon: {
-        path: G.maps.SymbolPath.CIRCLE,
-        scale: 10,
-        fillColor: '#10b981',
-        fillOpacity: 1,
-        strokeColor: '#fff',
-        strokeWeight: 3
-      }
-    });
-
-    return new Promise<NearbyDoctor[]>((resolve) => {
-      const service = new G.maps.places.PlacesService(map);
-      service.nearbySearch(
-        { location: { lat, lng }, radius: 20000, type: 'hospital' },
-        (results: any[], status: string) => {
-          let docsToRender: NearbyDoctor[] = [];
-          
-          if (status === G.maps.places.PlacesServiceStatus.OK && results && results.length > 0) {
-            docsToRender = results.slice(0, 8).map((place: any, idx: number) => {
-              const dlat = place.geometry?.location?.lat() ?? lat;
-              const dlng = place.geometry?.location?.lng() ?? lng;
-              const distKm = haversineKm(lat, lng, dlat, dlng);
-              return {
-                id: place.place_id || `p${idx}`,
-                name: place.name || 'Unknown Doctor',
-                specialty: 'Hospital / Clinic',
-                address: place.vicinity || 'Address unavailable',
-                rating: place.rating,
-                distance: `${distKm.toFixed(1)} km`,
-                lat: dlat,
-                lng: dlng
-              };
-            });
-          }
-
-          docsToRender.forEach(doc => {
-            if (!doc.lat || !doc.lng) return;
-            const contentString = `
-              <div style="font-family:system-ui,sans-serif;min-width:180px;">
-                <b style="font-size:13px">${doc.name}</b><br/>
-                <span style="font-size:11px;color:#6366f1">${doc.specialty}</span><br/>
-                <span style="font-size:11px;color:#64748b">${doc.distance}</span>
-              </div>
-            `;
-            
-            const marker = new G.maps.Marker({
-              position: { lat: doc.lat, lng: doc.lng },
-              map,
-              title: doc.name,
-              icon: {
-                url: 'https://maps.gstatic.com/mapfiles/place_api/icons/v1/png_71/doctor-71.png',
-                scaledSize: new G.maps.Size(32, 32)
-              },
-              animation: G.maps.Animation.DROP
-            });
-            marker.addListener('click', () => {
-              const dirUrl = `https://www.google.com/maps/dir/?api=1&origin=${lat},${lng}&destination=${dlat},${dlng}&travelmode=driving`;
-              const contentWithDir = contentString.replace(
-                '</div>',
-                `<div style="margin-top:8px;"><a href="${dirUrl}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:4px;padding:6px 12px;background:#6366f1;color:#fff;border-radius:8px;text-decoration:none;font-size:11px;font-weight:700;">📍 Get Directions</a></div></div>`
-              );
-              infoWindowRef.current.setContent(contentWithDir);
-              infoWindowRef.current.open(map, marker);
-              setSelectedId(doc.id);
-            });
-            markersRef.current.push({ id: doc.id, marker, content: contentString });
-          });
-          
-          resolve(docsToRender);
-        }
-      );
-    });
-  }, []);
-
   const [resolvedLocationName, setResolvedLocationName] = useState<string>('');
   const [manualLocation, setManualLocation] = useState<string>('');
   const [showLocationPrompt, setShowLocationPrompt] = useState(false);
-
-  // ─── GET GPS LOCATION ─────────────────────────────────────────────────────────
-  const getBrowserGPS = (): Promise<{ lat: number; lng: number } | null> => {
-    return new Promise((resolve) => {
-      if (!navigator.geolocation) { resolve(null); return; }
-      navigator.geolocation.getCurrentPosition(
-        (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-        () => resolve(null),
-        { timeout: 8000, maximumAge: 60000 }
-      );
-    });
-  };
-
-  // ─── GEOCODE PLACE NAME → COORDINATES ────────────────────────────────────────
-  const geocodePlace = async (placeName: string): Promise<{ lat: number; lng: number; displayName: string } | null> => {
-    try {
-      const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(placeName)}&format=json&limit=1&countrycodes=in`);
-      const data = await res.json();
-      if (data && data.length > 0) {
-        return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), displayName: data[0].display_name || placeName };
-      }
-    } catch { /* network error */ }
-    return null;
-  };
-
-  // ─── SEARCH HOSPITALS VIA GOOGLE PLACES ──────────────────────────────────────
-  const searchHospitalsGoogle = async (map: any, lat: number, lng: number): Promise<NearbyDoctor[]> => {
-    const G = window.google;
-    if (!G?.maps?.places) return [];
-    return new Promise((resolve) => {
-      const service = new G.maps.places.PlacesService(map);
-      service.nearbySearch(
-        { location: { lat, lng }, radius: 10000, type: 'hospital' },
-        (results: any[], status: string) => {
-          if (status !== G.maps.places.PlacesServiceStatus.OK || !results) {
-            resolve([]);
-            return;
-          }
-          resolve(results.slice(0, 15).map((place, idx) => {
-            const dlat = place.geometry?.location?.lat() ?? lat;
-            const dlng = place.geometry?.location?.lng() ?? lng;
-            return {
-              id: place.place_id || `g${idx}`,
-              name: place.name || 'Hospital',
-              specialty: place.types?.includes('hospital') ? 'Hospital / Multi-Specialty' : 'Clinic',
-              address: place.vicinity || 'Address unavailable',
-              rating: place.rating,
-              distance: `${haversineKm(lat, lng, dlat, dlng).toFixed(1)} km`,
-              lat: dlat, lng: dlng
-            };
-          }));
-        }
-      );
-    });
-  };
-
-  // ─── SEARCH HOSPITALS VIA OVERPASS (OSM) ──────────────────────────────────────
-  const searchHospitalsOverpass = async (lat: number, lng: number, radiusM = 15000): Promise<NearbyDoctor[]> => {
-    try {
-      return await fetchNearbyHospitals(lat, lng, radiusM);
-    } catch { return []; }
-  };
 
   // ─── LOCATE + LOAD DOCTORS ───────────────────────────────────────────────────
   const locateAndLoad = useCallback(async (overrideVillage?: string) => {
@@ -773,8 +602,9 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
         mapObjRef.current.panTo({ lat: doc.lat, lng: doc.lng });
         mapObjRef.current.setZoom(15);
         const m = markersRef.current.find(m => m.id === selectedId);
-        if (m && window.google) {
-          m.marker.setAnimation(window.google.maps.Animation.BOUNCE);
+        const G = (window as any).google;
+        if (m && G) {
+          m.marker.setAnimation(G.maps.Animation.BOUNCE);
           setTimeout(() => m.marker.setAnimation(null), 1400); // 2 bounces
           if (infoWindowRef.current && m.content) {
              infoWindowRef.current.setContent(m.content);

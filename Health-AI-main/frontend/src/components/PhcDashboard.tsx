@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   Users, AlertTriangle, Clock, 
   Search, Activity, MapPin, Stethoscope,
-  Wifi, WifiOff, Loader2
+  Wifi, WifiOff
 } from 'lucide-react';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { translations, type Language } from '../i18n/translations';

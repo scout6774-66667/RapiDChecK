@@ -45,12 +45,22 @@ build/
 *.local
 
 # ===========================
-# Environment variables
+# Environment variables & Secrets
 # ===========================
 .env
 .env.local
-.env.*.local
+.env.development
 .env.production
+.env.test
+.env.*.local
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+service-account*.json
+credentials*.json
+google-credentials*.json
 
 # ===========================
 # IDE & OS

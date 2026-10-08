@@ -3,7 +3,7 @@ import {
   UserPlus, Stethoscope, 
   ArrowRight, Activity, Heart, ShieldAlert, 
   Thermometer, Phone, MapPin, Sparkles, Send, AlertCircle,
-  Video, ChevronRight, Droplets, Wind, Zap, WifiOff
+  Video, ChevronRight, Droplets, Wind, Zap, WifiOff, CheckCircle2
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { VoiceInputButton } from './VoiceInputButton';
@@ -90,7 +90,7 @@ export const AshaScreeningFlow: React.FC<AshaScreeningFlowProps> = ({
   // Analysis State
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [activeAssessment, setActiveAssessment] = useState<LocalAssessment | null>(null);
-  const [mlPredictions, setMlPredictions] = useState<{
+  const [, setMlPredictions] = useState<{
     predictions: Array<{ rank: number; condition: string; score: number; contributingSymptoms: string[] }>;
     unknownSymptoms: string[];
   } | null>(null);
