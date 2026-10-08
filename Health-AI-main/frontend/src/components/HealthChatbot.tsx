@@ -1,21 +1,22 @@
 /**
  * HealthChatbot.tsx
  *
- * Floating AI health assistant powered by OpenAI GPT (via /api/chat backend endpoint).
- * The API key NEVER touches the browser — all calls go through the FastAPI backend.
+ * Floating AI health assistant powered by local Ollama LLM (Gemma 3 270M)
+ * and Kolkata Health Data Engine via the FastAPI backend (/api/ai/chat and /api/ai/ollama/health).
  *
- * Features:
- *  - Floating button (bottom-right) that expands into a full chat panel
- *  - Multi-turn conversation with message history
- *  - Markdown-style response rendering (bold, bullets)
- *  - Medical disclaimer on every AI response
- *  - Multilingual: EN / HI / BN
- *  - Graceful error handling (no key, backend down, etc.)
+ * Safety & Architecture:
+ *  - Communicates ONLY through FastAPI (no direct browser-to-Ollama connections)
+ *  - Non-diagnostic clinical governance boundaries enforced
+ *  - Visual Data Badges (📊 DATASET INSIGHT, 🩺 HEALTH EDUCATION, 📋 WORKFLOW GUIDANCE)
+ *  - In-memory conversation state with context window management
+ *  - Multilingual support (English, Hindi, Bengali)
+ *  - Real-time Local AI status indicator
+ *  - Resilient offline fallback
  */
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
-  X, MessageCircleHeart, Send, Loader2, AlertCircle, Bot, User, ChevronDown,
+  X, MessageCircleHeart, Send, Loader2, AlertCircle, Bot, User, Cpu, Sparkles, Database, Copy, Check
 } from 'lucide-react';
 import { type Language } from '../i18n/translations';
 
@@ -27,122 +28,202 @@ interface Props {
 interface Message {
   role: 'user' | 'assistant';
   content: string;
+  provider?: string;
+  model?: string;
+  local?: boolean;
+  badge?: string;
+  source?: string;
+}
+
+interface OllamaStatus {
+  status: 'connected' | 'offline' | 'checking';
+  model: string;
+  local: boolean;
+  message?: string;
 }
 
 // ── Quick-prompt suggestion pills shown in empty state ────────────────────────
 const QUICK_PROMPTS: Record<Language, string[]> = {
   en: [
-    'I have fever for 2 days, what should I do?',
-    'My child has cough and cold. Home remedies?',
-    'I feel dizzy and have a headache. Is it serious?',
-    'I have high blood sugar. What foods to avoid?',
-    'My BP reading is 160/100. What should I do?',
+    'Explain hypertension',
+    'Explain hypertension in Bengali',
+    'What is in the Kolkata dataset?',
+    'What health indicators are available?',
+    'Show malaria trends',
+    'What does NFHS-5 contain?',
   ],
   hi: [
-    'मुझे 2 दिन से बुखार है, क्या करूं?',
-    'मेरे बच्चे को खांसी-जुकाम है। घरेलू उपाय?',
-    'चक्कर आ रहे हैं और सिर दर्द है। गंभीर है?',
-    'ब्लड शुगर ज़्यादा है। क्या न खाएं?',
-    'बीपी 160/100 है। क्या करें?',
+    'उच्च रक्तचाप को समझाइए',
+    'कोलकाता डेटासेट में क्या है?',
+    'कौन से स्वास्थ्य संकेतक उपलब्ध हैं?',
+    'मलेरिया के रुझान (Trends) दिखाएं',
+    'NFHS-5 में क्या आंकड़े हैं?',
   ],
   bn: [
-    'আমার ২ দিন ধরে জ্বর, কী করব?',
-    'আমার শিশুর সর্দি-কাশি। ঘরোয়া উপায়?',
-    'মাথা ঘুরছে ও ব্যথা হচ্ছে। গুরুতর?',
-    'রক্তে শর্করা বেশি। কী খাব না?',
-    'বিপি ১৬০/১০০। কী করব?',
+    'উচ্চ রক্তচাপ সহজ বাংলায় বুঝিয়ে বলুন',
+    'কলকাতা ডেটাসেটে কী কী তথ্য রয়েছে?',
+    'কী কী স্বাস্থ্য নির্দেশক উপলব্ধ আছে?',
+    'ম্যালেরিয়া সংক্রান্ত ট্রেন্ড দেখান',
+    'NFHS-5 তথ্যে কী রয়েছে?',
   ],
 };
 
 const UI_STRINGS: Record<Language, {
-  title: string; subtitle: string; placeholder: string;
-  send: string; offline: string; thinking: string;
-  emptyHint: string; disclaimer: string;
+  title: string;
+  subtitle: string;
+  placeholder: string;
+  send: string;
+  offline: string;
+  thinking: string;
+  emptyHint: string;
+  disclaimer: string;
+  localAiReady: string;
+  localAiOffline: string;
+  dataReady: string;
 }> = {
   en: {
-    title: 'Health Assistant AI',
-    subtitle: 'Ask about symptoms, home care & when to see a doctor',
-    placeholder: 'Describe your symptoms...',
+    title: 'RuralHealth AI Assistant',
+    subtitle: 'Local Clinical & Kolkata Dataset Assistant',
+    placeholder: 'Ask about health concepts, Kolkata dataset, or workflows...',
     send: 'Send',
-    offline: 'Chatbot requires internet connection.',
-    thinking: 'Thinking...',
-    emptyHint: 'Try a quick question:',
-    disclaimer: 'AI guidance only — not a medical diagnosis',
+    offline: 'Local AI is currently unavailable. You can continue using the other RuralHealth AI features.',
+    thinking: 'Analyzing dataset & thinking...',
+    emptyHint: 'Suggested Questions:',
+    disclaimer: 'Assistive information only — not an autonomous diagnosis or prescription. Consult a PHC doctor.',
+    localAiReady: 'Local AI Connected',
+    localAiOffline: 'Local AI Offline',
+    dataReady: 'Kolkata Data Ready',
   },
   hi: {
-    title: 'स्वास्थ्य सहायक AI',
-    subtitle: 'लक्षण, घरेलू उपाय और डॉक्टर के बारे में पूछें',
-    placeholder: 'अपने लक्षण बताएं...',
+    title: 'रूरलहेल्थ AI सहायक',
+    subtitle: 'लोकल क्लिनिकल एवं कोलकाता डेटा सहायक',
+    placeholder: 'स्वास्थ्य अवधारणाओं, कोलकाता डेटासेट या प्रोटोकॉल के बारे में पूछें...',
     send: 'भेजें',
-    offline: 'चैटबॉट के लिए इंटरनेट आवश्यक है।',
+    offline: 'लोकल AI वर्तमान में अनुपलब्ध है। आप अन्य सुविधाओं का उपयोग जारी रख सकते हैं।',
     thinking: 'सोच रहा है...',
-    emptyHint: 'एक प्रश्न आज़माएं:',
-    disclaimer: 'केवल AI मार्गदर्शन — चिकित्सा निदान नहीं',
+    emptyHint: 'सुझाए गए प्रश्न:',
+    disclaimer: 'केवल सहायक जानकारी — कोई चिकित्सीय निदान या पर्चा नहीं। PHC डॉक्टर से परामर्श लें।',
+    localAiReady: 'लोकल AI कनेक्टेड',
+    localAiOffline: 'लोकल AI ऑफ़लाइन',
+    dataReady: 'कोलकाता डेटा उपलब्ध',
   },
   bn: {
-    title: 'স্বাস্থ্য সহায়ক AI',
-    subtitle: 'উপসর্গ, ঘরোয়া যত্ন ও ডাক্তার দেখানো নিয়ে জিজ্ঞেস করুন',
-    placeholder: 'আপনার উপসর্গ বলুন...',
+    title: 'রুরালহেলথ AI সহায়ক',
+    subtitle: 'লোকাল ক্লিনিক্যাল ও কলকাতা ডেটা সহকারী',
+    placeholder: 'স্বাস্থ্য ধারণা, কলকাতা ডেটাসেট বা নির্দেশিকা সম্পর্কে জানতে চান...',
     send: 'পাঠান',
-    offline: 'চ্যাটবটের জন্য ইন্টারনেট প্রয়োজন।',
+    offline: 'লোকাল AI বর্তমানে অনুপলব্ধ। আপনি অন্যান্য বৈশিষ্ট্যগুলি ব্যবহার করতে পারেন।',
     thinking: 'ভাবছে...',
-    emptyHint: 'একটি প্রশ্ন চেষ্টা করুন:',
-    disclaimer: 'শুধুমাত্র AI নির্দেশনা — চিকিৎসা নির্ণয় নয়',
+    emptyHint: 'প্রস্তাবিত প্রশ্নাবলী:',
+    disclaimer: 'শুধুমাত্র সহায়ক তথ্য — কোনো ডাক্তারি রোগনির্ণয় বা প্রেসক্রিপশন নয়। চিকিৎসকের পরামর্শ নিন।',
+    localAiReady: 'লোকাল AI সংযুক্ত',
+    localAiOffline: 'লোকাল AI অফলাইন',
+    dataReady: 'কলকাতা ডেটা সংযুক্ত',
   },
 };
 
-// ── Simple inline markdown renderer (bold + bullets) ──────────────────────────
+// ── Simple inline markdown renderer (bold + italic + bullets) ──────────────────
 function renderMarkdown(text: string): React.ReactNode[] {
   return text.split('\n').map((line, i) => {
+    // Header 3
+    if (line.startsWith('### ')) {
+      return (
+        <div key={i} className="font-bold text-emerald-300 text-xs mt-2 mb-0.5">
+          {line.slice(4)}
+        </div>
+      );
+    }
     // Bold: **text**
     const parts = line.split(/(\*\*[^*]+\*\*)/g).map((part, j) => {
       if (part.startsWith('**') && part.endsWith('**')) {
-        return <strong key={j}>{part.slice(2, -2)}</strong>;
+        return <strong key={j} className="font-bold text-white">{part.slice(2, -2)}</strong>;
       }
       // Italic: *text*
       if (part.startsWith('*') && part.endsWith('*') && part.length > 2) {
-        return <em key={j} className="italic opacity-80">{part.slice(1, -1)}</em>;
+        return <em key={j} className="italic opacity-90 text-emerald-200">{part.slice(1, -1)}</em>;
       }
       return part;
     });
 
     // Bullet point
-    if (line.startsWith('- ') || line.startsWith('• ')) {
+    if (line.startsWith('- ') || line.startsWith('• ') || line.startsWith('* ')) {
       return (
-        <div key={i} className="flex items-start gap-1.5 ml-2">
-          <span className="text-emerald-400 mt-0.5 shrink-0">•</span>
-          <span>{parts.map((p, j) => <React.Fragment key={j}>{p}</React.Fragment>)}</span>
+        <div key={i} className="flex items-start gap-2 ml-1 my-0.5">
+          <span className="text-emerald-400 mt-0.5 shrink-0 text-xs">●</span>
+          <span className="text-slate-200 text-xs leading-relaxed">{parts.map((p, j) => <React.Fragment key={j}>{p}</React.Fragment>)}</span>
         </div>
       );
     }
-    // Empty line → spacer
-    if (!line.trim()) return <div key={i} className="h-1" />;
+    // Empty line -> spacer
+    if (!line.trim()) return <div key={i} className="h-1.5" />;
 
-    return <div key={i}>{parts.map((p, j) => <React.Fragment key={j}>{p}</React.Fragment>)}</div>;
+    return <div key={i} className="text-xs text-slate-200 leading-relaxed">{parts.map((p, j) => <React.Fragment key={j}>{p}</React.Fragment>)}</div>;
   });
 }
 
-export const HealthChatbot: React.FC<Props> = ({ lang, isOnline }) => {
+export const HealthChatbot: React.FC<Props> = ({ lang }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+  const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus>({
+    status: 'checking',
+    model: 'gemma3:270m',
+    local: true,
+  });
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const ui = UI_STRINGS[lang];
-  const quickPrompts = QUICK_PROMPTS[lang];
+  const ui = UI_STRINGS[lang] || UI_STRINGS.en;
+  const quickPrompts = QUICK_PROMPTS[lang] || QUICK_PROMPTS.en;
 
-  // Scroll to latest message
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isLoading]);
+  // Fetch Ollama health status from FastAPI backend
+  const checkOllamaHealth = useCallback(async () => {
+    try {
+      let res: Response | null = null;
+      try {
+        res = await fetch('/api/ai/ollama/health', { signal: AbortSignal.timeout(3000) });
+      } catch {
+        res = await fetch('http://127.0.0.1:8000/api/ai/ollama/health', { signal: AbortSignal.timeout(3000) });
+      }
 
-  // Focus input when chat opens
+      if (res && res.ok) {
+        const data = await res.json();
+        const isConn = data.status === 'connected' || data.available === true;
+        setOllamaStatus({
+          status: isConn ? 'connected' : 'offline',
+          model: data.model || 'gemma3:270m',
+          local: true,
+          message: data.message,
+        });
+      } else {
+        setOllamaStatus({
+          status: 'offline',
+          model: 'gemma3:270m',
+          local: true,
+        });
+      }
+    } catch {
+      setOllamaStatus({
+        status: 'offline',
+        model: 'gemma3:270m',
+        local: true,
+      });
+    }
+  }, []);
+
   useEffect(() => {
-    if (isOpen) setTimeout(() => inputRef.current?.focus(), 100);
-  }, [isOpen]);
+    checkOllamaHealth();
+  }, [checkOllamaHealth]);
+
+  useEffect(() => {
+    if (isOpen) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+      inputRef.current?.focus();
+    }
+  }, [isOpen, messages, isLoading]);
 
   const sendMessage = async (text: string) => {
     const content = text.trim();
@@ -156,22 +237,49 @@ export const HealthChatbot: React.FC<Props> = ({ lang, isOnline }) => {
     setIsLoading(true);
 
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: newMessages, language: lang }),
-      });
+      const payload = {
+        messages: newMessages.slice(-15).map(m => ({ role: m.role, content: m.content })),
+        message: content,
+        language: lang,
+      };
+
+      let res: Response | null = null;
+      try {
+        res = await fetch('/api/ai/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      } catch {
+        res = await fetch('http://127.0.0.1:8000/api/ai/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      }
 
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail ?? `Server error ${res.status}`);
+        throw new Error(ui.offline);
       }
 
       const data = await res.json();
-      setMessages([...newMessages, { role: 'assistant', content: data.reply }]);
+      const replyContent = data.response || data.reply || 'No response generated.';
+
+      setMessages([
+        ...newMessages,
+        {
+          role: 'assistant',
+          content: replyContent,
+          provider: data.provider || 'ollama',
+          model: data.model || ollamaStatus.model,
+          local: data.local ?? true,
+          badge: data.badge,
+          source: data.source,
+        },
+      ]);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Request failed. Please try again.';
-      setError(msg);
+      console.error('AI chat error:', err);
+      setError(ui.offline);
     } finally {
       setIsLoading(false);
     }
@@ -184,166 +292,204 @@ export const HealthChatbot: React.FC<Props> = ({ lang, isOnline }) => {
     }
   };
 
-  const clearChat = () => {
-    setMessages([]);
-    setError(null);
+  const copyText = (idx: number, text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedIdx(idx);
+    setTimeout(() => setCopiedIdx(null), 2000);
   };
 
-  return (
-    <>
-      {/* ── Floating trigger button ─────────────────────────────────────────── */}
-      <button
-        type="button"
-        onClick={() => setIsOpen((v) => !v)}
-        aria-label="Open health chatbot"
-        className={`fixed bottom-6 right-6 z-50 w-14 h-14 rounded-full shadow-xl flex items-center justify-center transition-all duration-300 hover:scale-110 active:scale-95 ${
-          isOpen
-            ? 'bg-slate-700 shadow-slate-900/40'
-            : 'bg-gradient-to-br from-emerald-500 to-teal-600 shadow-emerald-500/40 animate-bounce-subtle'
-        }`}
-      >
-        {isOpen
-          ? <ChevronDown className="w-6 h-6 text-white" />
-          : <MessageCircleHeart className="w-7 h-7 text-white" />
-        }
-        {/* Unread indicator dot when closed */}
-        {!isOpen && messages.length === 0 && (
-          <span className="absolute top-0 right-0 w-3.5 h-3.5 bg-amber-400 border-2 border-white rounded-full" />
-        )}
-      </button>
+  const displayModelName = ollamaStatus.model.includes('gemma') ? 'Gemma 3 270M' : ollamaStatus.model;
 
-      {/* ── Chat panel ──────────────────────────────────────────────────────── */}
+  return (
+    <div className="fixed bottom-6 right-6 z-50 font-sans">
+      {!isOpen && (
+        <button
+          type="button"
+          onClick={() => setIsOpen(true)}
+          className="group relative flex items-center gap-2.5 bg-gradient-to-r from-[#102A56] to-[#0A9F68] text-white px-4 py-3.5 rounded-full shadow-2xl hover:shadow-emerald-500/25 hover:scale-105 active:scale-95 transition-all border border-white/20"
+        >
+          <div className="relative">
+            <MessageCircleHeart className="w-5 h-5 text-emerald-300 group-hover:rotate-12 transition-transform" />
+            <span
+              className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full border-2 border-[#102A56] ${
+                ollamaStatus.status === 'connected' ? 'bg-emerald-400' : 'bg-amber-400'
+              }`}
+            />
+          </div>
+          <span className="text-xs font-bold tracking-wide">
+            {ui.title}
+          </span>
+          <span className="hidden sm:inline-flex items-center gap-1 text-[10px] bg-white/15 px-2 py-0.5 rounded-full font-mono text-emerald-200">
+            <Cpu className="w-2.5 h-2.5" />
+            {displayModelName}
+          </span>
+        </button>
+      )}
+
       {isOpen && (
-        <div className="fixed bottom-24 right-6 z-50 w-[360px] sm:w-[400px] max-h-[600px] flex flex-col rounded-3xl shadow-2xl border border-slate-700/60 overflow-hidden bg-slate-900 animate-slide-up">
+        <div className="w-[92vw] sm:w-[420px] h-[580px] max-h-[85vh] bg-[#0F172A] border border-slate-700/80 rounded-3xl shadow-2xl flex flex-col overflow-hidden text-slate-100 animate-in fade-in slide-in-from-bottom-4 duration-200">
 
           {/* Header */}
-          <div className="bg-gradient-to-r from-emerald-600 to-teal-600 px-4 py-3 flex items-start justify-between gap-3">
+          <div className="bg-gradient-to-r from-[#102A56] via-[#1E293B] to-[#0A9F68] px-4 py-3.5 flex items-center justify-between border-b border-slate-700/60 shrink-0">
             <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center">
-                <MessageCircleHeart className="w-5 h-5 text-white" />
+              <div className="w-8 h-8 rounded-xl bg-white/10 flex items-center justify-center border border-white/15 shadow-inner shrink-0">
+                <MessageCircleHeart className="w-4 h-4 text-emerald-300" />
               </div>
               <div>
-                <p className="font-extrabold text-white text-sm leading-tight">{ui.title}</p>
-                <p className="text-[10px] text-emerald-100 font-medium leading-tight mt-0.5">{ui.subtitle}</p>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="font-bold text-xs sm:text-sm text-white">{ui.title}</span>
+                  {ollamaStatus.status === 'connected' ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-semibold border border-emerald-500/30">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                      <span>● {ui.localAiReady}</span>
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-medium border border-amber-500/30">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                      <span>● {ui.localAiOffline}</span>
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 text-[10px] text-slate-300/80">
+                  <span>{displayModelName}</span>
+                  <span>•</span>
+                  <span className="text-emerald-300 flex items-center gap-0.5">
+                    <Database className="w-2.5 h-2.5" />
+                    {ui.dataReady}
+                  </span>
+                </div>
               </div>
             </div>
-            <div className="flex items-center gap-1.5 mt-0.5">
-              {messages.length > 0 && (
-                <button
-                  type="button"
-                  onClick={clearChat}
-                  className="text-[10px] font-bold text-white/70 hover:text-white px-2 py-1 rounded-lg hover:bg-white/10 transition-all"
-                >
-                  Clear
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => setIsOpen(false)}
-                className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center transition-all"
-              >
-                <X className="w-4 h-4 text-white" />
-              </button>
-            </div>
+
+            <button
+              type="button"
+              onClick={() => setIsOpen(false)}
+              className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors text-slate-200"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
 
-          {/* Offline banner */}
-          {!isOnline && (
-            <div className="bg-amber-900/60 border-b border-amber-700/40 px-4 py-2 flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
-              <span className="text-xs text-amber-300 font-semibold">{ui.offline}</span>
-            </div>
-          )}
+          {/* Conversation Area */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-[#0B1120]">
 
-          {/* Messages area */}
-          <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4 min-h-0" style={{ maxHeight: '380px' }}>
-
-            {/* Empty state — quick prompts */}
+            {/* Empty state with suggested prompts */}
             {messages.length === 0 && !isLoading && (
-              <div className="space-y-3">
-                <div className="flex items-center gap-2 text-xs text-slate-400 font-semibold">
-                  <Bot className="w-4 h-4 text-emerald-400" />
-                  <span>{ui.emptyHint}</span>
+              <div className="space-y-3 py-2 animate-in fade-in duration-300">
+                <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-3.5 text-center space-y-1.5">
+                  <div className="w-8 h-8 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center mx-auto text-emerald-400">
+                    <Sparkles className="w-4 h-4" />
+                  </div>
+                  <p className="text-xs font-semibold text-white">How can RuralHealth AI help?</p>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Health concepts • Kolkata dataset • Screening workflows • Multi-language
+                  </p>
                 </div>
-                {quickPrompts.map((prompt, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    disabled={!isOnline}
-                    onClick={() => sendMessage(prompt)}
-                    className="w-full text-left text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed px-3 py-2.5 rounded-xl border border-slate-700 hover:border-emerald-600/50 transition-all"
-                  >
-                    {prompt}
-                  </button>
-                ))}
+
+                <div className="space-y-1.5">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-1">
+                    {ui.emptyHint}
+                  </p>
+                  <div className="space-y-1.5">
+                    {quickPrompts.map((prompt, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => sendMessage(prompt)}
+                        className="w-full text-left text-xs text-slate-300 hover:text-white bg-slate-800/40 hover:bg-emerald-950/40 border border-slate-700/50 hover:border-emerald-500/40 rounded-xl p-2.5 transition-all text-ellipsis overflow-hidden whitespace-nowrap"
+                      >
+                        {prompt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
 
-            {/* Message bubbles */}
+            {/* Message List */}
             {messages.map((msg, i) => (
               <div
                 key={i}
-                className={`flex gap-2 items-start ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}
+                className={`flex gap-2 items-start ${
+                  msg.role === 'user' ? 'ml-auto flex-row-reverse' : 'mr-auto flex-row'
+                } max-w-[90%]`}
               >
-                {/* Avatar */}
-                <div className={`w-7 h-7 rounded-xl shrink-0 flex items-center justify-center ${
-                  msg.role === 'user'
-                    ? 'bg-emerald-600'
-                    : 'bg-teal-700'
-                }`}>
-                  {msg.role === 'user'
-                    ? <User className="w-4 h-4 text-white" />
-                    : <Bot className="w-4 h-4 text-white" />
-                  }
+                <div
+                  className={`w-6 h-6 rounded-lg shrink-0 flex items-center justify-center text-[10px] ${
+                    msg.role === 'user'
+                      ? 'bg-[#0A9F68] text-white'
+                      : 'bg-[#102A56] text-emerald-300 border border-slate-700'
+                  }`}
+                >
+                  {msg.role === 'user' ? <User className="w-3.5 h-3.5" /> : <Bot className="w-3.5 h-3.5" />}
                 </div>
 
-                {/* Bubble */}
-                <div className={`max-w-[82%] rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed ${
-                  msg.role === 'user'
-                    ? 'bg-emerald-600 text-white rounded-tr-md'
-                    : 'bg-slate-800 text-slate-100 border border-slate-700 rounded-tl-md'
-                }`}>
-                  {msg.role === 'assistant'
-                    ? <div className="space-y-0.5">{renderMarkdown(msg.content)}</div>
-                    : <p>{msg.content}</p>
-                  }
+                <div
+                  className={`rounded-2xl px-3.5 py-2.5 text-xs leading-relaxed space-y-1.5 ${
+                    msg.role === 'user'
+                      ? 'bg-[#0A9F68] text-white rounded-tr-xs'
+                      : 'bg-[#1E293B] text-slate-100 border border-slate-700/60 rounded-tl-xs shadow-md'
+                  }`}
+                >
+                  {msg.role === 'assistant' ? (
+                    <>
+                      {msg.badge && (
+                        <div className="flex items-center gap-1.5 pb-1 border-b border-slate-700/50">
+                          <span className="text-[10px] font-bold text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded-md border border-emerald-800/40">
+                            {msg.badge}
+                          </span>
+                        </div>
+                      )}
+                      <div>{renderMarkdown(msg.content)}</div>
+                      <div className="pt-1.5 mt-1 border-t border-slate-700/40 flex items-center justify-between text-[9px] text-slate-400">
+                        <span>{msg.provider === 'kolkata-data-engine' ? '📊 Data Engine' : '⚡ Local AI'}</span>
+                        <button
+                          type="button"
+                          onClick={() => copyText(i, msg.content)}
+                          className="hover:text-slate-200 inline-flex items-center gap-1"
+                        >
+                          {copiedIdx === i ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="whitespace-pre-wrap">{msg.content}</p>
+                  )}
                 </div>
               </div>
             ))}
 
-            {/* Loading indicator */}
+            {/* Loading Spinner */}
             {isLoading && (
-              <div className="flex gap-2 items-start">
-                <div className="w-7 h-7 rounded-xl bg-teal-700 shrink-0 flex items-center justify-center">
-                  <Bot className="w-4 h-4 text-white" />
+              <div className="flex gap-2 items-start mr-auto max-w-[85%]">
+                <div className="w-6 h-6 rounded-lg bg-[#102A56] text-emerald-300 border border-slate-700 shrink-0 flex items-center justify-center">
+                  <Bot className="w-3.5 h-3.5" />
                 </div>
-                <div className="bg-slate-800 border border-slate-700 rounded-2xl rounded-tl-md px-3.5 py-2.5 flex items-center gap-2">
-                  <Loader2 className="w-4 h-4 text-emerald-400 animate-spin" />
-                  <span className="text-xs text-slate-400 font-medium">{ui.thinking}</span>
+                <div className="bg-[#1E293B] border border-slate-700/60 rounded-2xl rounded-tl-xs px-3 py-2 flex items-center gap-2">
+                  <Loader2 className="w-3.5 h-3.5 text-emerald-400 animate-spin" />
+                  <span className="text-xs text-slate-400">{ui.thinking}</span>
                 </div>
               </div>
             )}
 
-            {/* Error */}
+            {/* Error banner */}
             {error && (
-              <div className="flex items-start gap-2 bg-rose-900/40 border border-rose-700/40 rounded-2xl px-3 py-2.5">
+              <div className="flex items-start gap-2 bg-rose-950/40 border border-rose-800/50 text-rose-300 rounded-xl p-2.5 text-xs">
                 <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-                <p className="text-xs text-rose-300 font-medium">{error}</p>
+                <span>{error}</span>
               </div>
             )}
 
             <div ref={bottomRef} />
           </div>
 
-          {/* Disclaimer strip */}
-          <div className="px-4 py-1.5 bg-slate-800/60 border-t border-slate-700/40">
-            <p className="text-[10px] text-slate-500 font-medium text-center">
-              ⚕️ {ui.disclaimer}
-            </p>
+          {/* Clinical Disclaimer strip */}
+          <div className="px-3 py-1 bg-[#090D16] border-t border-slate-800 text-[10px] text-slate-500 text-center shrink-0">
+            ⚕️ {ui.disclaimer}
           </div>
 
-          {/* Input area */}
-          <div className="px-3 pb-3 pt-2 bg-slate-900 border-t border-slate-800">
+          {/* Input Box */}
+          <div className="p-3 bg-[#0F172A] border-t border-slate-800 shrink-0">
             <div className="flex gap-2 items-end">
               <textarea
                 ref={inputRef}
@@ -351,34 +497,34 @@ export const HealthChatbot: React.FC<Props> = ({ lang, isOnline }) => {
                 value={input}
                 onChange={(e) => {
                   setInput(e.target.value);
-                  // Auto-resize
                   e.target.style.height = 'auto';
                   e.target.style.height = Math.min(e.target.scrollHeight, 100) + 'px';
                 }}
                 onKeyDown={handleKeyDown}
-                disabled={!isOnline || isLoading}
-                placeholder={isOnline ? ui.placeholder : ui.offline}
-                className="flex-1 bg-slate-800 text-slate-100 placeholder-slate-500 text-sm font-medium px-3.5 py-2.5 rounded-2xl border border-slate-700 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/40 outline-none resize-none transition-all disabled:opacity-40"
-                style={{ minHeight: '42px', maxHeight: '100px' }}
+                disabled={isLoading}
+                placeholder={ui.placeholder}
+                className="flex-1 bg-slate-800/80 text-white placeholder-slate-400 text-xs px-3 py-2.5 rounded-xl border border-slate-700 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none resize-none transition-all disabled:opacity-50"
+                style={{ minHeight: '38px', maxHeight: '100px' }}
               />
               <button
                 type="button"
-                disabled={!input.trim() || isLoading || !isOnline}
+                disabled={!input.trim() || isLoading}
                 onClick={() => sendMessage(input)}
-                className="w-10 h-10 rounded-2xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white flex items-center justify-center shadow transition-all active:scale-90 shrink-0"
+                className="w-9 h-9 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-40 disabled:cursor-not-allowed text-white flex items-center justify-center transition-all shrink-0 active:scale-95"
               >
-                {isLoading
-                  ? <Loader2 className="w-4 h-4 animate-spin" />
-                  : <Send className="w-4 h-4" />
-                }
+                {isLoading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Send className="w-4 h-4" />
+                )}
               </button>
             </div>
-            <p className="text-[10px] text-slate-600 mt-1.5 text-center">
-              Powered by GPT-4o mini · Enter to send · Shift+Enter for new line
-            </p>
           </div>
+
         </div>
       )}
-    </>
+    </div>
   );
 };
+
+export default HealthChatbot;

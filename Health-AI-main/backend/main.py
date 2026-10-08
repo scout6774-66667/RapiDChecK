@@ -376,125 +376,209 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
     }
 
 
-# ─── HEALTH CHATBOT ENDPOINT ─────────────────────────────────────────────────
+from fastapi.responses import StreamingResponse
+from services.ollama_service import ollama_service
+from services.kolkata_health_data_service import kolkata_data_service
+from prompts.ruralhealth_ai import RURALHEALTH_SYSTEM_PROMPT, build_system_prompt_for_language, get_rule_based_fallback
 
-CHAT_SYSTEM_PROMPT = """
-You are a rural health assistant AI integrated into the RuralHealth AI platform used by ASHA 
-(Accredited Social Health Activist) workers and patients in rural India.
+# ─── HEALTH CHATBOT & OLLAMA LOCAL AI ENDPOINTS ─────────────────────────────
 
-Your role:
-- Help users understand their symptoms and what they might indicate
-- Provide practical, actionable home-care tips for mild conditions
-- Clearly tell users when symptoms are serious and require IMMEDIATE medical attention or hospital visit
-- Be warm, simple, and easy to understand — many users are rural health workers or patients with limited medical knowledge
-- Support responses in English, Hindi, or Bengali based on the user's language
-
-Common conditions to be aware of in rural India:
-Fever, Malaria, Dengue, Typhoid, TB (Tuberculosis), Diabetes, Hypertension, Anaemia,
-Diarrhoea, Respiratory infections, Snake bite, Malnutrition, Maternal health issues.
-
-STRICT RULES:
-1. NEVER prescribe specific medicines or dosages
-2. ALWAYS recommend consulting a qualified doctor or PHC (Primary Health Centre) for any concerning symptom
-3. For emergency symptoms (chest pain, breathing difficulty, unconsciousness, severe bleeding, high fever >104°F), 
-   IMMEDIATELY tell the user to call 108 (India emergency) or go to the nearest hospital
-4. Always end your response with: "\n\n⚕️ *This is AI guidance only — not a medical diagnosis. Please consult a doctor for proper evaluation.*"
-5. Keep responses concise and structured (use bullet points)
-
-Remember: Your guidance could impact the health of vulnerable rural populations. Be responsible.
-"""
+CHAT_SYSTEM_PROMPT = RURALHEALTH_SYSTEM_PROMPT
 
 class ChatMessage(BaseModel):
     role: str  # "user" or "assistant"
     content: str
 
 class ChatRequest(BaseModel):
-    messages: List[ChatMessage]
+    messages: Optional[List[ChatMessage]] = None
+    message: Optional[str] = None
     language: Optional[str] = "en"  # "en", "hi", or "bn"
+    conversation_id: Optional[str] = None
 
 class ChatResponse(BaseModel):
-    reply: str
+    success: bool = True
+    response: str
+    reply: str  # For backwards compatibility with older clients
+    model: str
+    provider: str
+    local: bool
+    badge: Optional[str] = None
+    source: Optional[str] = None
+    category: Optional[str] = None
+    data_points: Optional[List[Dict[str, Any]]] = None
+    metadata: Optional[Dict[str, Any]] = None
+    note: Optional[str] = None
     error: Optional[str] = None
 
+class OllamaHealthResponse(BaseModel):
+    available: bool = True
+    status: str
+    base_url: str
+    model: str
+    configured_model: Optional[str] = None
+    models_available: List[str] = []
+    model_ready: bool
+    provider: str = "ollama"
+    runtime: str
+    local: bool
+    message: str
+
+@app.get("/api/ai/ollama/health", response_model=OllamaHealthResponse)
+async def get_ollama_health():
+    """
+    Check the connection health, runtime status, and model availability of the local Ollama service.
+    """
+    health_data = await ollama_service.check_health()
+    return OllamaHealthResponse(**health_data)
+
+@app.get("/api/ai/ollama/models")
+async def get_ollama_models():
+    """
+    List models currently installed in the local Ollama instance.
+    """
+    models = await ollama_service.get_available_models()
+    return {"models": models, "count": len(models)}
+
+# ─── KOLKATA HEALTH DATA ENGINE ENDPOINTS ────────────────────────────────────
+
+@app.get("/api/ai/data/summary")
+def get_data_summary():
+    """
+    Retrieve factual metadata summary of the Kolkata Health Dataset (HMIS + NFHS-5).
+    """
+    return kolkata_data_service.get_dataset_summary()
+
+@app.get("/api/ai/data/features")
+def get_data_features(category: Optional[str] = None, limit: int = 50):
+    """
+    Retrieve features from the catalog, optionally filtered by category.
+    """
+    if category:
+        categories = kolkata_data_service.get_category_catalog()
+        cat_data = categories.get(category)
+        if cat_data:
+            return {"category": category, "count": cat_data["count"], "sample_indicators": cat_data["sample_indicators"]}
+        return {"category": category, "count": 0, "features": []}
+    return {
+        "total_features": len(kolkata_data_service.feature_catalog),
+        "categories": kolkata_data_service.get_category_catalog(),
+        "sample_features": list(kolkata_data_service.feature_catalog.values())[:limit]
+    }
+
+@app.get("/api/ai/data/features/search")
+def search_data_features(q: str = "", limit: int = 10):
+    """
+    Fuzzy / semantic indicator search in the Kolkata Health Dataset feature dictionary.
+    """
+    results = kolkata_data_service.search_indicators(q, limit=limit)
+    return {
+        "query": q,
+        "count": len(results),
+        "results": results
+    }
+
+@app.get("/api/ai/data/indicator/{feature}")
+def get_data_indicator(feature: str):
+    """
+    Retrieve metadata and annual time-series values for a specific indicator.
+    """
+    meta = kolkata_data_service.get_indicator_metadata(feature)
+    if not meta:
+        raise HTTPException(status_code=404, detail=f"Indicator '{feature}' not found in feature catalog.")
+    values = kolkata_data_service.get_indicator_values(feature)
+    return {
+        "feature_name": feature,
+        "metadata": meta,
+        "values": values
+    }
+
+@app.get("/api/ai/data/trend/{feature}")
+def get_data_trend(feature: str):
+    """
+    Deterministically compute trend statistics across available fiscal years for an indicator.
+    """
+    trend = kolkata_data_service.calculate_trend(feature)
+    return trend
+
+class CompareYearsRequest(BaseModel):
+    feature: str
+    year1: str
+    year2: str
+
+@app.post("/api/ai/data/compare")
+def compare_data_years(req: CompareYearsRequest):
+    """
+    Deterministically compare indicator values between two fiscal years.
+    """
+    result = kolkata_data_service.compare_years(req.feature, req.year1, req.year2)
+    return result
+
+# ─── PRIMARY AI CHAT ENDPOINTS ───────────────────────────────────────────────
+
+@app.post("/api/ai/chat", response_model=ChatResponse)
+async def ai_chat(request: ChatRequest):
+    """
+    Primary AI assistant endpoint.
+    Routes queries between:
+    1. Clinical Safety Guardrails (non-prescribing, non-diagnostic, official risk separation)
+    2. Kolkata Health Data Engine (exact deterministic calculations & metadata)
+    3. Health Education / RAG & Workflow Knowledge Base
+    4. Local Gemma 3 270M Inference
+    """
+    messages: List[dict] = []
+    if request.messages:
+        messages = [{"role": m.role, "content": m.content} for m in request.messages]
+    elif request.message:
+        messages = [{"role": "user", "content": request.message}]
+    else:
+        messages = [{"role": "user", "content": "Hello"}]
+
+    lang = request.language or "en"
+
+    # 1. Process via OllamaService (incorporates dataset context, safety overrides, and local Gemma)
+    ollama_result = await ollama_service.chat(messages, language=lang)
+    reply_text = ollama_result.get("response", "")
+    
+    return ChatResponse(
+        success=True,
+        response=reply_text,
+        reply=reply_text,
+        model=ollama_result.get("model", "gemma3:270m"),
+        provider=ollama_result.get("provider", "ollama"),
+        local=ollama_result.get("local", True),
+        badge=ollama_result.get("badge"),
+        source=ollama_result.get("source"),
+        data_points=ollama_result.get("data_points"),
+        note=ollama_result.get("note")
+    )
+
+@app.post("/api/ai/chat/stream")
+async def ai_chat_stream(request: ChatRequest):
+    """
+    Streaming AI chat endpoint with real-time token delivery via Server-Sent Events.
+    """
+    messages: List[dict] = []
+    if request.messages:
+        messages = [{"role": m.role, "content": m.content} for m in request.messages]
+    elif request.message:
+        messages = [{"role": "user", "content": request.message}]
+    else:
+        messages = [{"role": "user", "content": "Hello"}]
+
+    lang = request.language or "en"
+    return StreamingResponse(
+        ollama_service.chat_stream(messages, language=lang),
+        media_type="text/event-stream"
+    )
+
 @app.post("/api/chat", response_model=ChatResponse)
-async def health_chat(request: ChatRequest):
+async def health_chat_legacy(request: ChatRequest):
     """
-    Health chatbot endpoint powered by OpenAI GPT.
-    The API key is read server-side from .env — never exposed to the browser.
+    Legacy backwards-compatible endpoint aliased to ai_chat.
     """
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    
-    if not api_key or api_key == "your_openai_api_key_here":
-        raise HTTPException(
-            status_code=503,
-            detail="OpenAI API key not configured. Please add OPENAI_API_KEY to backend/.env"
-        )
-    
-    try:
-        import importlib
-        openai_mod = importlib.import_module("openai")
-        OpenAI = getattr(openai_mod, "OpenAI")
-        client = OpenAI(api_key=api_key)
-        
-        # Build message list: system prompt + conversation history
-        lang_hint = {
-            "hi": "Please respond in Hindi (हिंदी).",
-            "bn": "Please respond in Bengali (বাংলা).",
-            "en": "Please respond in English."
-        }.get(request.language or "en", "Please respond in English.")
-        
-        openai_messages = [
-            {"role": "system", "content": CHAT_SYSTEM_PROMPT + f"\n\nLanguage instruction: {lang_hint}"}
-        ]
-        
-        # Add conversation history (last 20 messages max to stay within token limits)
-        for msg in request.messages[-20:]:
-            openai_messages.append({"role": msg.role, "content": msg.content})
-        
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",   # Fast and cost-effective
-            messages=openai_messages,
-            max_tokens=600,
-            temperature=0.4,        # More deterministic for medical guidance
-        )
-        
-        reply = response.choices[0].message.content or "I could not generate a response. Please try again."
-        return ChatResponse(reply=reply)
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        err_str = str(e)
-        if "insufficient_quota" in err_str or "credit_balance_exhausted" in err_str or "429" in err_str:
-            # Fallback response for offline / credit-exhausted state
-            user_msg = (request.messages[-1].content if request.messages else "").lower()
-            
-            # Simple rule-based guidance for hackathon demo resilience
-            advice = []
-            if "fever" in user_msg or "बुखार" in user_msg or "জ্বর" in user_msg:
-                advice.append("• **Fever Management:** Stay hydrated with clean water/ORS, take adequate rest, and use a cool damp cloth on forehead to reduce temp.")
-                advice.append("• **Red Flags:** If fever >102°F lasts more than 2 days or is accompanied by severe headache, rash, or vomiting, visit the nearest PHC immediately.")
-            elif "cough" in user_msg or "cold" in user_msg or "खांसी" in user_msg:
-                advice.append("• **Cough & Cold Care:** Drink warm water or herbal tea (tulsi/ginger), practice steam inhalation, and rest.")
-                advice.append("• **Warning:** If cough persists >2 weeks or produces blood/chest pain, get tested for TB/respiratory infection at PHC.")
-            elif "sugar" in user_msg or "diabetes" in user_msg or "शुगर" in user_msg:
-                advice.append("• **Blood Sugar Management:** Avoid direct sweets, sugary tea, and refined flour. Eat whole grains, green leafy vegetables, and stay active.")
-                advice.append("• **Screening:** Regular glucose monitoring at PHC is recommended.")
-            elif "bp" in user_msg or "blood pressure" in user_msg or "बीपी" in user_msg:
-                advice.append("• **Blood Pressure Guidance:** Reduce daily salt intake, manage stress, avoid tobacco/alcohol, and exercise daily.")
-                advice.append("• **Critical:** If BP >160/100 or experiencing severe dizziness/blurred vision, seek emergency care.")
-            else:
-                advice.append("• **General Health Care:** Ensure clean drinking water, proper nutrition, adequate sleep, and hygiene.")
-                advice.append("• **Consultation:** Please visit your local ASHA worker or Primary Health Centre (PHC) for a clinical evaluation.")
+    return await ai_chat(request)
 
-            fallback_reply = (
-                "⚠️ *Note: OpenAI API quota exhausted. Operating in Rule-Based Medical Decision Support Mode.*\n\n"
-                + "\n".join(advice)
-                + "\n\n⚕️ *This is AI guidance only — not a medical diagnosis. Please consult a doctor for proper evaluation.*"
-            )
-            return ChatResponse(reply=fallback_reply)
 
-        raise HTTPException(status_code=500, detail=f"Chat error: {err_str}")
 
 
 # ─── ML DISEASE PREDICTION ENDPOINT ───────────────────────────────────────────

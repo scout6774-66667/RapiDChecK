@@ -1,6 +1,11 @@
 export { VillageCoverageMap } from './VillageCoverageMap';
 export { VillageMarker } from './VillageMarker';
 export { VillageInfoWindow } from './VillageInfoWindow';
+export { CurrentLocationMarker } from './CurrentLocationMarker';
+export { NearbyFacilityMarker } from './NearbyFacilityMarker';
+export { NearbyFacilityInfoWindow } from './NearbyFacilityInfoWindow';
+export { NearbyHealthcareList } from './NearbyHealthcareList';
+export { NearbyHealthcareControls } from './NearbyHealthcareControls';
 export { MapLegend } from './MapLegend';
 export { MapFilters } from './MapFilters';
 export { MapControls } from './MapControls';

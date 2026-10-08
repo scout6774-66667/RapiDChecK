@@ -1,0 +1,32 @@
+{
+  "dataset": "Kolkata Health Dataset",
+  "total_rows": 14,
+  "total_columns": 1957,
+  "total_features": 1955,
+  "hmis_features_count": 1882,
+  "nfhs5_features_count": 73,
+  "hmis_numeric_records_processed": 8202,
+  "nfhs5_reference_period": "2019-20",
+  "years_available": [
+    "2008-09",
+    "2009-10",
+    "2010-11",
+    "2011-12",
+    "2012-13",
+    "2013-14",
+    "2014-15",
+    "2015-16",
+    "2016-17",
+    "2017-18",
+    "2018-19",
+    "2019-20",
+    "2020-21",
+    "2021-22"
+  ],
+  "sources": [
+    "HMIS",
+    "NFHS-5"
+  ],
+  "statistical_limitation": "Dataset contains 14 annual observations (2008-09 to 2021-22) with 1957 variables. High dimensional low sample size (p >> n). Trend analyses and correlations are exploratory and should not be interpreted as causal relationships.",
+  "prediction_target_status": "Undefined. Define prediction target and clinical validation strategy prior to predictive ML modeling."
+}
