@@ -169,10 +169,30 @@ class DiseasePredictor:
             condition_name = self.label_encoder.inverse_transform([class_idx])[0]
             score = round(float(probas[class_idx]), 4)
             contributing = self._contributing_symptoms(class_idx, valid_features)
+            
+            # Compute deterministic clinical risk score (0-100) and risk level
+            try:
+                from risk_scoring import calculate_item_risk
+                risk_info = calculate_item_risk(score, condition_name, contributing, item_index=rank + 1)
+            except Exception:
+                # Fallback calculation if risk_scoring import fails
+                calc_score = round(min(max(score * 100.0, 5.0), 95.0), 1)
+                r_level = "CRITICAL" if calc_score > 70 else ("HIGH" if calc_score > 50 else ("MODERATE" if calc_score > 30 else "LOW"))
+                risk_info = {
+                    "item_id": f"item_{class_idx}_{rank + 1}",
+                    "risk_score": calc_score,
+                    "risk_level": r_level,
+                    "required_specialty": "General Medicine"
+                }
+
             predictions.append({
                 "rank": rank + 1,
+                "item_id": risk_info["item_id"],
                 "condition": condition_name,
                 "score": score,
+                "risk_score": risk_info["risk_score"],
+                "risk_level": risk_info["risk_level"],
+                "required_specialty": risk_info["required_specialty"],
                 "contributingSymptoms": contributing,
             })
 

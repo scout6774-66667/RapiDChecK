@@ -198,7 +198,7 @@ export const ScreenPatientPage: React.FC<ScreenPatientPageProps> = ({
         likely_conditions: res.likelyConditions,
         contributing_factors: res.contributingFactors,
         recommended_action: res.recommendedAction,
-        referral_status: res.riskLevel === 'HIGH' ? 'REFERRED' : 'NOT_REFERRED',
+        referral_status: (res.riskLevel === 'HIGH' || res.riskLevel === 'CRITICAL' || res.riskScore > 70) ? 'REFERRED' : 'NOT_REFERRED',
         created_at: new Date().toISOString(),
         synced: false,
       };
@@ -249,7 +249,10 @@ export const ScreenPatientPage: React.FC<ScreenPatientPageProps> = ({
           referral_status: 'REFERRED',
         });
       }
-      setSaveToast('PHC Referral Created & Queued');
+      setSaveToast('IDRC Referral Created & Queued');
+      setTimeout(() => {
+        onNavigateToTab('referrals');
+      }, 1200);
     } catch {
       // ignore
     }

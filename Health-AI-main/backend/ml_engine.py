@@ -146,16 +146,33 @@ class RiskScreeningEngine:
             factors.append(f"Elevated Heart Rate ({hr} bpm)")
             raw_risk_score += 0.15
 
-        # Cap risk score
-        risk_score = round(min(max(raw_risk_score, 0.05), 0.98), 2)
+        # Compute 0-100 scale risk score deterministically
+        calculated_score = raw_risk_score * 100.0
 
-        # Risk level categorization
-        if risk_score >= 0.55 or systolic >= 160 or glucose >= 200 or (symptom_duration >= 14 and "cough" in " ".join(symptoms)):
-            risk_level = "HIGH"
-        elif risk_score >= 0.25 or systolic >= 130 or glucose >= 140 or temp_f >= 100.0 or len(symptoms) >= 2:
-            risk_level = "MODERATE"
-        else:
-            risk_level = "LOW"
+        # Clinical emergency escalation rules
+        is_crisis = systolic >= 180 or diastolic >= 120 or glucose >= 300 or (systolic >= 160 and "chest pain" in " ".join(symptoms))
+        if is_crisis:
+            calculated_score = max(calculated_score, 82.0)
+        elif systolic >= 160 or glucose >= 200 or (symptom_duration >= 14 and "cough" in " ".join(symptoms)):
+            calculated_score = max(calculated_score, 56.0)
+        elif systolic >= 130 or glucose >= 140 or temp_f >= 100.0 or len(symptoms) >= 2:
+            calculated_score = max(calculated_score, 35.0)
+
+        risk_score = round(min(max(calculated_score, 5.0), 98.0), 1)
+
+        # Centralized risk level categorization
+        try:
+            from risk_scoring import classify_risk_level
+            risk_level = classify_risk_level(risk_score)
+        except Exception:
+            if risk_score > 70.0:
+                risk_level = "CRITICAL"
+            elif risk_score > 50.0:
+                risk_level = "HIGH"
+            elif risk_score > 30.0:
+                risk_level = "MODERATE"
+            else:
+                risk_level = "LOW"
 
         if not conditions:
             conditions.append("Routine Baseline Health Screening — Low Immediate Concern")
@@ -164,8 +181,13 @@ class RiskScreeningEngine:
             factors.append("Normal vitals within expected parameters")
             factors.append("No acute high-risk symptoms reported")
 
-        # Clinical Action Recommendation
-        if risk_level == "HIGH":
+        # Clinical Action Recommendation based on risk level
+        if risk_level == "CRITICAL":
+            recommendation = (
+                "CRITICAL EMERGENCY ALERT: Severe clinical risk flagged (Score > 70). "
+                "Immediate triage to Hospital with 24/7 Emergency & ICU capabilities required. Dispatch emergency transfer."
+            )
+        elif risk_level == "HIGH":
             recommendation = (
                 "PHC EVALUATION RECOMMENDED: High screening risk flagged. Refer patient to Primary Health Centre (PHC) Medical Officer within 24 hours. "
                 "Order Fasting Blood Glucose, HbA1c, and Sputum Smear if chronic cough is present."

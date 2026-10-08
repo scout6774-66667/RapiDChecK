@@ -21,12 +21,15 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
   symptoms,
   onReferralCreated,
 }) => {
-  const [facility, setFacility] = useState('Sundarpur Primary Health Centre (PHC)');
-  const [urgency, setUrgency] = useState<'Immediate (24 hours)' | 'Routine (3–5 days)'>(
-    result.riskLevel === 'HIGH' ? 'Immediate (24 hours)' : 'Routine (3–5 days)'
+  const isCritical = result.riskScore > 70 || result.riskLevel === 'CRITICAL';
+  const [facility, setFacility] = useState(
+    isCritical ? 'District Super-Specialty Hospital & Trauma Centre (24/7 Emergency)' : 'Sundarpur Primary Health Centre (PHC)'
+  );
+  const [urgency, setUrgency] = useState<'Emergency (Immediate)' | 'Immediate (24 hours)' | 'Routine (3–5 days)'>(
+    isCritical ? 'Emergency (Immediate)' : (result.riskLevel === 'HIGH' ? 'Immediate (24 hours)' : 'Routine (3–5 days)')
   );
   const [notes, setNotes] = useState(
-    `AI-assisted screening flagged ${result.riskLevel} risk. Key concerns: ${result.potentialRiskIndicators.join(
+    `AI-assisted screening flagged ${result.riskLevel} risk (Score: ${result.riskScore}/100). Key concerns: ${result.potentialRiskIndicators.join(
       ', '
     )}.`
   );
@@ -45,7 +48,12 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
         patientGender: patient.gender,
         patientVillage: patient.village,
         assessmentId: result.assessmentId,
+        itemId: result.itemId || result.assessmentId,
+        riskScore: result.riskScore,
         riskLevel: result.riskLevel,
+        isCritical,
+        requiredSpecialty: result.requiredSpecialty || 'General Medicine',
+        likelyConditions: result.likelyConditions,
         facility,
         urgency,
         notes,

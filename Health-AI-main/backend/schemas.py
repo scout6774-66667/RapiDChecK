@@ -115,3 +115,54 @@ class AppointmentResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ─── HOSPITAL RECOMMENDATION SCHEMAS ──────────────────────────────────────────
+
+class HospitalRecommendationItem(BaseModel):
+    id: str
+    name: str
+    category: str
+    specialty: str
+    all_specialties: List[str] = []
+    distance_km: float
+    distance: str
+    travel_time_min: int
+    travel_time: str
+    specialty_match: str
+    capability_match: List[str] = []
+    all_capabilities: List[str] = []
+    recommendation_priority: str  # CRITICAL, HIGH, STANDARD
+    suitability_score: float
+    reason: str
+    icu_beds_available: int = 0
+    general_beds_available: int = 0
+    is_emergency_24x7: bool = False
+    address: str = ""
+    phone: str = ""
+    rating: float = 4.0
+    lat: float
+    lng: float
+
+
+class HospitalRecommendationRequest(BaseModel):
+    item_id: Optional[str] = None
+    condition: str
+    risk_score: float
+    risk_level: Optional[str] = None
+    specialty: Optional[str] = None
+    lat: Optional[float] = 22.723
+    lng: Optional[float] = 88.483
+    max_results: Optional[int] = 5
+
+
+class HospitalRecommendationResponse(BaseModel):
+    item_id: Optional[str] = None
+    condition: str
+    patient_risk_score: float
+    patient_risk_level: str
+    required_specialty: str
+    is_critical: bool
+    recommendation_banner: str
+    hospitals: List[HospitalRecommendationItem]
+

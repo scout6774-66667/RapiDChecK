@@ -16,9 +16,12 @@ from schemas import (
     PatientCreate, PatientResponse,
     AssessmentCreate, AssessmentResponse,
     ReferralUpdate, SyncPayload, SyncResponse,
-    AppointmentCreate, AppointmentResponse
+    AppointmentCreate, AppointmentResponse,
+    HospitalRecommendationItem, HospitalRecommendationRequest, HospitalRecommendationResponse
 )
 from ml_engine import screening_engine, MEDICAL_DISCLAIMER
+from risk_scoring import classify_risk_level, calculate_item_risk, get_condition_profile
+from hospital_recommender import recommend_hospitals
 try:
     from ml.predictor import disease_predictor as _dp
     _ML_PREDICTOR = _dp
@@ -501,9 +504,13 @@ class MLPredictRequest(BaseModel):
 
 class MLPredictionItem(BaseModel):
     rank: int
+    item_id: Optional[str] = None
     condition: str
     score: float
-    contributingSymptoms: List[str]
+    risk_score: float = 0.0
+    risk_level: str = "LOW"
+    required_specialty: Optional[str] = None
+    contributingSymptoms: List[str] = []
 
 class MLPredictResponse(BaseModel):
     predictions: List[MLPredictionItem]
@@ -575,8 +582,12 @@ class HybridPredictRequest(BaseModel):
 
 class HybridPredictionItem(BaseModel):
     rank: int
+    item_id: Optional[str] = None
     condition: str
     consensus_score: float
+    risk_score: float = 0.0
+    risk_level: str = "LOW"
+    required_specialty: Optional[str] = None
     ml_score: Optional[float]
     google_score: Optional[float]
     ml_rank: Optional[int]
@@ -633,8 +644,12 @@ def hybrid_predict(request: HybridPredictRequest):
     for pred in result.get("ml_predictions", []):
         ml_predictions.append(MLPredictionItem(
             rank=pred.get("rank", 0),
+            item_id=pred.get("item_id"),
             condition=pred.get("condition", ""),
             score=pred.get("score", 0),
+            risk_score=pred.get("risk_score", round(pred.get("score", 0) * 100.0, 1)),
+            risk_level=pred.get("risk_level", "LOW"),
+            required_specialty=pred.get("required_specialty", "General Medicine"),
             contributingSymptoms=pred.get("contributingSymptoms", [])
         ))
     
@@ -643,8 +658,12 @@ def hybrid_predict(request: HybridPredictRequest):
     for pred in result.get("predictions", []):
         consensus_predictions.append(HybridPredictionItem(
             rank=pred.get("rank", 0),
+            item_id=pred.get("item_id"),
             condition=pred.get("condition", ""),
             consensus_score=pred.get("consensus_score", 0),
+            risk_score=pred.get("risk_score", round(pred.get("consensus_score", 0) * 100.0, 1)),
+            risk_level=pred.get("risk_level", "LOW"),
+            required_specialty=pred.get("required_specialty", "General Medicine"),
             ml_score=pred.get("ml_score"),
             google_score=pred.get("google_score"),
             ml_rank=pred.get("ml_rank"),
@@ -791,10 +810,15 @@ def unified_predict(request: UnifiedPredictRequest):
     combined = []
     for rank, (ck, score) in enumerate(sorted_conds):
         d = condition_details[ck]
+        calc_risk = calculate_item_risk(score, d["condition"], item_index=rank + 1)
         combined.append({
             "rank": rank + 1,
+            "item_id": calc_risk["item_id"],
             "condition": d["condition"],
             "combined_score": round(score, 4),
+            "risk_score": calc_risk["risk_score"],
+            "risk_level": calc_risk["risk_level"],
+            "required_specialty": calc_risk["required_specialty"],
             "ml_score": round(d["ml_score"], 4) if d["ml_score"] is not None else None,
             "gemini_score": round(d["gemini_score"], 4) if d["gemini_score"] is not None else None,
             "search_score": round(d["search_score"], 4) if d["search_score"] is not None else None,
@@ -807,7 +831,18 @@ def unified_predict(request: UnifiedPredictRequest):
         })
     
     return {
-        "ml_predictions": [{"rank": p.get("rank"), "condition": p["condition"], "score": p.get("score", 0)} for p in ml_preds],
+        "ml_predictions": [
+            {
+                "rank": p.get("rank"),
+                "item_id": p.get("item_id"),
+                "condition": p["condition"],
+                "score": p.get("score", 0),
+                "risk_score": p.get("risk_score", round(p.get("score", 0) * 100.0, 1)),
+                "risk_level": p.get("risk_level", "LOW"),
+                "required_specialty": p.get("required_specialty", "General Medicine")
+            }
+            for p in ml_preds
+        ],
         "gemini_predictions": gemini_preds,
         "search_predictions": search_preds,
         "combined_top3": combined,
@@ -988,67 +1023,145 @@ def haversine_km(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
+# ─── IDRC CAPABILITY-AWARE HOSPITAL RECOMMENDATION ENDPOINTS ─────────────────
+
+@app.post("/api/hospitals/recommend", response_model=HospitalRecommendationResponse)
+def get_hospital_recommendations_post(req: HospitalRecommendationRequest):
+    """
+    IDRC Hospital Recommendation Service (POST).
+    Multi-factor ranking considering patient risk score, clinical condition,
+    required specialty, hospital emergency & ICU capabilities, travel time, and capacity.
+    For critical cases (risk_score > 70), facilities equipped to handle emergencies are prioritized.
+    """
+    r_level = req.risk_level or classify_risk_level(req.risk_score)
+    is_crit = req.risk_score > 70.0
+    prof = get_condition_profile(req.condition)
+    spec = req.specialty or prof.get("specialty", "General Medicine")
+
+    recs = recommend_hospitals(
+        condition=req.condition,
+        risk_score=req.risk_score,
+        user_lat=req.lat or 22.723,
+        user_lng=req.lng or 88.483,
+        custom_specialty=spec,
+        max_results=req.max_results or 5
+    )
+
+    banner_text = (
+        f"Risk Score: {int(req.risk_score)}/100 — Critical"
+        if is_crit else
+        f"Risk Score: {int(req.risk_score)}/100 — {r_level.title()}"
+    )
+
+    return HospitalRecommendationResponse(
+        item_id=req.item_id,
+        condition=req.condition,
+        patient_risk_score=req.risk_score,
+        patient_risk_level=r_level,
+        required_specialty=spec,
+        is_critical=is_crit,
+        recommendation_banner=banner_text,
+        hospitals=[HospitalRecommendationItem(**h) for h in recs]
+    )
+
+
+@app.get("/api/hospitals/recommend", response_model=HospitalRecommendationResponse)
+def get_hospital_recommendations_get(
+    condition: str = "General",
+    risk_score: float = 20.0,
+    risk_level: Optional[str] = None,
+    specialty: Optional[str] = None,
+    item_id: Optional[str] = None,
+    lat: float = 22.723,
+    lng: float = 88.483,
+    max_results: int = 5
+):
+    """
+    IDRC Hospital Recommendation Service (GET).
+    Allows easy query string usage from browser clients and frontends.
+    """
+    r_level = risk_level or classify_risk_level(risk_score)
+    is_crit = risk_score > 70.0
+    prof = get_condition_profile(condition)
+    spec = specialty or prof.get("specialty", "General Medicine")
+
+    recs = recommend_hospitals(
+        condition=condition,
+        risk_score=risk_score,
+        user_lat=lat,
+        user_lng=lng,
+        custom_specialty=spec,
+        max_results=max_results
+    )
+
+    banner_text = (
+        f"Risk Score: {int(risk_score)}/100 — Critical"
+        if is_crit else
+        f"Risk Score: {int(risk_score)}/100 — {r_level.title()}"
+    )
+
+    return HospitalRecommendationResponse(
+        item_id=item_id,
+        condition=condition,
+        patient_risk_score=risk_score,
+        patient_risk_level=r_level,
+        required_specialty=spec,
+        is_critical=is_crit,
+        recommendation_banner=banner_text,
+        hospitals=[HospitalRecommendationItem(**h) for h in recs]
+    )
+
+
 @app.get("/api/hospitals/search")
-def search_hospitals(location: str):
+def search_hospitals(
+    location: str = "Barasat",
+    condition: str = "General Health",
+    risk_score: float = 25.0
+):
     """
-    Searches for real hospitals using open-source mapping data instead of Google Maps API.
+    Unified hospital search endpoint. Returns capability-rich hospital records
+    ranked by multi-factor suitability, maintaining backward compatibility.
     """
-    # 1. First get the coordinates for the user's location
-    geocode_url = f"https://nominatim.openstreetmap.org/search?format=json&q={urllib.parse.quote(location)}&limit=1"
-    req = urllib.request.Request(geocode_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-    
-    base_lat = 22.723
-    base_lng = 88.483
-    
-    try:
-        with urllib.request.urlopen(req) as response:
-            geo_data = json.loads(response.read().decode())
-            if geo_data:
-                base_lat = float(geo_data[0]['lat'])
-                base_lng = float(geo_data[0]['lon'])
-    except Exception as e:
-        print("Geocoding failed:", e)
+    recs = recommend_hospitals(
+        condition=condition,
+        risk_score=risk_score,
+        user_lat=22.723,
+        user_lng=88.483,
+        max_results=8
+    )
 
-    # 2. Search for hospitals in that location
-    search_url = f"https://nominatim.openstreetmap.org/search?format=json&q=hospital+in+{urllib.parse.quote(location)}&limit=15"
-    req_hosp = urllib.request.Request(search_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-    
-    try:
-        with urllib.request.urlopen(req_hosp) as response:
-            hosp_data = json.loads(response.read().decode())
-            results = []
-            for idx, item in enumerate(hosp_data):
-                hlat = float(item['lat'])
-                hlng = float(item['lon'])
-                dist = haversine_km(base_lat, base_lng, hlat, hlng)
-                
-                results.append({
-                    "id": str(item.get('place_id', f"h_{idx}")),
-                    "name": item.get('name', 'Hospital / Clinic'),
-                    "specialty": "General Hospital",
-                    "address": item.get('display_name', ''),
-                    "lat": hlat,
-                    "lng": hlng,
-                    "distance": f"{dist:.1f} km"
-                })
-            # sort by distance
-            results.sort(key=lambda x: float(x['distance'].split()[0]))
-            return {"hospitals": results, "center": {"lat": base_lat, "lng": base_lng}}
-    except Exception as e:
-        print("Hospital search failed:", e)
-        return {"hospitals": [], "center": {"lat": base_lat, "lng": base_lng}}
+    # Format into backward compatible structure with extra capability fields
+    formatted_hospitals = []
+    for h in recs:
+        formatted_hospitals.append({
+            "id": h["id"],
+            "name": h["name"],
+            "specialty": h["specialty"],
+            "category": h["category"],
+            "address": h["address"],
+            "phone": h["phone"],
+            "rating": h["rating"],
+            "distance": h["distance"],
+            "distance_km": h["distance_km"],
+            "travel_time": h["travel_time"],
+            "travel_time_min": h["travel_time_min"],
+            "isOpen": True,
+            "lat": h["lat"],
+            "lng": h["lng"],
+            "amenity": "hospital" if "Hospital" in h["category"] else "clinic",
+            "is_emergency_24x7": h["is_emergency_24x7"],
+            "icu_beds_available": h["icu_beds_available"],
+            "recommendation_priority": h["recommendation_priority"],
+            "suitability_score": h["suitability_score"],
+            "specialty_match": h["specialty_match"],
+            "capability_match": h["capability_match"],
+            "reason": h["reason"]
+        })
 
-
-@app.get('/api/hospitals/search')
-def search_hospitals(location: str):
-    print(f'Fetching mock hospitals for {location}')
-    # Return mock hospitals
-    hospitals = [
-        {'id': '1', 'name': 'City General Hospital', 'specialty': 'Multi-specialty', 'address': f'{location} Main Road', 'phone': '9876543210', 'rating': 4.5, 'distance': '2.5 km', 'isOpen': True, 'lat': 22.72, 'lng': 88.48, 'amenity': 'hospital'},
-        {'id': '2', 'name': 'Rural Health Care Center', 'specialty': 'General Medicine', 'address': f'{location} Village Square', 'phone': '9876543211', 'rating': 4.2, 'distance': '5.0 km', 'isOpen': True, 'lat': 22.71, 'lng': 88.49, 'amenity': 'clinic'},
-        {'id': '3', 'name': 'Sunrise Clinic', 'specialty': 'Primary Care', 'address': f'{location} East Side', 'phone': '9876543212', 'rating': 4.8, 'distance': '1.2 km', 'isOpen': True, 'lat': 22.73, 'lng': 88.47, 'amenity': 'clinic'}
-    ]
-    return {'center': {'lat': 22.723, 'lng': 88.483}, 'hospitals': hospitals}
+    return {
+        "center": {"lat": 22.723, "lng": 88.483},
+        "hospitals": formatted_hospitals
+    }
 
 
 # ==============================================================================

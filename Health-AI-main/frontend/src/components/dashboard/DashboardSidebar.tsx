@@ -44,7 +44,7 @@ export const DashboardSidebar: React.FC<DashboardSidebarProps> = ({
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'screen', label: 'Screen Patients', icon: ClipboardCheck },
     { id: 'patients', label: 'Patient Directory', icon: Users },
-    { id: 'referrals', label: 'Referrals', icon: Share2 },
+    { id: 'referrals', label: 'IDRC Referrals', icon: Share2 },
     { id: 'appointments', label: 'Appointments', icon: Calendar, badge: appointmentCount },
     { id: 'population_health', label: 'Population Health', icon: Heart, badge: 'HMIS' },
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },

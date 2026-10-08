@@ -1,6 +1,6 @@
 export type ScreeningStep = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
-export type RiskLevel = 'HIGH' | 'MODERATE' | 'LOW' | 'NEEDS_REVIEW' | 'INSUFFICIENT_DATA';
+export type RiskLevel = 'CRITICAL' | 'HIGH' | 'MODERATE' | 'LOW' | 'NEEDS_REVIEW' | 'INSUFFICIENT_DATA';
 
 export interface PatientFormData {
   id: string;
@@ -62,10 +62,12 @@ export interface RiskFactorsFormData {
 
 export interface ScreeningResultData {
   assessmentId: string;
+  itemId?: string;
   patientId: string;
   patientName: string;
   riskLevel: RiskLevel;
   riskScore: number;
+  requiredSpecialty?: string;
   likelyConditions: string[];
   contributingFactors: string[];
   recommendedAction: string;
@@ -77,3 +79,4 @@ export interface ScreeningResultData {
   rulesVersion: string;
   modelVersion: string;
 }
+

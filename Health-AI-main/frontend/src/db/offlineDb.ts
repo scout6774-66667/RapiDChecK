@@ -31,8 +31,10 @@ export interface LocalAssessment {
   alcohol_status: string;
   physical_activity?: string;
   family_history: string[];
-  risk_level: 'LOW' | 'MODERATE' | 'HIGH';
+  risk_level: 'LOW' | 'MODERATE' | 'HIGH' | 'CRITICAL';
   risk_score: number;
+  item_id?: string;
+  required_specialty?: string;
   likely_conditions: string[];
   contributing_factors: string[];
   recommended_action: string;

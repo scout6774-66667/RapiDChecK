@@ -164,6 +164,32 @@ export function calculateCompleteness(
   return { score, missingFields: missing, isSufficient };
 }
 
+// ─── CENTRALIZED CONFIGURABLE RISK THRESHOLDS ─────────────────────────────────
+export const RISK_THRESHOLDS = {
+  LOW: [0, 30],
+  MODERATE: [31, 50],
+  HIGH: [51, 70],
+  CRITICAL: [71, 100],
+} as const;
+
+export function getRiskLevelFromScore(score: number): RiskLevel {
+  if (score > 70) return 'CRITICAL';
+  if (score > 50) return 'HIGH';
+  if (score > 30) return 'MODERATE';
+  return 'LOW';
+}
+
+export function detectRequiredSpecialty(conditions: string[]): string {
+  const text = conditions.join(' ').toLowerCase();
+  if (text.includes('cardio') || text.includes('chest') || text.includes('ischemic')) return 'Cardiology';
+  if (text.includes('tb') || text.includes('pulmon') || text.includes('respir') || text.includes('cough')) return 'Pulmonology';
+  if (text.includes('diabet') || text.includes('glucose')) return 'Endocrinology / Diabetology';
+  if (text.includes('hypertens')) return 'Cardiology / Internal Medicine';
+  if (text.includes('kidney') || text.includes('renal')) return 'Nephrology';
+  if (text.includes('anemia')) return 'Hematology / General Medicine';
+  return 'General Medicine';
+}
+
 // ─── CLINICAL DECISION SUPPORT EVALUATION ─────────────────────────────────────
 
 export function evaluateClinicalScreening(
@@ -320,19 +346,32 @@ export function evaluateClinicalScreening(
     contributing.push('High symptom severity reported by patient');
   }
 
-  // Cap score
-  calculatedScore = Math.min(Math.max(calculatedScore, 0.05), 0.98);
+  // Cap and scale score to 0–100
+  let scoreOn100 = Math.round(calculatedScore * 100);
 
-  // Determine Risk Level
-  let riskLevel: RiskLevel = 'LOW';
+  // Severe emergency triggers -> Escalate to Critical (>70)
+  const isEmergencyCrisis = (hasChestPain && sys >= 140) || sys >= 180 || dia >= 120 || (vitals.glucoseMeasured && Number(vitals.glucoseMgDl) >= 300);
+  if (isEmergencyCrisis) {
+    scoreOn100 = Math.max(scoreOn100, 85);
+  } else if (hasHighRiskTrigger) {
+    scoreOn100 = Math.max(scoreOn100, 56);
+  } else if (sys >= 130 || hasFever || hasHeadache) {
+    scoreOn100 = Math.max(scoreOn100, 35);
+  }
+
+  scoreOn100 = Math.min(Math.max(scoreOn100, 5), 98);
+
+  // Determine Risk Level using centralized thresholds
+  let riskLevel: RiskLevel = getRiskLevelFromScore(scoreOn100);
   let recommendedAction = 'Continue routine health monitoring and wellness counselling.';
 
-  if (hasHighRiskTrigger || calculatedScore >= 0.55) {
-    riskLevel = 'HIGH';
+  if (riskLevel === 'CRITICAL') {
+    recommendedAction =
+      'CRITICAL EMERGENCY ALERT: Risk score exceeds 70/100. Immediate IDRC referral & transfer to 24/7 Emergency facility required.';
+  } else if (riskLevel === 'HIGH') {
     recommendedAction =
       'PHC clinical review recommended within 24–48 hours. Refer patient to Primary Health Centre.';
-  } else if (calculatedScore >= 0.25 || hasFever || hasHeadache || sys >= 130) {
-    riskLevel = 'MODERATE';
+  } else if (riskLevel === 'MODERATE') {
     recommendedAction =
       'Routine PHC assessment recommended within 3–5 days. Advise rest, hydration, and monitoring.';
   } else if (completenessScore < 45) {
@@ -353,12 +392,16 @@ export function evaluateClinicalScreening(
     likelyConditions.push('General Baseline Health Screening — Low Immediate Concern');
   }
 
+  const requiredSpecialty = detectRequiredSpecialty(likelyConditions);
+
   return {
     assessmentId: `ASS-${Date.now().toString().slice(-6)}`,
+    itemId: `item_${patient.id}_${scoreOn100}`,
     patientId: patient.id,
     patientName: patient.name,
     riskLevel,
-    riskScore: Math.round(calculatedScore * 100) / 100,
+    riskScore: scoreOn100,
+    requiredSpecialty,
     likelyConditions,
     contributingFactors: contributing,
     recommendedAction,

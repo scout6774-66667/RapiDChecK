@@ -168,7 +168,7 @@ export function App() {
               {currentTab === 'patients'
                 ? 'Patient Directory'
                 : currentTab === 'referrals'
-                ? 'PHC Referrals'
+                ? 'IDRC Referrals & Care'
                 : currentTab === 'appointments'
                 ? 'Doctor Appointments'
                 : currentTab === 'population_health'

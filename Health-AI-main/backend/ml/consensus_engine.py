@@ -212,10 +212,29 @@ class ConsensusEngine:
         predictions = []
         for rank, (condition, score) in enumerate(sorted_conditions):
             details = condition_details[condition]
+            
+            # Deterministic risk score & level
+            try:
+                from risk_scoring import calculate_item_risk
+                risk_info = calculate_item_risk(score, details["condition"], item_index=rank + 1)
+            except Exception:
+                calc_score = round(min(max(score * 100.0, 5.0), 95.0), 1)
+                r_level = "CRITICAL" if calc_score > 70 else ("HIGH" if calc_score > 50 else ("MODERATE" if calc_score > 30 else "LOW"))
+                risk_info = {
+                    "item_id": f"item_consensus_{rank + 1}",
+                    "risk_score": calc_score,
+                    "risk_level": r_level,
+                    "required_specialty": "General Medicine"
+                }
+
             predictions.append({
                 "rank": rank + 1,
+                "item_id": risk_info["item_id"],
                 "condition": details["condition"],
                 "consensus_score": round(score, 4),
+                "risk_score": risk_info["risk_score"],
+                "risk_level": risk_info["risk_level"],
+                "required_specialty": risk_info["required_specialty"],
                 "ml_score": round(details["ml_score"], 4) if details["ml_score"] else None,
                 "google_score": round(details["google_score"], 4) if details["google_score"] else None,
                 "ml_rank": details["ml_rank"] if details["ml_rank"] < 99 else None,
@@ -235,12 +254,31 @@ class ConsensusEngine:
         normalized = []
         for rank, pred in enumerate(google_preds):
             confidence_str = pred.get("confidence", "medium").lower()
+            conf_val = self.CONFIDENCE_MAP.get(confidence_str, 0.5)
+            cond = pred.get("condition", "Unknown")
+            try:
+                from risk_scoring import calculate_item_risk
+                risk_info = calculate_item_risk(conf_val, cond, item_index=rank + 1)
+            except Exception:
+                calc_score = round(min(max(conf_val * 100.0, 5.0), 95.0), 1)
+                r_level = "CRITICAL" if calc_score > 70 else ("HIGH" if calc_score > 50 else ("MODERATE" if calc_score > 30 else "LOW"))
+                risk_info = {
+                    "item_id": f"item_google_{rank + 1}",
+                    "risk_score": calc_score,
+                    "risk_level": r_level,
+                    "required_specialty": "General Medicine"
+                }
+
             normalized.append({
                 "rank": rank + 1,
-                "condition": pred.get("condition", "Unknown"),
-                "consensus_score": self.CONFIDENCE_MAP.get(confidence_str, 0.5),
+                "item_id": risk_info["item_id"],
+                "condition": cond,
+                "consensus_score": conf_val,
+                "risk_score": risk_info["risk_score"],
+                "risk_level": risk_info["risk_level"],
+                "required_specialty": risk_info["required_specialty"],
                 "ml_score": None,
-                "google_score": self.CONFIDENCE_MAP.get(confidence_str, 0.5),
+                "google_score": conf_val,
                 "ml_rank": None,
                 "google_rank": rank + 1,
                 "reasoning": pred.get("reasoning", ""),

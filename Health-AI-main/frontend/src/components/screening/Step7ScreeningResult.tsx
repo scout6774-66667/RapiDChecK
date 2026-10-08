@@ -35,6 +35,17 @@ export const Step7ScreeningResult: React.FC<Step7ScreeningResultProps> = ({
   // Styling based on risk level
   const getRiskTheme = () => {
     switch (result.riskLevel) {
+      case 'CRITICAL':
+        return {
+          bg: 'bg-rose-50/90',
+          border: 'border-rose-400',
+          text: 'text-rose-900',
+          icon: AlertTriangle,
+          badgeBg: 'bg-[#E11D48]',
+          badgeText: 'text-white',
+          title: 'CRITICAL SCREENING RISK',
+          subtitle: 'Severe clinical risk flagged. Immediate IDRC hospital matching & emergency triage required.',
+        };
       case 'HIGH':
         return {
           bg: 'bg-red-50/80',
@@ -96,9 +107,35 @@ export const Step7ScreeningResult: React.FC<Step7ScreeningResultProps> = ({
 
   const theme = getRiskTheme();
   const RiskIcon = theme.icon;
+  const isCritical = result.riskScore > 70 || result.riskLevel === 'CRITICAL';
+  const displayLevel = result.riskLevel === 'CRITICAL' ? 'Critical' : result.riskLevel === 'HIGH' ? 'High' : result.riskLevel === 'MODERATE' ? 'Moderate' : 'Low';
 
   return (
     <div className="space-y-5">
+      {/* Critical Emergency Banner */}
+      {isCritical && (
+        <div className="bg-rose-600 text-white p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-lg border-2 border-rose-400">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+              <AlertTriangle className="w-6 h-6 text-amber-300" />
+            </div>
+            <div>
+              <p className="font-black text-sm uppercase tracking-wide">Critical IDRC Referral Workflow Triggered</p>
+              <p className="text-xs text-rose-100 font-bold mt-0.5">
+                Risk Score: {result.riskScore}/100 — Critical. Immediate facility triage required.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onReferToPhc}
+            className="px-4 py-2 bg-white text-rose-700 font-black text-xs rounded-xl hover:bg-rose-50 shadow-sm shrink-0 transition-all flex items-center justify-center gap-1.5"
+          >
+            <span>Launch IDRC Matching</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* 1. Primary Risk Card */}
       <div className={`rounded-2xl border ${theme.border} ${theme.bg} p-5 sm:p-6 shadow-xs`}>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-black/5">
@@ -109,11 +146,14 @@ export const Step7ScreeningResult: React.FC<Step7ScreeningResultProps> = ({
               <RiskIcon className="w-6 h-6" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <span
                   className={`text-xs font-black tracking-wider uppercase px-2 py-0.5 rounded ${theme.badgeBg} ${theme.badgeText}`}
                 >
                   {theme.title}
+                </span>
+                <span className="text-xs font-black px-2.5 py-0.5 rounded bg-white text-[#102A56] border border-black/10 shadow-2xs">
+                  Risk Score: {result.riskScore}/100 — {displayLevel}
                 </span>
                 <span className="text-xs text-slate-500 font-semibold">
                   Patient: {result.patientName}
