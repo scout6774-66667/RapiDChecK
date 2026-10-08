@@ -120,7 +120,12 @@ export const ScreenPatientPage: React.FC<ScreenPatientPageProps> = ({
           village: patientData.village,
           phone: patientData.phone,
           patient_id: patientData.customId,
+          server_version: 1,
+          local_version: 1,
+          is_deleted: false,
+          sync_state: 'LOCAL',
           created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
           synced: false,
         };
         await db.patients.put(localPatient);
@@ -167,7 +172,12 @@ export const ScreenPatientPage: React.FC<ScreenPatientPageProps> = ({
         village: patientData.village,
         phone: patientData.phone,
         patient_id: patientData.customId,
+        server_version: 1,
+        local_version: 1,
+        is_deleted: false,
+        sync_state: 'LOCAL',
         created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
         synced: false,
       };
       await db.patients.put(pRecord);
@@ -193,13 +203,25 @@ export const ScreenPatientPage: React.FC<ScreenPatientPageProps> = ({
         family_history: Object.entries(riskFactorsData.familyHistory)
           .filter(([_, v]) => v === 'Yes')
           .map(([k]) => k),
-        risk_level: res.riskLevel === 'NEEDS_REVIEW' || res.riskLevel === 'INSUFFICIENT_DATA' ? 'LOW' : res.riskLevel,
+        risk_level: res.riskLevel === 'NEEDS_REVIEW' || res.riskLevel === 'INSUFFICIENT_DATA' ? 'LOW' : (res.riskLevel === 'CRITICAL' ? 'HIGH' : res.riskLevel),
+        triage_state: res.riskLevel === 'CRITICAL' ? 'EMERGENCY' : 'LOW_RISK',
+        is_emergency: res.riskLevel === 'CRITICAL',
+        short_circuit: false,
+        red_flags: [],
+        uncertainty_state: 'COMPLETE',
         risk_score: res.riskScore,
         likely_conditions: res.likelyConditions,
         contributing_factors: res.contributingFactors,
         recommended_action: res.recommendedAction,
         referral_status: (res.riskLevel === 'HIGH' || res.riskLevel === 'CRITICAL' || res.riskScore > 70) ? 'REFERRED' : 'NOT_REFERRED',
+        server_version: 1,
+        local_version: 1,
+        is_deleted: false,
+        sync_state: 'LOCAL',
+        workflow_version: '2.0.0',
+        ruleset_version: '2.0.0',
         created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
         synced: false,
       };
       await db.assessments.put(aRecord);
