@@ -9,7 +9,14 @@ import confetti from 'canvas-confetti';
 import { VoiceInputButton } from './VoiceInputButton';
 import { MedicalDisclaimer } from './MedicalDisclaimer';
 import { translations, type Language } from '../i18n/translations';
-import { db, type LocalAssessment, evaluateOfflineRisk } from '../db/offlineDb';
+import { 
+  db, 
+  type LocalAssessment, 
+  savePatientAtomic, 
+  saveAssessmentAtomic, 
+  updateReferralAtomic, 
+  generateUUID 
+} from '../db/offlineDb';
 
 interface AshaScreeningFlowProps {
   lang: Language;
@@ -22,7 +29,7 @@ const MascotOverlay = ({ step, riskLevel }: { step: 1 | 2 | 3, riskLevel?: strin
   if (step === 2) {
     mascotSrc = '/mascots/doctor_notepad.png';
   } else if (step === 3) {
-    if (riskLevel === 'HIGH') mascotSrc = '/mascots/doctor_shocked.png';
+    if (riskLevel === 'HIGH' || riskLevel === 'EMERGENCY') mascotSrc = '/mascots/doctor_shocked.png';
     else if (riskLevel === 'MODERATE') mascotSrc = '/mascots/doctor_thinking.png';
     else mascotSrc = '/mascots/doctor_happy.png';
   }
@@ -90,35 +97,6 @@ export const AshaScreeningFlow: React.FC<AshaScreeningFlowProps> = ({
   // Analysis State
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [activeAssessment, setActiveAssessment] = useState<LocalAssessment | null>(null);
-  const [, setMlPredictions] = useState<{
-    predictions: Array<{ rank: number; condition: string; score: number; contributingSymptoms: string[] }>;
-    unknownSymptoms: string[];
-  } | null>(null);
-  const [hybridPredictions, setHybridPredictions] = useState<{
-    predictions: Array<{ 
-      rank: number; 
-      condition: string; 
-      consensus_score: number;
-      ml_score: number | null;
-      google_score: number | null;
-      ml_rank: number | null;
-      google_rank: number | null;
-      reasoning: string;
-      source: string;
-      sources_agree: boolean;
-    }>;
-    consensus_info: {
-      ml_used: boolean;
-      google_used: boolean;
-      consensus_reached: boolean;
-      sources_agree: boolean;
-    };
-    systems_status: {
-      ml_model: boolean;
-      google_search: boolean;
-    };
-    fallback_mode: boolean;
-  } | null>(null);
   const [geminiTop3, setGeminiTop3] = useState<{
     ml_predictions: Array<{ rank: number; condition: string; score: number; contributingSymptoms: string[] }>;
     gemini_predictions: Array<{ condition: string; confidence: string; reasoning: string }>;
@@ -182,7 +160,7 @@ export const AshaScreeningFlow: React.FC<AshaScreeningFlowProps> = ({
   const handlePatientSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!validatePatientForm()) return;
-    const generatedId = patientId || `p_${Date.now()}`;
+    const generatedId = patientId || generateUUID();
     setPatientId(generatedId);
     setStep(2);
   };
@@ -191,17 +169,33 @@ export const AshaScreeningFlow: React.FC<AshaScreeningFlowProps> = ({
     setIsAnalyzing(true);
     const symptomsList = symptomsText ? symptomsText.split(',').map(s => s.trim()).filter(Boolean) : [];
 
+    const effectivePatientId = patientId || generateUUID();
+    const effectiveCustomId = customId || `RH-${effectivePatientId.slice(-4).toUpperCase()}`;
+
+    // 1. Atomically Save Patient to Dexie (TASK-004 Durable Outbox)
+    await savePatientAtomic({
+      id: effectivePatientId,
+      name,
+      age: Number(age),
+      gender,
+      village,
+      phone,
+      patient_id: effectiveCustomId
+    });
+
     const payload = {
-      patient_id: patientId,
+      patient_id: effectivePatientId,
+      patient_name: name,
+      village,
       symptoms: symptomsList,
       symptom_duration_days: Number(symptomDuration),
-      temperature_f: Number(tempF),
-      systolic_bp: Number(systolic),
-      diastolic_bp: Number(diastolic),
-      glucose_mg_dl: Number(glucose),
-      heart_rate_bpm: Number(heartRate),
-      height_cm: Number(heightCm),
-      weight_kg: Number(weightKg),
+      temperature_f: tempF ? Number(tempF) : null,
+      systolic_bp: systolic ? Number(systolic) : null,
+      diastolic_bp: diastolic ? Number(diastolic) : null,
+      glucose_mg_dl: glucose ? Number(glucose) : null,
+      heart_rate_bpm: heartRate ? Number(heartRate) : null,
+      height_cm: heightCm ? Number(heightCm) : null,
+      weight_kg: weightKg ? Number(weightKg) : null,
       bmi: Number(bmi),
       smoking_status: smoking,
       alcohol_status: alcohol,
@@ -209,161 +203,73 @@ export const AshaScreeningFlow: React.FC<AshaScreeningFlowProps> = ({
       family_history: familyHistory
     };
 
-    let resultData: any = null;
+    // 2. Atomically Save Assessment to Dexie with Canonical Engine & Outbox (TASK-004)
+    const localAssessment = await saveAssessmentAtomic(payload);
 
+    // 3. If online, opportunistically run informational ML & attempt immediate server sync
     if (isOnline) {
+      if (symptomsList.length > 0) {
+        try {
+          await fetch('http://127.0.0.1:8000/api/ml/predict', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symptoms: symptomsList })
+          });
+        } catch (mlErr) {
+          console.warn('Informational ML predict failed (non-fatal):', mlErr);
+        }
+
+        try {
+          const geminiRes = await fetch('http://127.0.0.1:8000/api/ml/gemini-predict', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ symptoms: symptomsList })
+          });
+          if (geminiRes.ok) {
+            const geminiData = await geminiRes.json();
+            setGeminiTop3(geminiData);
+          }
+        } catch (geminiErr) {
+          console.warn('Gemini predict failed (non-fatal):', geminiErr);
+        }
+      }
+
+      // Online register + assess
       try {
-        // 1. Register/Save patient online
         await fetch('http://127.0.0.1:8000/api/patients', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            id: patientId,
+            id: effectivePatientId,
             name,
             age: Number(age),
             gender,
             village,
             phone,
-            patient_id: customId || `RH-${patientId.slice(-4).toUpperCase()}`
+            patient_id: effectiveCustomId
           })
         });
 
-        // 2. Run Hybrid ML + Google Search Disease Prediction (parallel with risk engine)
-        const symptomsList = symptomsText ? symptomsText.split(',').map(s => s.trim()).filter(Boolean) : [];
-        let mlResult = null;
-        let hybridResult = null;
-        if (symptomsList.length > 0) {
-          try {
-            // Try hybrid endpoint first (ML + Google Search consensus)
-            const hybridRes = await fetch('http://127.0.0.1:8000/api/ml/hybrid-predict', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ symptoms: symptomsList, use_google: true })
-            });
-            if (hybridRes.ok) {
-              hybridResult = await hybridRes.json();
-              // Also extract ML predictions from hybrid response for backward compatibility
-              mlResult = {
-                predictions: hybridResult.ml_predictions || [],
-                unknownSymptoms: []
-              };
-            } else {
-              // Fallback to ML-only endpoint
-              const mlRes = await fetch('http://127.0.0.1:8000/api/ml/predict', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ symptoms: symptomsList })
-              });
-              if (mlRes.ok) {
-                mlResult = await mlRes.json();
-              }
-            }
-          } catch (mlErr) {
-            console.warn('Hybrid/ML predict failed (non-fatal):', mlErr);
-            // Final fallback to ML-only
-            try {
-              const mlRes = await fetch('http://127.0.0.1:8000/api/ml/predict', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ symptoms: symptomsList })
-              });
-              if (mlRes.ok) {
-                mlResult = await mlRes.json();
-              }
-            } catch (fallbackErr) {
-              console.warn('ML predict fallback also failed:', fallbackErr);
-            }
-          }
-        }
-        setMlPredictions(mlResult);
-        setHybridPredictions(hybridResult);
-
-        // 2b. Run ML + Gemini consensus prediction
-        if (symptomsList.length > 0) {
-          try {
-            const geminiRes = await fetch('http://127.0.0.1:8000/api/ml/gemini-predict', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ symptoms: symptomsList })
-            });
-            if (geminiRes.ok) {
-              const geminiData = await geminiRes.json();
-              setGeminiTop3(geminiData);
-            }
-          } catch (geminiErr) {
-            console.warn('Gemini predict failed (non-fatal):', geminiErr);
-          }
-        }
-
-        // 3. Run Risk Screening Engine
-        const aRes = await fetch('http://127.0.0.1:8000/api/assess', {
+        await fetch('http://127.0.0.1:8000/api/assess', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
-        resultData = await aRes.json();
 
-        // 4. Save locally to Dexie as synced
-        const localAss: LocalAssessment = {
-          ...resultData,
-          patient_name: name,
-          village,
-          synced: true
-        };
-        await db.patients.put({
-          id: patientId,
-          name,
-          age: Number(age),
-          gender,
-          village,
-          phone,
-          patient_id: customId || `RH-${patientId.slice(-4).toUpperCase()}`,
-          created_at: new Date().toISOString(),
-          synced: true
-        });
-        await db.assessments.put(localAss);
-      } catch (err) {
-        console.warn('Online API call failed, falling back to offline Dexie mode', err);
-        resultData = null;
+        // Update local sync status to SYNCED
+        await db.patients.update(effectivePatientId, { sync_state: 'SYNCED', synced: true });
+        await db.assessments.update(localAssessment.id, { sync_state: 'SYNCED', synced: true });
+      } catch (syncErr) {
+        console.warn('Online sync failed, outbox queued for automatic retry', syncErr);
       }
     }
 
-    // Offline fallback or failed online request
-    if (!resultData) {
-      const offlineEval = evaluateOfflineRisk(payload as any);
-      const assId = `ass_${Date.now()}`;
-      resultData = {
-        ...payload,
-        id: assId,
-        patient_name: name,
-        village,
-        ...offlineEval,
-        referral_status: offlineEval.risk_level === 'HIGH' ? 'REFERRED' : 'NOT_REFERRED',
-        created_at: new Date().toISOString(),
-        synced: false
-      };
-
-      // Save locally to IndexedDB as un-synced
-      await db.patients.put({
-        id: patientId,
-        name,
-        age: Number(age),
-        gender,
-        village,
-        phone,
-        patient_id: customId || `RH-${patientId.slice(-4).toUpperCase()}`,
-        created_at: new Date().toISOString(),
-        synced: false
-      });
-      await db.assessments.put(resultData);
-    }
-
-    setActiveAssessment(resultData);
+    setActiveAssessment(localAssessment);
     setIsAnalyzing(false);
     setStep(3);
     onAssessmentComplete();
 
-    if (resultData.risk_level === 'HIGH') {
+    if (localAssessment.risk_level === 'HIGH' || localAssessment.is_emergency) {
       confetti({
         particleCount: 50,
         spread: 60,
@@ -375,10 +281,11 @@ export const AshaScreeningFlow: React.FC<AshaScreeningFlowProps> = ({
   const updateReferral = async (newStatus: 'REFERRED' | 'APPOINTMENT_REQUESTED' | 'CONSULTATION_COMPLETED') => {
     if (!activeAssessment) return;
 
-    // Update state locally
-    const updated = { ...activeAssessment, referral_status: newStatus };
-    setActiveAssessment(updated);
-    await db.assessments.put({ ...updated, synced: false });
+    // Atomically update referral status with outbox entry (TASK-004)
+    const updated = await updateReferralAtomic(activeAssessment.id, newStatus);
+    if (updated) {
+      setActiveAssessment(updated);
+    }
 
     if (isOnline) {
       try {
@@ -387,9 +294,9 @@ export const AshaScreeningFlow: React.FC<AshaScreeningFlowProps> = ({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ referral_status: newStatus })
         });
-        await db.assessments.put({ ...updated, synced: true });
+        await db.assessments.update(activeAssessment.id, { sync_state: 'SYNCED', synced: true });
       } catch (err) {
-        console.warn('Referral sync pending offline', err);
+        console.warn('Referral sync pending in outbox', err);
       }
     }
 
@@ -913,7 +820,9 @@ export const AshaScreeningFlow: React.FC<AshaScreeningFlowProps> = ({
                   {activeAssessment.risk_level === 'HIGH' && <ShieldAlert className="w-5 h-5 text-rose-600 animate-bounce" />}
                   {activeAssessment.risk_level === 'HIGH' ? t.highRisk : activeAssessment.risk_level === 'MODERATE' ? t.modRisk : t.lowRisk}
                 </span>
-                <span className="text-xs font-bold opacity-75">Score: {Math.round(activeAssessment.risk_score * 100)}%</span>
+                <span className="text-xs font-bold opacity-75">
+                  Score: {activeAssessment.risk_score != null ? `${Math.round(activeAssessment.risk_score * 100)}%` : 'Uncertain (Data Gaps)'}
+                </span>
               </div>
             </div>
 
@@ -1132,37 +1041,7 @@ export const AshaScreeningFlow: React.FC<AshaScreeningFlowProps> = ({
               </div>
             </div>
 
-            {/* Medical Search Results (if available) */}
-            {hybridPredictions && hybridPredictions.predictions.some(p => p.google_score !== null) && (
-              <div className="mb-6 bg-gradient-to-r from-blue-50 to-cyan-50 p-5 rounded-2xl border border-blue-200">
-                <h3 className="text-sm font-extrabold uppercase tracking-wider text-blue-900 flex items-center gap-2 mb-2">
-                  <Sparkles className="w-4 h-4 text-blue-600" />
-                  Medical Knowledge Analysis
-                </h3>
-                <p className="text-[10px] text-blue-700 font-semibold mb-3">
-                  Medical knowledge search results (not a diagnosis)
-                </p>
-                <div className="space-y-2">
-                  {hybridPredictions.predictions
-                    .filter(p => p.google_score !== null)
-                    .map((pred, idx) => (
-                      <div key={idx} className="bg-white rounded-xl p-3 border border-blue-100 shadow-sm">
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-sm text-blue-900 capitalize">
-                            {pred.condition}
-                          </span>
-                          <span className="text-xs font-bold text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full">
-                            confidence: {(pred.google_score! * 100).toFixed(0)}%
-                          </span>
-                        </div>
-                        {pred.reasoning && (
-                          <p className="text-[10px] text-slate-600 mt-1">{pred.reasoning}</p>
-                        )}
-                      </div>
-                    ))}
-                </div>
-              </div>
-            )}
+
 
             {/* ── OBJECTIFIED DISEASE RISK CARD ─────────────────────────── */}
             <ObjectifiedRiskCard
@@ -1234,7 +1113,7 @@ export const AshaScreeningFlow: React.FC<AshaScreeningFlowProps> = ({
 interface ObjectifiedRiskCardProps {
   conditions: string[];
   riskLevel: string;
-  riskScore: number;
+  riskScore: number | null;
   onBookTeleconsult?: () => void;
 }
 
@@ -1387,14 +1266,14 @@ const ObjectifiedRiskCard: React.FC<ObjectifiedRiskCardProps> = ({
           <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">AI Risk Confidence Score</p>
           <span className={`text-xs font-black ${
             riskLevel === 'HIGH' ? 'text-rose-700' : riskLevel === 'MODERATE' ? 'text-amber-700' : 'text-emerald-700'
-          }`}>{Math.round(riskScore * 100)}%</span>
+          }`}>{riskScore !== null ? `${Math.round(riskScore * 100)}%` : 'N/A'}</span>
         </div>
         <div className="w-full h-2.5 bg-slate-200 rounded-full overflow-hidden">
           <div
             className={`h-full rounded-full transition-all duration-700 bg-gradient-to-r ${
               riskLevel === 'HIGH' ? 'from-rose-500 to-red-400' : riskLevel === 'MODERATE' ? 'from-amber-400 to-orange-400' : 'from-emerald-400 to-teal-400'
             }`}
-            style={{ width: `${Math.round(riskScore * 100)}%` }}
+            style={{ width: `${riskScore !== null ? Math.round(riskScore * 100) : 0}%` }}
           />
         </div>
       </div>

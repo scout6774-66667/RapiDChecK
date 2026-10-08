@@ -1,32 +1,42 @@
-# React + TypeScript + Vite
+# RapiDChecK Frontend (React 19 + TypeScript + Vite PWA)
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Progressive Web Application (PWA) designed for frontline ASHA/ANM health workers and Primary Health Centre (PHC) medical officers.
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## 📴 Key Offline-First Capabilities
 
-## React Compiler
+1. **Durable Dexie v4 Outbox:** All local mutations are committed in a single atomic transaction alongside an outbox queue operation.
+2. **Local Evaluation Engine:** Client-side TypeScript evaluator executing versioned ruleset `v2.0.0` with 100% equivalence against Python backend golden vectors.
+3. **Heartbeat & Auto-Sync Worker:** Background sync queue listener that pushes pending operations on network reconnection.
+4. **Multilingual Speech-to-Text:** Voice intake supporting English, Hindi (हिंदी), and Bengali (বাংলা) via Web Speech API.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+---
 
-## Expanding the Oxlint configuration
+## 🚀 Development & Testing Commands
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+```powershell
+# Install dependencies
+npm install
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+# Run Vite dev server
+npm run dev
+
+# Run Production Build
+npm run build
+
+# Run Client-Side Golden Vector Tests
+node test_golden_vectors.js
+
+# Run Outbox Atomic Persistence & Recovery Tests
+node test_task004_outbox.js
+
+# Run 20 Offline Failure-Injection Scenarios Runner
+python generate_offline_validation_report.py
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+For complete system architecture and documentation, see:
+- [**Project Architecture (`docs/PROJECT.md`)**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/PROJECT.md)
+- [**Database Specification (`docs/DATABASE.md`)**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/DATABASE.md)
+- [**Authentication & RBAC (`docs/AUTH.md`)**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/AUTH.md)
+- [**Features & Engine Specification (`docs/FEATURE.md`)**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/FEATURE.md)

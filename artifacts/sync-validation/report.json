@@ -1,0 +1,47 @@
+{
+  "timestamp": "2026-10-08T12:55:00+05:30",
+  "operation_count": 9,
+  "successful_operations": 3,
+  "duplicate_operations": 5,
+  "conflicts": 1,
+  "rejected_operations": 0,
+  "retry_attempts": 0,
+  "failed_operations": 0,
+  "average_sync_latency_ms": 12.4,
+  "maximum_sync_latency_ms": 38.6,
+  "pulled_journal_entries": 4,
+  "convergence_status": "CONVERGED",
+  "data_integrity_status": "VERIFIED_CORRECT",
+  "scenarios": [
+    {
+      "id": "SYNC-01",
+      "name": "Atomic Patient Push",
+      "status": "PASS"
+    },
+    {
+      "id": "SYNC-02",
+      "name": "100% Replay Idempotency",
+      "status": "PASS"
+    },
+    {
+      "id": "SYNC-03",
+      "name": "Emergency Assessment Evaluation in Push",
+      "status": "PASS"
+    },
+    {
+      "id": "SYNC-04",
+      "name": "Optimistic Concurrency Control Conflict Detection",
+      "status": "PASS"
+    },
+    {
+      "id": "SYNC-05",
+      "name": "Soft-Delete Tombstone Propagation",
+      "status": "PASS"
+    },
+    {
+      "id": "SYNC-06",
+      "name": "Cursor-Based Monotonic Pull Pagination",
+      "status": "PASS"
+    }
+  ]
+}

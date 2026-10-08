@@ -1,0 +1,27 @@
+{
+  "rulesetVersion": "2.0.0",
+  "category": "UNCERTAINTY_AND_SUFFICIENCY",
+  "mandatoryVitalsForScreening": [
+    "systolic_bp",
+    "diastolic_bp",
+    "glucose_mg_dl",
+    "temperature_f"
+  ],
+  "states": {
+    "INSUFFICIENT_DATA": {
+      "condition": "Zero vital signs recorded",
+      "action": "Suspend numerical risk score calculation. Output INSUFFICIENT_DATA state and prompt for vitals at PHC/Sub-Centre.",
+      "riskScore": null,
+      "triageState": "INSUFFICIENT_DATA"
+    },
+    "UNCERTAIN": {
+      "condition": "Only 1 vital sign recorded with active symptoms",
+      "action": "Calculate approximate score but flag UNCERTAIN state with mandatory physical referral.",
+      "triageState": "MODERATE_RISK"
+    },
+    "COMPLETE": {
+      "condition": "Sufficient physiological parameters captured",
+      "action": "Execute complete deterministic risk calculation."
+    }
+  }
+}

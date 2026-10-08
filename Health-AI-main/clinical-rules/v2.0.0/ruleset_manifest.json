@@ -1,0 +1,31 @@
+{
+  "rulesetId": "RAPIDCHECK_CLINICAL_RULES",
+  "version": "2.0.0",
+  "name": "Frontline Rural Health Triage & Screening Ruleset",
+  "status": "APPROVED",
+  "effectiveDate": "2026-03-01",
+  "clinicalGovernanceOwners": [
+    {
+      "domain": "Metabolic / Diabetes",
+      "owner": "Clinical Advisory Board",
+      "guidelineReference": "ICMR Guidelines for Management of Type 2 Diabetes"
+    },
+    {
+      "domain": "Cardiovascular / Hypertension",
+      "owner": "Cardiovascular Clinical Reviewer",
+      "guidelineReference": "Indian Hypertension Guidelines (IHG-IV) & WHO HEARTS"
+    },
+    {
+      "domain": "Respiratory / TB Triage",
+      "owner": "Pulmonary Health Specialist",
+      "guidelineReference": "National Tuberculosis Elimination Program (NTEP) Presumptive TB Criteria"
+    },
+    {
+      "domain": "Emergency Red Flags",
+      "owner": "Emergency Medicine Lead",
+      "guidelineReference": "National Health Mission Emergency Triage Protocol"
+    }
+  ],
+  "riskManagementStandard": "ISO 14971:2019",
+  "intendedPopulation": "Adult rural patients presenting at Sub-Centres, Health & Wellness Centres, or household visits in India."
+}

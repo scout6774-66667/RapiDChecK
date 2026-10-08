@@ -1,0 +1,58 @@
+{
+  "artifact": "clinical-validation",
+  "timestamp": "2026-10-08T07:57:15.869722+00:00",
+  "git_commit": "ab74f35",
+  "workflow_version": "2.0.0",
+  "ruleset_version": "2.0.0",
+  "engine": "Deterministic Clinical Triage & Red-Flag Engine",
+  "review_lifecycle_suite": "REV-001 to REV-009",
+  "tests": [
+    {
+      "test_id": "REV-001",
+      "name": "Approve Clinical Review with Attestation",
+      "status": "PASS"
+    },
+    {
+      "test_id": "REV-002",
+      "name": "Modify Clinical Review with Override Justification",
+      "status": "PASS"
+    },
+    {
+      "test_id": "REV-003",
+      "name": "Reject Clinical Review with Attestation",
+      "status": "PASS"
+    },
+    {
+      "test_id": "REV-004",
+      "name": "Missing Clinical Notes Rejection (422)",
+      "status": "PASS"
+    },
+    {
+      "test_id": "REV-005",
+      "name": "Missing Override Reason on Modification Rejection (422)",
+      "status": "PASS"
+    },
+    {
+      "test_id": "REV-006",
+      "name": "Governed Emergency Downgrade with Justification",
+      "status": "PASS"
+    },
+    {
+      "test_id": "REV-007",
+      "name": "Stale Review Version OCC Conflict (409)",
+      "status": "PASS"
+    },
+    {
+      "test_id": "REV-008",
+      "name": "Duplicate Review Submission Idempotency",
+      "status": "PASS"
+    },
+    {
+      "test_id": "REV-009",
+      "name": "Concurrent Review Conflict Detection",
+      "status": "PASS"
+    }
+  ],
+  "golden_vector_agreement": "10/10 (100%)",
+  "verdict": "PASS"
+}

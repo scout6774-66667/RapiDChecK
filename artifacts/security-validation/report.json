@@ -1,0 +1,82 @@
+{
+  "artifact": "security-validation",
+  "timestamp": "2026-10-08T07:57:15.869722+00:00",
+  "git_commit": "ab74f35",
+  "environment": "production-ready",
+  "test_suite": "RBAC-001 to RBAC-005 & ATT-001 to ATT-009",
+  "rbac_tests": [
+    {
+      "test_id": "RBAC-001",
+      "name": "ASHA Worker Review Rejection (403)",
+      "status": "PASS"
+    },
+    {
+      "test_id": "RBAC-002",
+      "name": "ASHA Worker Clinical Override Rejection (403)",
+      "status": "PASS"
+    },
+    {
+      "test_id": "RBAC-003",
+      "name": "District Officer Review Rejection (403)",
+      "status": "PASS"
+    },
+    {
+      "test_id": "RBAC-004",
+      "name": "Cross-Facility Access Violation Rejection (403)",
+      "status": "PASS"
+    },
+    {
+      "test_id": "RBAC-005",
+      "name": "Forged Frontend Role Request Header Rejection (403)",
+      "status": "PASS"
+    }
+  ],
+  "attestation_tests": [
+    {
+      "test_id": "ATT-001",
+      "name": "Valid Server-Side Cryptographic Attestation Verification",
+      "status": "PASS"
+    },
+    {
+      "test_id": "ATT-002",
+      "name": "Tampered Reviewer ID Tamper Detection",
+      "status": "PASS"
+    },
+    {
+      "test_id": "ATT-003",
+      "name": "Tampered Clinical Decision Tamper Detection",
+      "status": "PASS"
+    },
+    {
+      "test_id": "ATT-004",
+      "name": "Tampered Override Reason Tamper Detection",
+      "status": "PASS"
+    },
+    {
+      "test_id": "ATT-005",
+      "name": "Tampered Timestamp Tamper Detection",
+      "status": "PASS"
+    },
+    {
+      "test_id": "ATT-006",
+      "name": "Tampered Assessment ID Tamper Detection",
+      "status": "PASS"
+    },
+    {
+      "test_id": "ATT-007",
+      "name": "Attestation Replay Protection",
+      "status": "PASS"
+    },
+    {
+      "test_id": "ATT-008",
+      "name": "Duplicate Attestation Idempotency",
+      "status": "PASS"
+    },
+    {
+      "test_id": "ATT-009",
+      "name": "HMAC Secret Key Rotation Invalidation",
+      "status": "PASS"
+    }
+  ],
+  "verdict": "PASS"
+}

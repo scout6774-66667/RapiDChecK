@@ -1,38 +1,54 @@
 import React, { useState, useEffect } from 'react';
-import { RuralHealthDashboard } from './components/dashboard/RuralHealthDashboard';
-import type { DashboardNavTab } from './components/dashboard/DashboardSidebar';
-import { ScreenPatientPage } from './components/screening/ScreenPatientPage';
+import { Header } from './components/Header';
+import { AshaScreeningFlow } from './components/AshaScreeningFlow';
 import { PhcDashboard } from './components/PhcDashboard';
 import { PatientDirectory } from './components/PatientDirectory';
 import { HealthChatbot } from './components/HealthChatbot';
-import { ChatAssistantPage } from './components/ChatAssistantPage';
 import { TeleconsultBooking } from './components/TeleconsultBooking';
-import { HealthResourcesModal } from './components/dashboard/HealthResourcesModal';
+import { HealthResourcesPage } from './healthResources/HealthResourcesPage';
 import type { Language } from './i18n/translations';
 import { db } from './db/offlineDb';
+import { syncManager } from './sync/SyncManager';
 import { useLiveQuery } from 'dexie-react-hooks';
 import WaterDropClick from './components/WaterDropClick';
-import { ArrowLeft } from 'lucide-react';
-import { PopulationHealthPanel } from './components/dashboard/population/PopulationHealthPanel';
 
 export function App() {
-  const [currentTab, setCurrentTab] = useState<DashboardNavTab>('dashboard');
+  const [currentTab, setCurrentTab] = useState<'asha' | 'phc' | 'patients' | 'high-risk' | 'teleconsult' | 'resources'>('asha');
+  const [activePatientContextId] = useState<string | null>(null);
+  const [activeAssessmentContextId] = useState<string | null>(null);
   const [lang, setLang] = useState<Language>('en');
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [notification, setNotification] = useState<string | null>(null);
-  const [showResourcesModal, setShowResourcesModal] = useState<boolean>(false);
 
-  // Unsynced count from Dexie IndexedDB
-  const unsyncedPatients = useLiveQuery(() => db.patients.where('synced').equals(0).toArray()) || [];
-  const unsyncedAssessments = useLiveQuery(() => db.assessments.where('synced').equals(0).toArray()) || [];
-  const unsyncedAppointments = useLiveQuery(() => db.appointments.where('synced').equals(0).toArray()) || [];
-  const pendingSyncCount = unsyncedPatients.length + unsyncedAssessments.length + unsyncedAppointments.length;
+  // ── Dark Mode ──────────────────────────────────────────────────────────────
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    const saved = localStorage.getItem('ruralhealth-dark-mode');
+    if (saved !== null) return saved === 'true';
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  });
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (darkMode) {
+      root.classList.add('dark');
+    } else {
+      root.classList.remove('dark');
+    }
+    localStorage.setItem('ruralhealth-dark-mode', String(darkMode));
+  }, [darkMode]);
+
+  // Unsynced outbox count from Dexie IndexedDB (TASK-004, TASK-005, TASK-006)
+  const queuedOutbox = useLiveQuery(() => db.outbox.where('status').equals('QUEUED').toArray()) || [];
+  const pendingSyncCount = queuedOutbox.length;
 
   useEffect(() => {
     let heartbeatTimer: ReturnType<typeof setInterval>;
 
-    // Check if the backend is actually reachable
+    // Start background periodic sync when online
+    syncManager.startPeriodicSync(20000);
+
+    // Check if the backend is actually reachable (not just internet connectivity)
     const checkBackend = async () => {
       try {
         const res = await fetch('http://127.0.0.1:8000/api/health', {
@@ -57,6 +73,7 @@ export function App() {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
       clearInterval(heartbeatTimer);
+      syncManager.stopPeriodicSync();
     };
   }, []);
 
@@ -68,11 +85,11 @@ export function App() {
       return;
     }
     if (isOnline && prevOnlineRef.current === false) {
-      showNotification('Backend connected. Syncing offline records...');
+      showNotification('Backend connected. Syncing offline records via V2 Push/Pull...');
       triggerSync();
     }
     if (!isOnline && prevOnlineRef.current === true) {
-      showNotification('Operating in OFFLINE mode. All data saved locally.');
+      showNotification('Operating in OFFLINE mode. All mutations queued durably in Outbox.');
     }
     prevOnlineRef.current = isOnline;
   }, [isOnline]);
@@ -89,41 +106,12 @@ export function App() {
     setIsSyncing(true);
 
     try {
-      const pList = await db.patients.where('synced').equals(0).toArray();
-      const aList = await db.assessments.where('synced').equals(0).toArray();
-      const apptList = await db.appointments.where('synced').equals(0).toArray();
-
-      if (pList.length === 0 && aList.length === 0 && apptList.length === 0) {
-        setIsSyncing(false);
-        return;
+      const { push, pull } = await syncManager.runFullSync();
+      if (push.applied > 0 || pull.appliedCount > 0) {
+        showNotification(`Sync Complete! Pushed ${push.applied} changes, pulled ${pull.appliedCount} updates.`);
+      } else if (push.conflicts > 0) {
+        showNotification(`Sync Alert: ${push.conflicts} conflict(s) detected and staged for resolution.`);
       }
-
-      if (pList.length > 0 || aList.length > 0) {
-        const response = await fetch('http://127.0.0.1:8000/api/sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ patients: pList, assessments: aList })
-        });
-        if (response.ok) {
-          for (const p of pList) await db.patients.update(p.id, { synced: true });
-          for (const a of aList) await db.assessments.update(a.id, { synced: true });
-        }
-      }
-
-      let syncedAppts = 0;
-      for (const appt of apptList) {
-        try {
-          await fetch(`http://127.0.0.1:8000/api/appointments`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...appt, likely_conditions: appt.likely_conditions || [] })
-          });
-          await db.appointments.update(appt.id, { synced: true });
-          syncedAppts++;
-        } catch { /* skip */ }
-      }
-
-      showNotification(`Sync Complete! ${pList.length} patients, ${aList.length} assessments, ${syncedAppts} appointments synced.`);
     } catch (err) {
       console.warn('Sync failed', err);
     } finally {
@@ -131,135 +119,105 @@ export function App() {
     }
   };
 
-  const handleNavigateTab = (tab: DashboardNavTab) => {
-    if (tab === 'resources') {
-      setShowResourcesModal(true);
-      return;
-    }
-    setCurrentTab(tab);
-  };
-
   return (
-    <div className="min-h-screen bg-[#F4F9FA] text-[#102A56] flex flex-col font-sans selection:bg-[#0A9F68] selection:text-white">
+    <div className="min-h-screen bg-slate-100 dark:bg-slate-900 text-slate-900 dark:text-slate-100 flex flex-col font-sans selection:bg-emerald-500 dark:selection:bg-emerald-400 selection:text-white dark:selection:text-slate-900 transition-colors duration-300">
       <WaterDropClick />
+      
+      {/* Top Header */}
+      <Header
+        currentTab={currentTab}
+        onTabChange={setCurrentTab}
+        lang={lang}
+        onLangChange={setLang}
+        isOnline={isOnline}
+        pendingSyncCount={pendingSyncCount}
+        onSyncTrigger={triggerSync}
+        isSyncing={isSyncing}
+        darkMode={darkMode}
+        onDarkModeToggle={() => setDarkMode(!darkMode)}
+      />
+
+      {/* Persistent Offline Banner */}
+      {!isOnline && (
+        <div className="bg-gradient-to-r from-amber-600 to-orange-600 dark:from-amber-700 dark:to-orange-700 text-white px-4 py-2 text-center text-xs sm:text-sm font-bold shadow-lg flex items-center justify-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span>
+          <span>📡 OFFLINE MODE — All data saved locally. Auto-syncs when connection restores.</span>
+          {pendingSyncCount > 0 && (
+            <span className="bg-white/20 px-2 py-0.5 rounded-full text-[11px]">{pendingSyncCount} pending</span>
+          )}
+        </div>
+      )}
 
       {/* Toast Notification Banner */}
       {notification && (
-        <div className="fixed top-3 right-4 z-50 bg-[#102A56] text-[#10B981] border border-[#10B981]/40 px-4 py-2.5 rounded-2xl shadow-xl animate-in fade-in slide-in-from-top-2 duration-200 flex items-center gap-2 text-xs font-bold">
-          <span className="w-2 h-2 rounded-full bg-[#10B981] animate-ping"></span>
+        <div className="bg-slate-900 dark:bg-slate-800 text-emerald-400 border-b border-emerald-500/40 px-4 py-2.5 text-center text-xs sm:text-sm font-bold shadow-lg animate-fade-in flex items-center justify-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
           <span>{notification}</span>
         </div>
       )}
 
-      {/* Top Breadcrumb Bar when viewing Sub-Screens (other than dashboard and screen which have full layout) */}
-      {currentTab !== 'dashboard' && currentTab !== 'screen' && (
-        <div className="bg-white border-b border-[#E5EEF1] px-4 sm:px-6 py-2.5 flex items-center justify-between sticky top-0 z-40 shadow-xs">
-          <button
-            onClick={() => setCurrentTab('dashboard')}
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#E7F7F0] text-[#0A9F68] hover:bg-[#0A9F68] hover:text-white font-bold text-xs transition-all"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span>Back to Dashboard</span>
-          </button>
-
-          <div className="flex items-center gap-1.5 text-xs font-semibold">
-            <span className="text-slate-400">RuralHealth AI</span>
-            <span className="text-slate-300">/</span>
-            <span className="text-[#102A56] capitalize font-bold">
-              {currentTab === 'patients'
-                ? 'Patient Directory'
-                : currentTab === 'referrals'
-                ? 'IDRC Referrals & Care'
-                : currentTab === 'appointments'
-                ? 'Doctor Appointments'
-                : currentTab === 'population_health'
-                ? 'Population Health Intelligence (HMIS + NFHS-5)'
-                : currentTab === 'analytics'
-                ? 'Analytics'
-                : 'Chat Assistant'}
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* Main View Switcher */}
-      <div className="flex-1">
-        {currentTab === 'dashboard' && (
-          <RuralHealthDashboard
+      {/* Main Content View */}
+      <main className="flex-1 pb-12">
+        {currentTab === 'asha' && (
+          <AshaScreeningFlow
             lang={lang}
-            onLangChange={setLang}
             isOnline={isOnline}
-            pendingSyncCount={pendingSyncCount}
-            onSyncTrigger={triggerSync}
-            isSyncing={isSyncing}
-            onNavigateToTab={handleNavigateTab}
-            onStartScreeningPatient={() => {
-              setCurrentTab('screen');
+            onAssessmentComplete={() => {
+              if (isOnline && pendingSyncCount > 0) {
+                triggerSync();
+              }
             }}
+            onBookTeleconsult={() => setCurrentTab('teleconsult')}
           />
         )}
 
-        {currentTab === 'screen' && (
-          <ScreenPatientPage
+        {(currentTab === 'phc' || currentTab === 'high-risk') && (
+          <PhcDashboard
             lang={lang}
-            onLangChange={setLang}
             isOnline={isOnline}
-            pendingSyncCount={pendingSyncCount}
-            onSyncTrigger={triggerSync}
-            isSyncing={isSyncing}
-            onNavigateToTab={handleNavigateTab}
-            onBookTeleconsult={() => setCurrentTab('appointments')}
+            defaultRiskFilter={currentTab === 'high-risk' ? 'HIGH' : 'ALL'}
           />
         )}
 
         {currentTab === 'patients' && (
-          <div className="p-4 sm:p-6 max-w-7xl mx-auto">
-            <PatientDirectory lang={lang} isOnline={isOnline} />
-          </div>
+          <PatientDirectory
+            lang={lang}
+            isOnline={isOnline}
+          />
         )}
 
-        {(currentTab === 'referrals' || currentTab === 'analytics') && (
-          <div className="p-4 sm:p-6 max-w-7xl mx-auto">
-            <PhcDashboard
-              lang={lang}
-              isOnline={isOnline}
-              defaultRiskFilter={currentTab === 'referrals' ? 'HIGH' : 'ALL'}
-            />
-          </div>
+        {currentTab === 'teleconsult' && (
+          <TeleconsultBooking
+            lang={lang}
+            isOnline={isOnline}
+          />
         )}
 
-        {currentTab === 'appointments' && (
-          <div className="p-4 sm:p-6 max-w-7xl mx-auto">
-            <TeleconsultBooking lang={lang} isOnline={isOnline} />
-          </div>
+        {currentTab === 'resources' && (
+          <HealthResourcesPage
+            lang={lang}
+            isOnline={isOnline}
+            preselectedPatientId={activePatientContextId}
+            preselectedAssessmentId={activeAssessmentContextId}
+          />
         )}
+      </main>
 
-        {currentTab === 'population_health' && (
-          <div className="p-4 sm:p-6 max-w-7xl mx-auto">
-            <PopulationHealthPanel isOnline={isOnline} />
-          </div>
-        )}
+      {/* Floating Health Chatbot */}
+      <HealthChatbot lang={lang} isOnline={isOnline} />
 
-        {currentTab === 'chat' && (
-          <div className="p-4 sm:p-6 max-w-5xl mx-auto">
-            <ChatAssistantPage lang={lang} isOnline={isOnline} />
-          </div>
-        )}
-      </div>
+      {/* Footer */}
+      <footer className="bg-slate-900 dark:bg-slate-950 text-slate-400 dark:text-slate-500 text-[11px] py-4 text-center border-t border-slate-800 dark:border-slate-800 transition-colors">
+        <p className="font-semibold">
+          RuralHealth AI • Hackathon Prototype for Early Disease Risk Prediction & Rural Access
+        </p>
+        <p className="text-slate-500 dark:text-slate-600 mt-0.5">
+          Decision Support Tool only • Not a substitute for professional clinical diagnosis
+        </p>
+      </footer>
 
-      {/* Floating Chat Assistant (Active on any screen except full Chat page) */}
-      {currentTab !== 'chat' && (
-        <HealthChatbot lang={lang} isOnline={isOnline} />
-      )}
-
-      {/* Health Resources Modal */}
-      <HealthResourcesModal
-        isOpen={showResourcesModal}
-        onClose={() => setShowResourcesModal(false)}
-      />
     </div>
   );
 }
 
 export default App;
-

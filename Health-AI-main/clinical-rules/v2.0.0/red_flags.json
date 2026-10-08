@@ -1,0 +1,95 @@
+{
+  "rulesetVersion": "2.0.0",
+  "category": "EMERGENCY_RED_FLAGS",
+  "precedence": "ABSOLUTE_SHORT_CIRCUIT",
+  "rules": [
+    {
+      "id": "RF-HTN-01",
+      "name": "Hypertensive Crisis",
+      "criteria": "systolic_bp >= 180 OR diastolic_bp >= 120",
+      "finding": "Hypertensive Crisis Vitals (BP: {systolic}/{diastolic} mmHg >= 180/120)",
+      "condition": "Hypertensive Crisis — Immediate Emergency Care Required",
+      "action": "🚨 CRITICAL EMERGENCY RED FLAG: Immediate medical intervention required. Contact 108 Emergency Ambulance service or transfer to CHC/District Hospital."
+    },
+    {
+      "id": "RF-ACS-01",
+      "name": "Acute Coronary Syndrome Presentation",
+      "criteria": "(chest pain OR chest discomfort OR cardiac pain) AND (shortness of breath OR breathlessness OR dizziness OR palpitations OR sweating OR radiating pain)",
+      "finding": "Acute Coronary Syndrome Presentation (Chest pain combined with acute distress / breathlessness)",
+      "condition": "Suspected Acute Myocardial Infarction / Unstable Angina — Call 108 Immediately",
+      "action": "🚨 CRITICAL EMERGENCY RED FLAG: Immediate medical intervention required. Contact 108 Emergency Ambulance service."
+    },
+    {
+      "id": "RF-ACS-02",
+      "name": "Unexplained Acute Chest Pain",
+      "criteria": "chest pain OR cardiac pain",
+      "finding": "Unexplained Acute Chest Pain reported",
+      "condition": "Acute Chest Pain Evaluation Required — Emergency Referral",
+      "action": "🚨 CRITICAL EMERGENCY RED FLAG: Immediate medical intervention required."
+    },
+    {
+      "id": "RF-HEM-01",
+      "name": "Acute Pulmonary Hemoptysis",
+      "criteria": "coughing blood OR blood in sputum OR hemoptysis OR vomiting blood",
+      "finding": "Acute Hemoptysis / Bleeding (Coughing blood or blood in sputum)",
+      "condition": "Acute Hemoptysis / Severe Pulmonary Hemorrhage — Urgent Hospital Triage",
+      "action": "🚨 CRITICAL EMERGENCY RED FLAG: Immediate medical intervention required."
+    },
+    {
+      "id": "RF-PYR-01",
+      "name": "Severe Hyperpyrexia",
+      "criteria": "temperature_f >= 104.0",
+      "finding": "Hyperpyrexia Recorded (Temperature: {temperature_f}°F >= 104.0°F)",
+      "condition": "Severe Hyperpyrexia / Central Fever Alert",
+      "action": "🚨 CRITICAL EMERGENCY RED FLAG: Immediate medical intervention required."
+    },
+    {
+      "id": "RF-GLU-01",
+      "name": "Critical Hyperglycemic Emergency",
+      "criteria": "glucose_mg_dl >= 400.0",
+      "finding": "Critical Hyperglycemia ({glucose_mg_dl} mg/dL >= 400 mg/dL — DKA / HHS Risk)",
+      "condition": "Critical Diabetic Hyperglycemic Crisis — Immediate IV Hydration & PHC/CHC Transfer",
+      "action": "🚨 CRITICAL EMERGENCY RED FLAG: Immediate medical intervention required."
+    },
+    {
+      "id": "RF-GLU-02",
+      "name": "Severe Neuroglycopenic Hypoglycemia",
+      "criteria": "glucose_mg_dl < 54.0",
+      "finding": "Severe Neuroglycopenic Hypoglycemia ({glucose_mg_dl} mg/dL < 54 mg/dL)",
+      "condition": "Severe Acute Hypoglycemia — Administer Fast-Acting Glucose / Urgent Care",
+      "action": "🚨 CRITICAL EMERGENCY RED FLAG: Immediate medical intervention required."
+    },
+    {
+      "id": "RF-HR-01",
+      "name": "Severe Tachyarrhythmia",
+      "criteria": "heart_rate_bpm >= 150",
+      "finding": "Severe Tachyarrhythmia ({heart_rate_bpm} bpm >= 150 bpm)",
+      "condition": "Severe Tachycardia / Potential Hemodynamic Compromise",
+      "action": "🚨 CRITICAL EMERGENCY RED FLAG: Immediate medical intervention required."
+    },
+    {
+      "id": "RF-HR-02",
+      "name": "Severe Symptomatic Bradycardia",
+      "criteria": "heart_rate_bpm <= 40",
+      "finding": "Severe Symptomatic Bradycardia ({heart_rate_bpm} bpm <= 40 bpm)",
+      "condition": "Severe Bradycardia / Potential Heart Block",
+      "action": "🚨 CRITICAL EMERGENCY RED FLAG: Immediate medical intervention required."
+    },
+    {
+      "id": "RF-BP-LOW",
+      "name": "Critical Hypotension / Shock State",
+      "criteria": "systolic_bp < 80",
+      "finding": "Critical Hypotension / Shock State (Systolic BP: {systolic_bp} mmHg < 80 mmHg)",
+      "condition": "Suspected Hemodynamic Shock / Severe Dehydration",
+      "action": "🚨 CRITICAL EMERGENCY RED FLAG: Immediate medical intervention required."
+    },
+    {
+      "id": "RF-NEURO-01",
+      "name": "Altered Mental Status / Acute Deficit",
+      "criteria": "unconscious OR loss of consciousness OR fainting with seizure OR altered mental status OR slurred speech",
+      "finding": "Altered Consciousness / Acute Neurological Deficit",
+      "condition": "Acute Neurological Emergency / Stroke / Encephalopathy Alert",
+      "action": "🚨 CRITICAL EMERGENCY RED FLAG: Immediate medical intervention required."
+    }
+  ]
+}

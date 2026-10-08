@@ -6,7 +6,16 @@ import {
   Thermometer, Heart, Droplets, Stethoscope, WifiOff
 } from 'lucide-react';
 import { translations, type Language } from '../i18n/translations';
-import { db, type LocalPatient, type LocalAssessment } from '../db/offlineDb';
+import { 
+  db, 
+  type LocalPatient, 
+  type LocalAssessment,
+  savePatientAtomic,
+  saveAssessmentAtomic,
+  deletePatientAtomic,
+  getActivePatients,
+  getActiveAssessments
+} from '../db/offlineDb';
 
 interface PatientDirectoryProps {
   lang: Language;
@@ -107,14 +116,14 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
         ]);
         if (pRes.ok && aRes.ok) {
           const [p, a] = await Promise.all([pRes.json(), aRes.json()]);
-          setPatients(p);
-          setAssessments(a);
+          setPatients(p.filter((pt: LocalPatient) => !pt.is_deleted));
+          setAssessments(a.filter((at: LocalAssessment) => !at.is_deleted));
           setIsLoading(false);
           return;
         }
       } catch { /* fall to IndexedDB */ }
     }
-    const [p, a] = await Promise.all([db.patients.toArray(), db.assessments.toArray()]);
+    const [p, a] = await Promise.all([getActivePatients(), getActiveAssessments()]);
     setPatients(p);
     setAssessments(a);
     setIsLoading(false);
@@ -172,42 +181,42 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
 
     setIsSaving(true); setFormError('');
 
-    const updatedPatient: LocalPatient = {
-      ...editingPatient,
-      name:    pForm.name.trim(),
-      age,
-      gender:  pForm.gender,
-      village: pForm.village.trim(),
-      phone:   pForm.phone.trim(),
-      synced:  false
-    };
-
     try {
-      // 1. Save patient to IndexedDB
-      await db.patients.put(updatedPatient);
+      // 1. Atomically save patient + queue outbox UPDATE operation
+      const savedPatient = await savePatientAtomic({
+        id: editingPatient.id,
+        national_health_id: editingPatient.national_health_id,
+        name: pForm.name.trim(),
+        age,
+        gender: pForm.gender,
+        village: pForm.village.trim(),
+        phone: pForm.phone.trim(),
+        patient_id: editingPatient.patient_id
+      }, false);
 
-      // 2. Save any edited assessments to IndexedDB
+      // 2. Save any edited assessments atomically with clinical re-evaluation
       for (const [aId, af] of Object.entries(aForms)) {
         const origAssessment = assessments.find(a => a.id === aId);
         if (!origAssessment) continue;
-        const updatedA: LocalAssessment = {
-          ...origAssessment,
-          symptoms:              af.symptoms.split(',').map(s => s.trim()).filter(Boolean),
+        await saveAssessmentAtomic({
+          id: aId,
+          patient_id: editingPatient.id,
+          patient_name: savedPatient.name,
+          village: savedPatient.village,
+          symptoms: af.symptoms.split(',').map(s => s.trim()).filter(Boolean),
           symptom_duration_days: parseInt(af.symptom_duration_days) || 1,
-          temperature_f:         parseFloat(af.temperature_f) || 98.6,
-          systolic_bp:           parseInt(af.systolic_bp) || 120,
-          diastolic_bp:          parseInt(af.diastolic_bp) || 80,
-          glucose_mg_dl:         parseFloat(af.glucose_mg_dl) || 100,
-          heart_rate_bpm:        parseInt(af.heart_rate_bpm) || 72,
-          height_cm:             parseFloat(af.height_cm) || undefined,
-          weight_kg:             parseFloat(af.weight_kg) || undefined,
-          smoking_status:        af.smoking_status,
-          alcohol_status:        af.alcohol_status,
-          physical_activity:     af.physical_activity,
-          family_history:        af.family_history.split(',').map(s => s.trim()).filter(Boolean),
-          synced:                false
-        };
-        await db.assessments.put(updatedA);
+          temperature_f: parseFloat(af.temperature_f) || 98.6,
+          systolic_bp: parseInt(af.systolic_bp) || 120,
+          diastolic_bp: parseInt(af.diastolic_bp) || 80,
+          glucose_mg_dl: parseFloat(af.glucose_mg_dl) || 100,
+          heart_rate_bpm: parseInt(af.heart_rate_bpm) || 72,
+          height_cm: parseFloat(af.height_cm) || null,
+          weight_kg: parseFloat(af.weight_kg) || null,
+          smoking_status: af.smoking_status,
+          alcohol_status: af.alcohol_status,
+          physical_activity: af.physical_activity,
+          family_history: af.family_history.split(',').map(s => s.trim()).filter(Boolean)
+        });
       }
 
       // 3. Push to backend if online
@@ -217,22 +226,25 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              id: updatedPatient.id, name: updatedPatient.name, age: updatedPatient.age,
-              gender: updatedPatient.gender, village: updatedPatient.village, phone: updatedPatient.phone
+              id: savedPatient.id,
+              name: savedPatient.name,
+              age: savedPatient.age,
+              gender: savedPatient.gender,
+              village: savedPatient.village,
+              phone: savedPatient.phone
             })
           });
-          await db.patients.update(editingPatient.id, { synced: true });
-        } catch { /* sync later */ }
+          await db.patients.update(editingPatient.id, { sync_state: 'SYNCED', synced: true });
+        } catch { /* sync later via outbox */ }
       }
 
-      // 4. Update React state directly (NO re-fetch — avoids stale backend overwrite)
-      setPatients(prev => prev.map(p => p.id === editingPatient.id ? updatedPatient : p));
-      // Re-load assessments from IndexedDB to get updated values
-      const allA = await db.assessments.toArray();
-      setAssessments(allA);
+      // 4. Update React state
+      setPatients(prev => prev.map(p => p.id === editingPatient.id ? savedPatient : p));
+      const activeA = await getActiveAssessments();
+      setAssessments(activeA);
 
       setEditingPatient(null);
-      showToast(`✓ ${updatedPatient.name}'s record updated.`);
+      showToast(`✓ ${savedPatient.name}'s record updated.`);
     } catch {
       setFormError('Save failed. Please try again.');
     } finally {
@@ -254,41 +266,35 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
         
         if (!res.ok) {
           const errorData = await res.json().catch(() => ({}));
-          // Only proceed if it's explicitly our "Patient not found" response, otherwise it might be a route Not Found
           if (res.status !== 404 || errorData.detail !== "Patient not found") {
-            showToast('Server delete failed. Please ensure the backend is running and up to date.', 'error');
+            showToast('Server delete failed. Please ensure the backend is running.', 'error');
             setIsDeleting(false);
             return;
           }
         }
       } catch {
-        // Backend unreachable — delete locally and flag for re-sync
-        console.warn('Backend unreachable — deleting locally only');
+        console.warn('Backend unreachable — deleting locally and queuing outbox tombstone');
       }
     }
 
-    // ── Step 2: Delete from IndexedDB ─────────────────────────────────────────
+    // ── Step 2: Atomic Soft-Delete + Tombstone + Outbox in IndexedDB ───────────
     try {
-      await db.transaction('rw', db.patients, db.assessments, async () => {
-        await db.assessments.where('patient_id').equals(deletingPatient.id).delete();
-        await db.patients.delete(deletingPatient.id);
-      });
+      await deletePatientAtomic(deletingPatient.id);
     } catch (err) {
-      console.error('IndexedDB delete error:', err);
+      console.error('IndexedDB atomic delete error:', err);
     }
 
-    // ── Step 3: Update React state directly — DO NOT call loadData() ──────────
+    // ── Step 3: Update React state directly ───────────────────────────────────
     const deletedId = deletingPatient.id;
     setPatients(prev => prev.filter(p => p.id !== deletedId));
     setAssessments(prev => prev.filter(a => a.patient_id !== deletedId));
 
-    // Close any open panels showing the deleted patient
     if (viewPatient?.id === deletedId) setViewPatient(null);
     if (editingPatient?.id === deletedId) setEditingPatient(null);
 
     setDeletingPatient(null);
     setIsDeleting(false);
-    showToast(`🗑 ${deletingPatient.name} deleted from all stores.`, 'error');
+    showToast(`🗑 ${deletingPatient.name} deleted from records.`, 'error');
   };
 
   // ─── RENDER ─────────────────────────────────────────────────────────────────
@@ -468,7 +474,7 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
                           ass.risk_level === 'HIGH' ? 'bg-rose-100 text-rose-800'
                           : ass.risk_level === 'MODERATE' ? 'bg-amber-100 text-amber-800'
                           : 'bg-emerald-100 text-emerald-800'}`}>
-                          {ass.risk_level} · {Math.round(ass.risk_score * 100)}%
+                          {ass.risk_level} · {ass.risk_score != null ? `${Math.round(ass.risk_score * 100)}%` : 'Uncertain'}
                         </span>
                       </div>
                       <p className="text-slate-700 font-semibold">Symptoms: {ass.symptoms.join(', ') || 'None'}</p>

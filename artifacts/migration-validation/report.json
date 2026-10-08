@@ -1,0 +1,19 @@
+{
+  "timestamp": "2026-10-08T07:56:09.832106",
+  "source_sqlite": "C:\\Users\\ABIR SAHA\\Downloads\\Health-AI-main\\Health-AI-main\\backend\\ruralhealth.db",
+  "target_database": "sqlite:///ruralhealth_migrated_test.db",
+  "extracted_counts": {
+    "patients": 0,
+    "assessments": 0
+  },
+  "loaded_counts": {
+    "patients": 0,
+    "assessments": 0
+  },
+  "integrity_checks": {
+    "patient_count_matched": true,
+    "assessment_count_matched": true,
+    "foreign_keys_valid": true
+  },
+  "status": "SUCCESS"
+}

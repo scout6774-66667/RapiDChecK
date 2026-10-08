@@ -1,0 +1,205 @@
+{
+  "rulesetVersion": "2.0.0",
+  "workflowVersion": "2.0.0",
+  "description": "Cross-Platform Golden Test Vectors for Clinical Risk Engine",
+  "vectors": [
+    {
+      "id": "VECTOR-01-EMERGENCY-HTN-CRISIS",
+      "description": "Severe Hypertensive Crisis (190/125 mmHg)",
+      "input": {
+        "patient_id": "p-vec-01",
+        "systolic_bp": 190,
+        "diastolic_bp": 125,
+        "temperature_f": 98.6,
+        "glucose_mg_dl": 110.0,
+        "heart_rate_bpm": 88,
+        "symptoms": ["headache", "dizziness"]
+      },
+      "expected": {
+        "is_emergency": true,
+        "short_circuit": true,
+        "triage_state": "EMERGENCY",
+        "risk_level": "HIGH",
+        "risk_score": 0.99,
+        "referral_status": "REFERRED"
+      }
+    },
+    {
+      "id": "VECTOR-02-EMERGENCY-ACS",
+      "description": "Suspected Acute Coronary Syndrome (Chest pain + Shortness of breath)",
+      "input": {
+        "patient_id": "p-vec-02",
+        "systolic_bp": 130,
+        "diastolic_bp": 85,
+        "temperature_f": 98.4,
+        "glucose_mg_dl": 105.0,
+        "heart_rate_bpm": 92,
+        "symptoms": ["chest pain", "shortness of breath", "sweating"]
+      },
+      "expected": {
+        "is_emergency": true,
+        "short_circuit": true,
+        "triage_state": "EMERGENCY",
+        "risk_level": "HIGH",
+        "risk_score": 0.99,
+        "referral_status": "REFERRED"
+      }
+    },
+    {
+      "id": "VECTOR-03-EMERGENCY-HEMOPTYSIS",
+      "description": "Acute Pulmonary Hemoptysis (Coughing blood)",
+      "input": {
+        "patient_id": "p-vec-03",
+        "symptoms": ["coughing blood", "fever"],
+        "temperature_f": 101.8
+      },
+      "expected": {
+        "is_emergency": true,
+        "short_circuit": true,
+        "triage_state": "EMERGENCY",
+        "risk_level": "HIGH",
+        "risk_score": 0.99,
+        "referral_status": "REFERRED"
+      }
+    },
+    {
+      "id": "VECTOR-04-EMERGENCY-HYPERGLYCEMIA",
+      "description": "Critical Hyperglycemia (Glucose 450 mg/dL)",
+      "input": {
+        "patient_id": "p-vec-04",
+        "glucose_mg_dl": 450.0,
+        "symptoms": ["extreme fatigue", "increased thirst"]
+      },
+      "expected": {
+        "is_emergency": true,
+        "short_circuit": true,
+        "triage_state": "EMERGENCY",
+        "risk_level": "HIGH",
+        "risk_score": 0.99,
+        "referral_status": "REFERRED"
+      }
+    },
+    {
+      "id": "VECTOR-05-EMERGENCY-HYPOGLYCEMIA",
+      "description": "Severe Hypoglycemia (Glucose 42 mg/dL)",
+      "input": {
+        "patient_id": "p-vec-05",
+        "glucose_mg_dl": 42.0,
+        "symptoms": ["dizziness", "sweating", "weakness"]
+      },
+      "expected": {
+        "is_emergency": true,
+        "short_circuit": true,
+        "triage_state": "EMERGENCY",
+        "risk_level": "HIGH",
+        "risk_score": 0.99,
+        "referral_status": "REFERRED"
+      }
+    },
+    {
+      "id": "VECTOR-06-INSUFFICIENT-DATA",
+      "description": "Presenting symptoms with zero vitals captured",
+      "input": {
+        "patient_id": "p-vec-06",
+        "symptoms": ["fever", "headache", "fatigue"]
+      },
+      "expected": {
+        "is_emergency": false,
+        "short_circuit": false,
+        "triage_state": "INSUFFICIENT_DATA",
+        "risk_level": "INSUFFICIENT_DATA",
+        "uncertainty_state": "INSUFFICIENT_DATA",
+        "risk_score": null,
+        "referral_status": "NOT_REFERRED"
+      }
+    },
+    {
+      "id": "VECTOR-07-HIGH-RISK-CHRONIC-TB-COUGH",
+      "description": "Persistent cough >= 14 days (Presumptive TB criteria)",
+      "input": {
+        "patient_id": "p-vec-07",
+        "symptoms": ["cough", "night sweats"],
+        "symptom_duration_days": 16,
+        "temperature_f": 100.5,
+        "systolic_bp": 118,
+        "diastolic_bp": 78,
+        "glucose_mg_dl": 98.0,
+        "heart_rate_bpm": 76
+      },
+      "expected": {
+        "is_emergency": false,
+        "short_circuit": false,
+        "triage_state": "HIGH_RISK",
+        "risk_level": "HIGH",
+        "uncertainty_state": "COMPLETE",
+        "referral_status": "REFERRED"
+      }
+    },
+    {
+      "id": "VECTOR-08-HIGH-RISK-DIABETES-SEVELE",
+      "description": "Elevated Glucose 240 mg/dL with polyuria and polydipsia",
+      "input": {
+        "patient_id": "p-vec-08",
+        "glucose_mg_dl": 240.0,
+        "systolic_bp": 125,
+        "diastolic_bp": 82,
+        "temperature_f": 98.6,
+        "heart_rate_bpm": 78,
+        "symptoms": ["frequent urination", "increased thirst"]
+      },
+      "expected": {
+        "is_emergency": false,
+        "short_circuit": false,
+        "triage_state": "HIGH_RISK",
+        "risk_level": "HIGH",
+        "uncertainty_state": "COMPLETE",
+        "referral_status": "REFERRED"
+      }
+    },
+    {
+      "id": "VECTOR-09-MODERATE-RISK-STAGE1-HTN",
+      "description": "Stage 1 Borderline BP (135/85 mmHg) with Sedentary Lifestyle",
+      "input": {
+        "patient_id": "p-vec-09",
+        "systolic_bp": 135,
+        "diastolic_bp": 85,
+        "glucose_mg_dl": 102.0,
+        "temperature_f": 98.4,
+        "heart_rate_bpm": 72,
+        "physical_activity": "Sedentary",
+        "symptoms": []
+      },
+      "expected": {
+        "is_emergency": false,
+        "short_circuit": false,
+        "triage_state": "MODERATE_RISK",
+        "risk_level": "MODERATE",
+        "uncertainty_state": "COMPLETE",
+        "referral_status": "NOT_REFERRED"
+      }
+    },
+    {
+      "id": "VECTOR-10-LOW-RISK-HEALTHY-BASELINE",
+      "description": "All parameters normal with no symptoms",
+      "input": {
+        "patient_id": "p-vec-10",
+        "systolic_bp": 115,
+        "diastolic_bp": 75,
+        "glucose_mg_dl": 90.0,
+        "temperature_f": 98.4,
+        "heart_rate_bpm": 68,
+        "height_cm": 168.0,
+        "weight_kg": 64.0,
+        "symptoms": []
+      },
+      "expected": {
+        "is_emergency": false,
+        "short_circuit": false,
+        "triage_state": "LOW_RISK",
+        "risk_level": "LOW",
+        "uncertainty_state": "COMPLETE",
+        "referral_status": "NOT_REFERRED"
+      }
+    }
+  ]
+}

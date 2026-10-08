@@ -1,6 +1,6 @@
 import uuid
 import os
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 from datetime import datetime
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,17 +11,27 @@ from dotenv import load_dotenv
 # Load .env from the same directory as this file
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
 
-from database import init_db, get_db, PatientModel, AssessmentModel, AppointmentModel
+from database import init_db, get_db, PatientModel, AssessmentModel, AppointmentModel, SyncJournalModel, IdempotencyModel, UserModel, ClinicalReviewModel, AuditEventModel
 from schemas import (
     PatientCreate, PatientResponse,
     AssessmentCreate, AssessmentResponse,
     ReferralUpdate, SyncPayload, SyncResponse,
     AppointmentCreate, AppointmentResponse,
-    HospitalRecommendationItem, HospitalRecommendationRequest, HospitalRecommendationResponse
+    SyncPushRequest, SyncPushResponse,
+    SyncPullRequest, SyncPullResponse,
+    UserLoginRequest, UserRegisterRequest, UserResponse, TokenResponse, UserProfileResponse,
+    ClinicalReviewSubmitRequest, ClinicalReviewResponse, PendingReviewItem, ReviewHistoryItem
+)
+from sync_service import process_push_batch, process_pull_request, record_journal_entry
+from auth_service import (
+    hash_password, verify_password, create_access_token, decode_access_token,
+    get_current_user, require_roles, require_permissions, seed_default_users, ROLE_PERMISSIONS
+)
+from review_service import (
+    evaluate_review_requirement, list_pending_reviews, assign_review_to_doctor,
+    submit_clinician_review, get_review_history
 )
 from ml_engine import screening_engine, MEDICAL_DISCLAIMER
-from risk_scoring import classify_risk_level, calculate_item_risk, get_condition_profile
-from hospital_recommender import recommend_hospitals
 try:
     from ml.predictor import disease_predictor as _dp
     _ML_PREDICTOR = _dp
@@ -45,20 +55,17 @@ except Exception as _gemini_err:
     _GEMINI = None
     print(f"[main] Gemini client not loaded: {_gemini_err}")
 
-# Import Population Health Intelligence engine (HMIS + NFHS-5 Context & Trends)
-try:
-    from ml.population_health import population_health_engine as _pop_health, SAFETY_DISCLAIMER as _POP_DISCLAIMER
-    _POPULATION_HEALTH = _pop_health
-except Exception as _pop_err:
-    _POPULATION_HEALTH = None
-    _POP_DISCLAIMER = "Population health intelligence layer"
-    print(f"[main] Population health engine not loaded: {_pop_err}")
+from health_resources_service import seed_default_health_resources
+from health_resource_routes import router as health_resource_router
 
 app = FastAPI(
     title="RuralHealth AI Backend",
     description="AI-Powered Early Disease Risk Prediction & Rural Health Access Platform API",
-    version="1.0.0"
+    version="2.0.0"
 )
+
+# Mount Health Resources Router (v2)
+app.include_router(health_resource_router)
 
 # Enable CORS for local Vite dev server and mobile devices
 app.add_middleware(
@@ -72,6 +79,14 @@ app.add_middleware(
 @app.on_event("startup")
 def startup_event():
     init_db()
+    # Seed default frontline & clinician accounts
+    from database import SessionLocal
+    db = SessionLocal()
+    try:
+        seed_default_users(db)
+        seed_default_health_resources(db)
+    finally:
+        db.close()
 
 @app.get("/api/health")
 def health_check():
@@ -88,35 +103,86 @@ def create_patient(patient: PatientCreate, db: Session = Depends(get_db)):
 
     db_patient = PatientModel(
         id=p_id,
+        national_health_id=patient.national_health_id,
         name=patient.name,
         age=patient.age,
         gender=patient.gender,
         village=patient.village,
         phone=patient.phone,
         patient_id=patient.patient_id or f"RH-{p_id[:6].upper()}",
-        created_at=datetime.utcnow().isoformat()
+        server_version=1,
+        is_deleted=0,
+        created_at=datetime.utcnow().isoformat(),
+        updated_at=datetime.utcnow().isoformat()
     )
     db.add(db_patient)
+    db.flush()
+
+    record_journal_entry(
+        db=db,
+        device_id=None,
+        entity_type='patient',
+        entity_id=db_patient.id,
+        operation_type='CREATE',
+        payload={
+            "id": db_patient.id,
+            "national_health_id": db_patient.national_health_id,
+            "name": db_patient.name,
+            "age": db_patient.age,
+            "gender": db_patient.gender,
+            "village": db_patient.village,
+            "phone": db_patient.phone,
+            "patient_id": db_patient.patient_id,
+            "server_version": 1,
+            "is_deleted": 0,
+            "created_at": db_patient.created_at
+        },
+        server_version=1
+    )
+
     db.commit()
     db.refresh(db_patient)
     return db_patient
 
 @app.get("/api/patients", response_model=List[PatientResponse])
 def get_patients(db: Session = Depends(get_db)):
-    return db.query(PatientModel).order_by(PatientModel.created_at.desc()).all()
+    return db.query(PatientModel).filter(PatientModel.is_deleted == 0).order_by(PatientModel.created_at.desc()).all()
 
 
 @app.put("/api/patients/{patient_id}", response_model=PatientResponse)
 def update_patient(patient_id: str, patient: PatientCreate, db: Session = Depends(get_db)):
     """Edit patient demographic details (name, age, gender, village, phone)."""
     existing = db.query(PatientModel).filter(PatientModel.id == patient_id).first()
-    if not existing:
+    if not existing or existing.is_deleted:
         raise HTTPException(status_code=404, detail="Patient not found")
     existing.name    = patient.name
     existing.age     = patient.age
     existing.gender  = patient.gender
     existing.village = patient.village
     existing.phone   = patient.phone
+    if patient.national_health_id:
+        existing.national_health_id = patient.national_health_id
+    existing.server_version += 1
+    existing.updated_at = datetime.utcnow().isoformat()
+
+    record_journal_entry(
+        db=db,
+        device_id=None,
+        entity_type='patient',
+        entity_id=existing.id,
+        operation_type='UPDATE',
+        payload={
+            "id": existing.id,
+            "name": existing.name,
+            "age": existing.age,
+            "gender": existing.gender,
+            "village": existing.village,
+            "phone": existing.phone,
+            "server_version": existing.server_version
+        },
+        server_version=existing.server_version
+    )
+
     db.commit()
     db.refresh(existing)
     return existing
@@ -124,13 +190,27 @@ def update_patient(patient_id: str, patient: PatientCreate, db: Session = Depend
 
 @app.delete("/api/patients/{patient_id}")
 def delete_patient(patient_id: str, db: Session = Depends(get_db)):
-    """Delete a patient and ALL their linked assessments (cascade)."""
+    """Soft delete a patient and record tombstone in sync journal."""
     existing = db.query(PatientModel).filter(PatientModel.id == patient_id).first()
-    if not existing:
+    if not existing or existing.is_deleted:
         raise HTTPException(status_code=404, detail="Patient not found")
-    db.delete(existing)   # cascade deletes assessments via relationship
+    
+    existing.is_deleted = 1
+    existing.server_version += 1
+    existing.updated_at = datetime.utcnow().isoformat()
+
+    record_journal_entry(
+        db=db,
+        device_id=None,
+        entity_type='patient',
+        entity_id=existing.id,
+        operation_type='DELETE',
+        payload={"id": existing.id, "is_deleted": 1, "server_version": existing.server_version},
+        server_version=existing.server_version
+    )
+
     db.commit()
-    return {"message": "Patient and linked assessments deleted", "id": patient_id}
+    return {"message": "Patient soft deleted and tombstone recorded", "id": patient_id}
 
 # --- ASSESSMENTS & AI RISK ENDPOINTS ---
 
@@ -141,7 +221,7 @@ def create_assessment(assessment: AssessmentCreate, db: Session = Depends(get_db
     patient_name = patient.name if patient else "Unknown Patient"
     village = patient.village if patient else "Unknown Village"
 
-    # 2. Run AI Screening Engine
+    # 2. Run Governed Clinical Screening Engine (TASK-001 & TASK-002)
     eval_result = screening_engine.evaluate(assessment.model_dump())
 
     # 3. Store in DB
@@ -165,17 +245,60 @@ def create_assessment(assessment: AssessmentCreate, db: Session = Depends(get_db
             alcohol_status=assessment.alcohol_status,
             physical_activity=assessment.physical_activity,
             risk_level=eval_result["risk_level"],
+            triage_state=eval_result.get("triage_state", "LOW_RISK"),
+            is_emergency=1 if eval_result.get("is_emergency") else 0,
+            uncertainty_state=eval_result.get("uncertainty_state", "COMPLETE"),
             risk_score=eval_result["risk_score"],
             recommended_action=eval_result["recommended_action"],
-            referral_status="NOT_REFERRED" if eval_result["risk_level"] != "HIGH" else "REFERRED",
-            created_at=datetime.utcnow().isoformat()
+            referral_status=eval_result.get("referral_status", "NOT_REFERRED"),
+            workflow_version=eval_result.get("workflow_version", "2.0.0"),
+            ruleset_version=eval_result.get("ruleset_version", "2.0.0"),
+            review_state=evaluate_review_requirement(
+                triage_state=eval_result.get("triage_state", "LOW_RISK"),
+                risk_level=eval_result.get("risk_level", "LOW"),
+                is_emergency=bool(eval_result.get("is_emergency")),
+                uncertainty_state=eval_result.get("uncertainty_state", "COMPLETE"),
+                red_flags=eval_result.get("red_flags", [])
+            ),
+            server_version=1,
+            is_deleted=0,
+            created_at=datetime.utcnow().isoformat(),
+            updated_at=datetime.utcnow().isoformat()
         )
         db_ass.symptoms = assessment.symptoms
         db_ass.family_history = assessment.family_history
         db_ass.likely_conditions = eval_result["likely_conditions"]
         db_ass.contributing_factors = eval_result["contributing_factors"]
+        db_ass.red_flags = eval_result.get("red_flags", [])
         
         db.add(db_ass)
+        db.flush()
+
+        record_journal_entry(
+            db=db,
+            device_id=None,
+            entity_type='assessment',
+            entity_id=db_ass.id,
+            operation_type='CREATE',
+            payload={
+                "id": db_ass.id,
+                "patient_id": db_ass.patient_id,
+                "risk_level": db_ass.risk_level,
+                "triage_state": db_ass.triage_state,
+                "is_emergency": db_ass.is_emergency,
+                "uncertainty_state": db_ass.uncertainty_state,
+                "risk_score": db_ass.risk_score,
+                "recommended_action": db_ass.recommended_action,
+                "referral_status": db_ass.referral_status,
+                "symptoms": db_ass.symptoms,
+                "likely_conditions": db_ass.likely_conditions,
+                "server_version": 1,
+                "is_deleted": 0,
+                "created_at": db_ass.created_at
+            },
+            server_version=1
+        )
+
         db.commit()
         db.refresh(db_ass)
         target_ass = db_ass
@@ -202,18 +325,28 @@ def create_assessment(assessment: AssessmentCreate, db: Session = Depends(get_db
         physical_activity=target_ass.physical_activity or "Moderate",
         family_history=target_ass.family_history,
         risk_level=target_ass.risk_level,
+        triage_state=getattr(target_ass, 'triage_state', 'LOW_RISK') or 'LOW_RISK',
+        is_emergency=bool(getattr(target_ass, 'is_emergency', 0)),
+        short_circuit=bool(getattr(target_ass, 'is_emergency', 0)),
+        red_flags=getattr(target_ass, 'red_flags', []) or [],
+        uncertainty_state=getattr(target_ass, 'uncertainty_state', 'COMPLETE') or 'COMPLETE',
         risk_score=target_ass.risk_score,
         likely_conditions=target_ass.likely_conditions,
         contributing_factors=target_ass.contributing_factors,
         recommended_action=target_ass.recommended_action,
         referral_status=target_ass.referral_status,
+        workflow_version=getattr(target_ass, 'workflow_version', '2.0.0') or '2.0.0',
+        ruleset_version=getattr(target_ass, 'ruleset_version', '2.0.0') or '2.0.0',
+        review_state=getattr(target_ass, 'review_state', 'NOT_REQUIRED') or 'NOT_REQUIRED',
+        reviewed_by=target_ass.reviewed_by,
+        reviewed_at=target_ass.reviewed_at,
         created_at=target_ass.created_at,
         disclaimer=MEDICAL_DISCLAIMER
     )
 
 @app.get("/api/assessments", response_model=List[AssessmentResponse])
 def list_assessments(db: Session = Depends(get_db)):
-    assessments = db.query(AssessmentModel).order_by(AssessmentModel.created_at.desc()).all()
+    assessments = db.query(AssessmentModel).filter(AssessmentModel.is_deleted == 0).order_by(AssessmentModel.created_at.desc()).all()
     results = []
     for ass in assessments:
         patient = db.query(PatientModel).filter(PatientModel.id == ass.patient_id).first()
@@ -240,11 +373,21 @@ def list_assessments(db: Session = Depends(get_db)):
                 physical_activity=ass.physical_activity or "Moderate",
                 family_history=ass.family_history,
                 risk_level=ass.risk_level,
+                triage_state=getattr(ass, 'triage_state', 'LOW_RISK') or 'LOW_RISK',
+                is_emergency=bool(getattr(ass, 'is_emergency', 0)),
+                short_circuit=bool(getattr(ass, 'is_emergency', 0)),
+                red_flags=getattr(ass, 'red_flags', []) or [],
+                uncertainty_state=getattr(ass, 'uncertainty_state', 'COMPLETE') or 'COMPLETE',
                 risk_score=ass.risk_score,
                 likely_conditions=ass.likely_conditions,
                 contributing_factors=ass.contributing_factors,
                 recommended_action=ass.recommended_action,
                 referral_status=ass.referral_status,
+                workflow_version=getattr(ass, 'workflow_version', '2.0.0') or '2.0.0',
+                ruleset_version=getattr(ass, 'ruleset_version', '2.0.0') or '2.0.0',
+                review_state=getattr(ass, 'review_state', 'NOT_REQUIRED') or 'NOT_REQUIRED',
+                reviewed_by=ass.reviewed_by,
+                reviewed_at=ass.reviewed_at,
                 created_at=ass.created_at,
                 disclaimer=MEDICAL_DISCLAIMER
             )
@@ -254,7 +397,7 @@ def list_assessments(db: Session = Depends(get_db)):
 @app.put("/api/assessments/{assessment_id}/referral")
 def update_referral_status(assessment_id: str, body: ReferralUpdate, db: Session = Depends(get_db)):
     ass = db.query(AssessmentModel).filter(AssessmentModel.id == assessment_id).first()
-    if not ass:
+    if not ass or ass.is_deleted:
         raise HTTPException(status_code=404, detail="Assessment not found")
     
     valid_statuses = ["NOT_REFERRED", "REFERRED", "APPOINTMENT_REQUESTED", "CONSULTATION_COMPLETED"]
@@ -262,6 +405,24 @@ def update_referral_status(assessment_id: str, body: ReferralUpdate, db: Session
         raise HTTPException(status_code=400, detail=f"Invalid referral status. Must be one of {valid_statuses}")
     
     ass.referral_status = body.referral_status
+    ass.server_version += 1
+    ass.updated_at = datetime.utcnow().isoformat()
+
+    record_journal_entry(
+        db=db,
+        device_id=None,
+        entity_type='assessment',
+        entity_id=ass.id,
+        operation_type='UPDATE',
+        payload={
+            "id": ass.id,
+            "referral_status": ass.referral_status,
+            "server_version": ass.server_version,
+            "updated_at": ass.updated_at
+        },
+        server_version=ass.server_version
+    )
+
     db.commit()
     return {"message": "Referral status updated successfully", "assessment_id": assessment_id, "referral_status": ass.referral_status}
 
@@ -314,15 +475,21 @@ def batch_sync(payload: SyncPayload, db: Session = Depends(get_db)):
                 alcohol_status=a.alcohol_status,
                 physical_activity=a.physical_activity,
                 risk_level=eval_res["risk_level"],
+                triage_state=eval_res.get("triage_state", "LOW_RISK"),
+                is_emergency=1 if eval_res.get("is_emergency") else 0,
+                uncertainty_state=eval_res.get("uncertainty_state", "COMPLETE"),
                 risk_score=eval_res["risk_score"],
                 recommended_action=eval_res["recommended_action"],
-                referral_status="REFERRED" if eval_res["risk_level"] == "HIGH" else "NOT_REFERRED",
+                referral_status=eval_res.get("referral_status", "NOT_REFERRED"),
+                workflow_version=eval_res.get("workflow_version", "2.0.0"),
+                ruleset_version=eval_res.get("ruleset_version", "2.0.0"),
                 created_at=datetime.utcnow().isoformat()
             )
             new_a.symptoms = a.symptoms
             new_a.family_history = a.family_history
             new_a.likely_conditions = eval_res["likely_conditions"]
             new_a.contributing_factors = eval_res["contributing_factors"]
+            new_a.red_flags = eval_res.get("red_flags", [])
             db.add(new_a)
             a_synced += 1
 
@@ -376,209 +543,123 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
     }
 
 
-from fastapi.responses import StreamingResponse
-from services.ollama_service import ollama_service
-from services.kolkata_health_data_service import kolkata_data_service
-from prompts.ruralhealth_ai import RURALHEALTH_SYSTEM_PROMPT, build_system_prompt_for_language, get_rule_based_fallback
+# ─── HEALTH CHATBOT ENDPOINT ─────────────────────────────────────────────────
 
-# ─── HEALTH CHATBOT & OLLAMA LOCAL AI ENDPOINTS ─────────────────────────────
+CHAT_SYSTEM_PROMPT = """
+You are a rural health assistant AI integrated into the RuralHealth AI platform used by ASHA 
+(Accredited Social Health Activist) workers and patients in rural India.
 
-CHAT_SYSTEM_PROMPT = RURALHEALTH_SYSTEM_PROMPT
+Your role:
+- Help users understand their symptoms and what they might indicate
+- Provide practical, actionable home-care tips for mild conditions
+- Clearly tell users when symptoms are serious and require IMMEDIATE medical attention or hospital visit
+- Be warm, simple, and easy to understand — many users are rural health workers or patients with limited medical knowledge
+- Support responses in English, Hindi, or Bengali based on the user's language
+
+Common conditions to be aware of in rural India:
+Fever, Malaria, Dengue, Typhoid, TB (Tuberculosis), Diabetes, Hypertension, Anaemia,
+Diarrhoea, Respiratory infections, Snake bite, Malnutrition, Maternal health issues.
+
+STRICT RULES:
+1. NEVER prescribe specific medicines or dosages
+2. ALWAYS recommend consulting a qualified doctor or PHC (Primary Health Centre) for any concerning symptom
+3. For emergency symptoms (chest pain, breathing difficulty, unconsciousness, severe bleeding, high fever >104°F), 
+   IMMEDIATELY tell the user to call 108 (India emergency) or go to the nearest hospital
+4. Always end your response with: "\n\n⚕️ *This is AI guidance only — not a medical diagnosis. Please consult a doctor for proper evaluation.*"
+5. Keep responses concise and structured (use bullet points)
+
+Remember: Your guidance could impact the health of vulnerable rural populations. Be responsible.
+"""
 
 class ChatMessage(BaseModel):
     role: str  # "user" or "assistant"
     content: str
 
 class ChatRequest(BaseModel):
-    messages: Optional[List[ChatMessage]] = None
-    message: Optional[str] = None
+    messages: List[ChatMessage]
     language: Optional[str] = "en"  # "en", "hi", or "bn"
-    conversation_id: Optional[str] = None
 
 class ChatResponse(BaseModel):
-    success: bool = True
-    response: str
-    reply: str  # For backwards compatibility with older clients
-    model: str
-    provider: str
-    local: bool
-    badge: Optional[str] = None
-    source: Optional[str] = None
-    category: Optional[str] = None
-    data_points: Optional[List[Dict[str, Any]]] = None
-    metadata: Optional[Dict[str, Any]] = None
-    note: Optional[str] = None
+    reply: str
     error: Optional[str] = None
 
-class OllamaHealthResponse(BaseModel):
-    available: bool = True
-    status: str
-    base_url: str
-    model: str
-    configured_model: Optional[str] = None
-    models_available: List[str] = []
-    model_ready: bool
-    provider: str = "ollama"
-    runtime: str
-    local: bool
-    message: str
-
-@app.get("/api/ai/ollama/health", response_model=OllamaHealthResponse)
-async def get_ollama_health():
-    """
-    Check the connection health, runtime status, and model availability of the local Ollama service.
-    """
-    health_data = await ollama_service.check_health()
-    return OllamaHealthResponse(**health_data)
-
-@app.get("/api/ai/ollama/models")
-async def get_ollama_models():
-    """
-    List models currently installed in the local Ollama instance.
-    """
-    models = await ollama_service.get_available_models()
-    return {"models": models, "count": len(models)}
-
-# ─── KOLKATA HEALTH DATA ENGINE ENDPOINTS ────────────────────────────────────
-
-@app.get("/api/ai/data/summary")
-def get_data_summary():
-    """
-    Retrieve factual metadata summary of the Kolkata Health Dataset (HMIS + NFHS-5).
-    """
-    return kolkata_data_service.get_dataset_summary()
-
-@app.get("/api/ai/data/features")
-def get_data_features(category: Optional[str] = None, limit: int = 50):
-    """
-    Retrieve features from the catalog, optionally filtered by category.
-    """
-    if category:
-        categories = kolkata_data_service.get_category_catalog()
-        cat_data = categories.get(category)
-        if cat_data:
-            return {"category": category, "count": cat_data["count"], "sample_indicators": cat_data["sample_indicators"]}
-        return {"category": category, "count": 0, "features": []}
-    return {
-        "total_features": len(kolkata_data_service.feature_catalog),
-        "categories": kolkata_data_service.get_category_catalog(),
-        "sample_features": list(kolkata_data_service.feature_catalog.values())[:limit]
-    }
-
-@app.get("/api/ai/data/features/search")
-def search_data_features(q: str = "", limit: int = 10):
-    """
-    Fuzzy / semantic indicator search in the Kolkata Health Dataset feature dictionary.
-    """
-    results = kolkata_data_service.search_indicators(q, limit=limit)
-    return {
-        "query": q,
-        "count": len(results),
-        "results": results
-    }
-
-@app.get("/api/ai/data/indicator/{feature}")
-def get_data_indicator(feature: str):
-    """
-    Retrieve metadata and annual time-series values for a specific indicator.
-    """
-    meta = kolkata_data_service.get_indicator_metadata(feature)
-    if not meta:
-        raise HTTPException(status_code=404, detail=f"Indicator '{feature}' not found in feature catalog.")
-    values = kolkata_data_service.get_indicator_values(feature)
-    return {
-        "feature_name": feature,
-        "metadata": meta,
-        "values": values
-    }
-
-@app.get("/api/ai/data/trend/{feature}")
-def get_data_trend(feature: str):
-    """
-    Deterministically compute trend statistics across available fiscal years for an indicator.
-    """
-    trend = kolkata_data_service.calculate_trend(feature)
-    return trend
-
-class CompareYearsRequest(BaseModel):
-    feature: str
-    year1: str
-    year2: str
-
-@app.post("/api/ai/data/compare")
-def compare_data_years(req: CompareYearsRequest):
-    """
-    Deterministically compare indicator values between two fiscal years.
-    """
-    result = kolkata_data_service.compare_years(req.feature, req.year1, req.year2)
-    return result
-
-# ─── PRIMARY AI CHAT ENDPOINTS ───────────────────────────────────────────────
-
-@app.post("/api/ai/chat", response_model=ChatResponse)
-async def ai_chat(request: ChatRequest):
-    """
-    Primary AI assistant endpoint.
-    Routes queries between:
-    1. Clinical Safety Guardrails (non-prescribing, non-diagnostic, official risk separation)
-    2. Kolkata Health Data Engine (exact deterministic calculations & metadata)
-    3. Health Education / RAG & Workflow Knowledge Base
-    4. Local Gemma 3 270M Inference
-    """
-    messages: List[dict] = []
-    if request.messages:
-        messages = [{"role": m.role, "content": m.content} for m in request.messages]
-    elif request.message:
-        messages = [{"role": "user", "content": request.message}]
-    else:
-        messages = [{"role": "user", "content": "Hello"}]
-
-    lang = request.language or "en"
-
-    # 1. Process via OllamaService (incorporates dataset context, safety overrides, and local Gemma)
-    ollama_result = await ollama_service.chat(messages, language=lang)
-    reply_text = ollama_result.get("response", "")
-    
-    return ChatResponse(
-        success=True,
-        response=reply_text,
-        reply=reply_text,
-        model=ollama_result.get("model", "gemma3:270m"),
-        provider=ollama_result.get("provider", "ollama"),
-        local=ollama_result.get("local", True),
-        badge=ollama_result.get("badge"),
-        source=ollama_result.get("source"),
-        data_points=ollama_result.get("data_points"),
-        note=ollama_result.get("note")
-    )
-
-@app.post("/api/ai/chat/stream")
-async def ai_chat_stream(request: ChatRequest):
-    """
-    Streaming AI chat endpoint with real-time token delivery via Server-Sent Events.
-    """
-    messages: List[dict] = []
-    if request.messages:
-        messages = [{"role": m.role, "content": m.content} for m in request.messages]
-    elif request.message:
-        messages = [{"role": "user", "content": request.message}]
-    else:
-        messages = [{"role": "user", "content": "Hello"}]
-
-    lang = request.language or "en"
-    return StreamingResponse(
-        ollama_service.chat_stream(messages, language=lang),
-        media_type="text/event-stream"
-    )
-
 @app.post("/api/chat", response_model=ChatResponse)
-async def health_chat_legacy(request: ChatRequest):
+async def health_chat(request: ChatRequest):
     """
-    Legacy backwards-compatible endpoint aliased to ai_chat.
+    Health chatbot endpoint powered by OpenAI GPT.
+    The API key is read server-side from .env — never exposed to the browser.
     """
-    return await ai_chat(request)
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    
+    if not api_key or api_key == "your_openai_api_key_here":
+        raise HTTPException(
+            status_code=503,
+            detail="OpenAI API key not configured. Please add OPENAI_API_KEY to backend/.env"
+        )
+    
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        
+        # Build message list: system prompt + conversation history
+        lang_hint = {
+            "hi": "Please respond in Hindi (हिंदी).",
+            "bn": "Please respond in Bengali (বাংলা).",
+            "en": "Please respond in English."
+        }.get(request.language or "en", "Please respond in English.")
+        
+        openai_messages = [
+            {"role": "system", "content": CHAT_SYSTEM_PROMPT + f"\n\nLanguage instruction: {lang_hint}"}
+        ]
+        
+        # Add conversation history (last 20 messages max to stay within token limits)
+        for msg in request.messages[-20:]:
+            openai_messages.append({"role": msg.role, "content": msg.content})
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",   # Fast and cost-effective
+            messages=openai_messages,
+            max_tokens=600,
+            temperature=0.4,        # More deterministic for medical guidance
+        )
+        
+        reply = response.choices[0].message.content or "I could not generate a response. Please try again."
+        return ChatResponse(reply=reply)
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        err_str = str(e)
+        if "insufficient_quota" in err_str or "credit_balance_exhausted" in err_str or "429" in err_str:
+            # Fallback response for offline / credit-exhausted state
+            user_msg = (request.messages[-1].content if request.messages else "").lower()
+            
+            # Simple rule-based guidance for hackathon demo resilience
+            advice = []
+            if "fever" in user_msg or "बुखार" in user_msg or "জ্বর" in user_msg:
+                advice.append("• **Fever Management:** Stay hydrated with clean water/ORS, take adequate rest, and use a cool damp cloth on forehead to reduce temp.")
+                advice.append("• **Red Flags:** If fever >102°F lasts more than 2 days or is accompanied by severe headache, rash, or vomiting, visit the nearest PHC immediately.")
+            elif "cough" in user_msg or "cold" in user_msg or "खांसी" in user_msg:
+                advice.append("• **Cough & Cold Care:** Drink warm water or herbal tea (tulsi/ginger), practice steam inhalation, and rest.")
+                advice.append("• **Warning:** If cough persists >2 weeks or produces blood/chest pain, get tested for TB/respiratory infection at PHC.")
+            elif "sugar" in user_msg or "diabetes" in user_msg or "शुगर" in user_msg:
+                advice.append("• **Blood Sugar Management:** Avoid direct sweets, sugary tea, and refined flour. Eat whole grains, green leafy vegetables, and stay active.")
+                advice.append("• **Screening:** Regular glucose monitoring at PHC is recommended.")
+            elif "bp" in user_msg or "blood pressure" in user_msg or "बीपी" in user_msg:
+                advice.append("• **Blood Pressure Guidance:** Reduce daily salt intake, manage stress, avoid tobacco/alcohol, and exercise daily.")
+                advice.append("• **Critical:** If BP >160/100 or experiencing severe dizziness/blurred vision, seek emergency care.")
+            else:
+                advice.append("• **General Health Care:** Ensure clean drinking water, proper nutrition, adequate sleep, and hygiene.")
+                advice.append("• **Consultation:** Please visit your local ASHA worker or Primary Health Centre (PHC) for a clinical evaluation.")
 
+            fallback_reply = (
+                "⚠️ *Note: OpenAI API quota exhausted. Operating in Rule-Based Medical Decision Support Mode.*\n\n"
+                + "\n".join(advice)
+                + "\n\n⚕️ *This is AI guidance only — not a medical diagnosis. Please consult a doctor for proper evaluation.*"
+            )
+            return ChatResponse(reply=fallback_reply)
 
+        raise HTTPException(status_code=500, detail=f"Chat error: {err_str}")
 
 
 # ─── ML DISEASE PREDICTION ENDPOINT ───────────────────────────────────────────
@@ -588,13 +669,9 @@ class MLPredictRequest(BaseModel):
 
 class MLPredictionItem(BaseModel):
     rank: int
-    item_id: Optional[str] = None
     condition: str
     score: float
-    risk_score: float = 0.0
-    risk_level: str = "LOW"
-    required_specialty: Optional[str] = None
-    contributingSymptoms: List[str] = []
+    contributingSymptoms: List[str]
 
 class MLPredictResponse(BaseModel):
     predictions: List[MLPredictionItem]
@@ -666,12 +743,8 @@ class HybridPredictRequest(BaseModel):
 
 class HybridPredictionItem(BaseModel):
     rank: int
-    item_id: Optional[str] = None
     condition: str
     consensus_score: float
-    risk_score: float = 0.0
-    risk_level: str = "LOW"
-    required_specialty: Optional[str] = None
     ml_score: Optional[float]
     google_score: Optional[float]
     ml_rank: Optional[int]
@@ -728,12 +801,8 @@ def hybrid_predict(request: HybridPredictRequest):
     for pred in result.get("ml_predictions", []):
         ml_predictions.append(MLPredictionItem(
             rank=pred.get("rank", 0),
-            item_id=pred.get("item_id"),
             condition=pred.get("condition", ""),
             score=pred.get("score", 0),
-            risk_score=pred.get("risk_score", round(pred.get("score", 0) * 100.0, 1)),
-            risk_level=pred.get("risk_level", "LOW"),
-            required_specialty=pred.get("required_specialty", "General Medicine"),
             contributingSymptoms=pred.get("contributingSymptoms", [])
         ))
     
@@ -742,12 +811,8 @@ def hybrid_predict(request: HybridPredictRequest):
     for pred in result.get("predictions", []):
         consensus_predictions.append(HybridPredictionItem(
             rank=pred.get("rank", 0),
-            item_id=pred.get("item_id"),
             condition=pred.get("condition", ""),
             consensus_score=pred.get("consensus_score", 0),
-            risk_score=pred.get("risk_score", round(pred.get("consensus_score", 0) * 100.0, 1)),
-            risk_level=pred.get("risk_level", "LOW"),
-            required_specialty=pred.get("required_specialty", "General Medicine"),
             ml_score=pred.get("ml_score"),
             google_score=pred.get("google_score"),
             ml_rank=pred.get("ml_rank"),
@@ -894,15 +959,10 @@ def unified_predict(request: UnifiedPredictRequest):
     combined = []
     for rank, (ck, score) in enumerate(sorted_conds):
         d = condition_details[ck]
-        calc_risk = calculate_item_risk(score, d["condition"], item_index=rank + 1)
         combined.append({
             "rank": rank + 1,
-            "item_id": calc_risk["item_id"],
             "condition": d["condition"],
             "combined_score": round(score, 4),
-            "risk_score": calc_risk["risk_score"],
-            "risk_level": calc_risk["risk_level"],
-            "required_specialty": calc_risk["required_specialty"],
             "ml_score": round(d["ml_score"], 4) if d["ml_score"] is not None else None,
             "gemini_score": round(d["gemini_score"], 4) if d["gemini_score"] is not None else None,
             "search_score": round(d["search_score"], 4) if d["search_score"] is not None else None,
@@ -915,18 +975,7 @@ def unified_predict(request: UnifiedPredictRequest):
         })
     
     return {
-        "ml_predictions": [
-            {
-                "rank": p.get("rank"),
-                "item_id": p.get("item_id"),
-                "condition": p["condition"],
-                "score": p.get("score", 0),
-                "risk_score": p.get("risk_score", round(p.get("score", 0) * 100.0, 1)),
-                "risk_level": p.get("risk_level", "LOW"),
-                "required_specialty": p.get("required_specialty", "General Medicine")
-            }
-            for p in ml_preds
-        ],
+        "ml_predictions": [{"rank": p.get("rank"), "condition": p["condition"], "score": p.get("score", 0)} for p in ml_preds],
         "gemini_predictions": gemini_preds,
         "search_predictions": search_preds,
         "combined_top3": combined,
@@ -979,10 +1028,41 @@ def create_appointment(appt: AppointmentCreate, db: Session = Depends(get_db)):
         notes=appt.notes or "",
         status=appt.status or "PENDING",
         risk_level=appt.risk_level,
-        created_at=datetime.utcnow().isoformat()
+        server_version=1,
+        is_deleted=0,
+        created_at=datetime.utcnow().isoformat(),
+        updated_at=datetime.utcnow().isoformat()
     )
     db_appt.likely_conditions = appt.likely_conditions or []
     db.add(db_appt)
+    db.flush()
+
+    record_journal_entry(
+        db=db,
+        device_id=None,
+        entity_type='appointment',
+        entity_id=db_appt.id,
+        operation_type='CREATE',
+        payload={
+            "id": db_appt.id,
+            "patient_name": db_appt.patient_name,
+            "patient_phone": db_appt.patient_phone,
+            "doctor_name": db_appt.doctor_name,
+            "doctor_specialty": db_appt.doctor_specialty,
+            "doctor_address": db_appt.doctor_address,
+            "appointment_date": db_appt.appointment_date,
+            "appointment_time": db_appt.appointment_time,
+            "notes": db_appt.notes,
+            "status": db_appt.status,
+            "risk_level": db_appt.risk_level,
+            "likely_conditions": db_appt.likely_conditions,
+            "server_version": 1,
+            "is_deleted": 0,
+            "created_at": db_appt.created_at
+        },
+        server_version=1
+    )
+
     db.commit()
     db.refresh(db_appt)
 
@@ -1008,7 +1088,7 @@ def list_appointments(db: Session = Depends(get_db)):
     """
     Retrieve all teleconsultation appointments ordered by date desc.
     """
-    appts = db.query(AppointmentModel).order_by(AppointmentModel.created_at.desc()).all()
+    appts = db.query(AppointmentModel).filter(AppointmentModel.is_deleted == 0).order_by(AppointmentModel.created_at.desc()).all()
     return [
         AppointmentResponse(
             id=a.id,
@@ -1039,13 +1119,31 @@ def update_appointment_status(
     Update appointment status (PENDING → CONFIRMED → COMPLETED / CANCELLED).
     """
     appt = db.query(AppointmentModel).filter(AppointmentModel.id == appointment_id).first()
-    if not appt:
+    if not appt or appt.is_deleted:
         raise HTTPException(status_code=404, detail="Appointment not found")
     valid = ["PENDING", "CONFIRMED", "CANCELLED", "COMPLETED"]
     new_status = body.get("status", "")
     if new_status not in valid:
         raise HTTPException(status_code=400, detail=f"Status must be one of {valid}")
     appt.status = new_status
+    appt.server_version += 1
+    appt.updated_at = datetime.utcnow().isoformat()
+
+    record_journal_entry(
+        db=db,
+        device_id=None,
+        entity_type='appointment',
+        entity_id=appt.id,
+        operation_type='UPDATE',
+        payload={
+            "id": appt.id,
+            "status": appt.status,
+            "server_version": appt.server_version,
+            "updated_at": appt.updated_at
+        },
+        server_version=appt.server_version
+    )
+
     db.commit()
     return {"message": "Status updated", "id": appointment_id, "status": new_status}
 
@@ -1060,7 +1158,7 @@ def update_appointment(
     Update appointment details (name, phone, date, time, notes, status).
     """
     appt = db.query(AppointmentModel).filter(AppointmentModel.id == appointment_id).first()
-    if not appt:
+    if not appt or appt.is_deleted:
         raise HTTPException(status_code=404, detail="Appointment not found")
     if "patient_name" in body:
         appt.patient_name = body["patient_name"]
@@ -1074,6 +1172,30 @@ def update_appointment(
         appt.notes = body["notes"]
     if "status" in body:
         appt.status = body["status"]
+    
+    appt.server_version += 1
+    appt.updated_at = datetime.utcnow().isoformat()
+
+    record_journal_entry(
+        db=db,
+        device_id=None,
+        entity_type='appointment',
+        entity_id=appt.id,
+        operation_type='UPDATE',
+        payload={
+            "id": appt.id,
+            "patient_name": appt.patient_name,
+            "patient_phone": appt.patient_phone,
+            "doctor_name": appt.doctor_name,
+            "appointment_date": appt.appointment_date,
+            "appointment_time": appt.appointment_time,
+            "status": appt.status,
+            "server_version": appt.server_version,
+            "updated_at": appt.updated_at
+        },
+        server_version=appt.server_version
+    )
+
     db.commit()
     return {"message": "Appointment updated", "id": appointment_id}
 
@@ -1084,14 +1206,65 @@ def delete_appointment(
     db: Session = Depends(get_db)
 ):
     """
-    Delete an appointment by ID.
+    Soft delete an appointment by ID and record tombstone in sync journal.
     """
     appt = db.query(AppointmentModel).filter(AppointmentModel.id == appointment_id).first()
-    if not appt:
+    if not appt or appt.is_deleted:
         raise HTTPException(status_code=404, detail="Appointment not found")
-    db.delete(appt)
+    
+    appt.is_deleted = 1
+    appt.server_version += 1
+    appt.updated_at = datetime.utcnow().isoformat()
+
+    record_journal_entry(
+        db=db,
+        device_id=None,
+        entity_type='appointment',
+        entity_id=appt.id,
+        operation_type='DELETE',
+        payload={"id": appt.id, "is_deleted": 1, "server_version": appt.server_version},
+        server_version=appt.server_version
+    )
+
     db.commit()
-    return {"message": "Appointment deleted", "id": appointment_id}
+    return {"message": "Appointment soft deleted and tombstone recorded", "id": appointment_id}
+
+
+# ─── V2 RELIABLE OFFLINE SYNC ENDPOINTS (TASK-005 & TASK-006) ──────────────────────
+
+@app.post("/api/v2/sync/push", response_model=SyncPushResponse)
+def sync_push(request: SyncPushRequest, db: Session = Depends(get_db)):
+    """
+    Idempotent batch push API for frontline workers.
+    Processes queued mutations with OCC conflict detection and records sync journal entries.
+    """
+    return process_push_batch(db, request)
+
+
+@app.post("/api/v2/sync/pull", response_model=SyncPullResponse)
+def sync_pull_post(request: SyncPullRequest, db: Session = Depends(get_db)):
+    """
+    Cursor-based pull API. Returns changes after last_server_sequence.
+    """
+    return process_pull_request(db, request)
+
+
+@app.get("/api/v2/sync/pull", response_model=SyncPullResponse)
+def sync_pull_get(
+    since_seq: int = 0,
+    limit: int = 100,
+    device_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    GET convenience wrapper for cursor-based pull synchronization.
+    """
+    request = SyncPullRequest(
+        device_id=device_id or "unknown",
+        last_server_sequence=since_seq,
+        limit=limit
+    )
+    return process_pull_request(db, request)
 
 
 import math
@@ -1107,321 +1280,271 @@ def haversine_km(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-# ─── IDRC CAPABILITY-AWARE HOSPITAL RECOMMENDATION ENDPOINTS ─────────────────
-
-@app.post("/api/hospitals/recommend", response_model=HospitalRecommendationResponse)
-def get_hospital_recommendations_post(req: HospitalRecommendationRequest):
-    """
-    IDRC Hospital Recommendation Service (POST).
-    Multi-factor ranking considering patient risk score, clinical condition,
-    required specialty, hospital emergency & ICU capabilities, travel time, and capacity.
-    For critical cases (risk_score > 70), facilities equipped to handle emergencies are prioritized.
-    """
-    r_level = req.risk_level or classify_risk_level(req.risk_score)
-    is_crit = req.risk_score > 70.0
-    prof = get_condition_profile(req.condition)
-    spec = req.specialty or prof.get("specialty", "General Medicine")
-
-    recs = recommend_hospitals(
-        condition=req.condition,
-        risk_score=req.risk_score,
-        user_lat=req.lat or 22.723,
-        user_lng=req.lng or 88.483,
-        custom_specialty=spec,
-        max_results=req.max_results or 5
-    )
-
-    banner_text = (
-        f"Risk Score: {int(req.risk_score)}/100 — Critical"
-        if is_crit else
-        f"Risk Score: {int(req.risk_score)}/100 — {r_level.title()}"
-    )
-
-    return HospitalRecommendationResponse(
-        item_id=req.item_id,
-        condition=req.condition,
-        patient_risk_score=req.risk_score,
-        patient_risk_level=r_level,
-        required_specialty=spec,
-        is_critical=is_crit,
-        recommendation_banner=banner_text,
-        hospitals=[HospitalRecommendationItem(**h) for h in recs]
-    )
-
-
-@app.get("/api/hospitals/recommend", response_model=HospitalRecommendationResponse)
-def get_hospital_recommendations_get(
-    condition: str = "General",
-    risk_score: float = 20.0,
-    risk_level: Optional[str] = None,
-    specialty: Optional[str] = None,
-    item_id: Optional[str] = None,
-    lat: float = 22.723,
-    lng: float = 88.483,
-    max_results: int = 5
-):
-    """
-    IDRC Hospital Recommendation Service (GET).
-    Allows easy query string usage from browser clients and frontends.
-    """
-    r_level = risk_level or classify_risk_level(risk_score)
-    is_crit = risk_score > 70.0
-    prof = get_condition_profile(condition)
-    spec = specialty or prof.get("specialty", "General Medicine")
-
-    recs = recommend_hospitals(
-        condition=condition,
-        risk_score=risk_score,
-        user_lat=lat,
-        user_lng=lng,
-        custom_specialty=spec,
-        max_results=max_results
-    )
-
-    banner_text = (
-        f"Risk Score: {int(risk_score)}/100 — Critical"
-        if is_crit else
-        f"Risk Score: {int(risk_score)}/100 — {r_level.title()}"
-    )
-
-    return HospitalRecommendationResponse(
-        item_id=item_id,
-        condition=condition,
-        patient_risk_score=risk_score,
-        patient_risk_level=r_level,
-        required_specialty=spec,
-        is_critical=is_crit,
-        recommendation_banner=banner_text,
-        hospitals=[HospitalRecommendationItem(**h) for h in recs]
-    )
-
-
 @app.get("/api/hospitals/search")
-def search_hospitals(
-    location: str = "Barasat",
-    condition: str = "General Health",
-    risk_score: float = 25.0
-):
+def search_hospitals(location: str):
     """
-    Unified hospital search endpoint. Returns capability-rich hospital records
-    ranked by multi-factor suitability, maintaining backward compatibility.
+    Searches for real hospitals using open-source mapping data or fallback mock data.
     """
-    recs = recommend_hospitals(
-        condition=condition,
-        risk_score=risk_score,
-        user_lat=22.723,
-        user_lng=88.483,
-        max_results=8
+    geocode_url = f"https://nominatim.openstreetmap.org/search?format=json&q={urllib.parse.quote(location)}&limit=1"
+    req = urllib.request.Request(geocode_url, headers={'User-Agent': 'RuralHealthAI/2.0'})
+    
+    base_lat = 22.723
+    base_lng = 88.483
+    
+    try:
+        with urllib.request.urlopen(req, timeout=3) as response:
+            geo_data = json.loads(response.read().decode())
+            if geo_data:
+                base_lat = float(geo_data[0]['lat'])
+                base_lng = float(geo_data[0]['lon'])
+    except Exception as e:
+        pass
+
+    search_url = f"https://nominatim.openstreetmap.org/search?format=json&q=hospital+in+{urllib.parse.quote(location)}&limit=15"
+    req_hosp = urllib.request.Request(search_url, headers={'User-Agent': 'RuralHealthAI/2.0'})
+    
+    try:
+        with urllib.request.urlopen(req_hosp, timeout=3) as response:
+            hosp_data = json.loads(response.read().decode())
+            results = []
+            for idx, item in enumerate(hosp_data):
+                hlat = float(item['lat'])
+                hlng = float(item['lon'])
+                dist = haversine_km(base_lat, base_lng, hlat, hlng)
+                results.append({
+                    "id": str(item.get('place_id', f"h_{idx}")),
+                    "name": item.get('name', 'Hospital / Clinic'),
+                    "specialty": "General Hospital",
+                    "address": item.get('display_name', ''),
+                    "lat": hlat,
+                    "lng": hlng,
+                    "distance": f"{dist:.1f} km",
+                    "isOpen": True
+                })
+            if results:
+                results.sort(key=lambda x: float(x['distance'].split()[0]))
+                return {"hospitals": results, "center": {"lat": base_lat, "lng": base_lng}}
+    except Exception as e:
+        pass
+
+    # Fallback hospitals
+    hospitals = [
+        {'id': '1', 'name': 'City General Hospital', 'specialty': 'Multi-specialty', 'address': f'{location} Main Road', 'phone': '9876543210', 'rating': 4.5, 'distance': '2.5 km', 'isOpen': True, 'lat': base_lat + 0.003, 'lng': base_lng - 0.003, 'amenity': 'hospital'},
+        {'id': '2', 'name': 'Rural Health Care Center', 'specialty': 'General Medicine', 'address': f'{location} Village Square', 'phone': '9876543211', 'rating': 4.2, 'distance': '5.0 km', 'isOpen': True, 'lat': base_lat - 0.01, 'lng': base_lng + 0.007, 'amenity': 'clinic'},
+        {'id': '3', 'name': 'Sunrise Primary Health Clinic', 'specialty': 'Primary Care', 'address': f'{location} East Side', 'phone': '9876543212', 'rating': 4.8, 'distance': '1.2 km', 'isOpen': True, 'lat': base_lat + 0.007, 'lng': base_lng - 0.013, 'amenity': 'clinic'}
+    ]
+    return {'center': {'lat': base_lat, 'lng': base_lng}, 'hospitals': hospitals}
+
+
+# ─── AUTHENTICATION & RBAC ENDPOINTS (TASK-010 & TASK-011) ─────────────────────
+
+@app.post("/api/v2/auth/login", response_model=TokenResponse)
+def login_user(login_data: UserLoginRequest, db: Session = Depends(get_db)):
+    """
+    Authenticates a user (ASHA worker, doctor, officer, admin) and issues a JWT token.
+    """
+    user = db.query(UserModel).filter(UserModel.username == login_data.username).first()
+    if not user or not verify_password(login_data.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is deactivated. Contact system administrator."
+        )
+
+    user.last_login_at = datetime.utcnow().isoformat()
+    db.commit()
+
+    permissions = list(ROLE_PERMISSIONS.get(user.role, set()))
+    token_payload = {
+        "sub": user.id,
+        "username": user.username,
+        "role": user.role,
+        "full_name": user.full_name,
+        "facility_id": user.facility_id
+    }
+    access_token = create_access_token(data=token_payload)
+
+    user_resp = UserResponse(
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        full_name=user.full_name,
+        role=user.role,
+        license_number=user.license_number,
+        facility_id=user.facility_id,
+        assigned_villages=user.assigned_villages,
+        is_active=user.is_active,
+        created_at=user.created_at,
+        last_login_at=user.last_login_at
     )
 
-    # Format into backward compatible structure with extra capability fields
-    formatted_hospitals = []
-    for h in recs:
-        formatted_hospitals.append({
-            "id": h["id"],
-            "name": h["name"],
-            "specialty": h["specialty"],
-            "category": h["category"],
-            "address": h["address"],
-            "phone": h["phone"],
-            "rating": h["rating"],
-            "distance": h["distance"],
-            "distance_km": h["distance_km"],
-            "travel_time": h["travel_time"],
-            "travel_time_min": h["travel_time_min"],
-            "isOpen": True,
-            "lat": h["lat"],
-            "lng": h["lng"],
-            "amenity": "hospital" if "Hospital" in h["category"] else "clinic",
-            "is_emergency_24x7": h["is_emergency_24x7"],
-            "icu_beds_available": h["icu_beds_available"],
-            "recommendation_priority": h["recommendation_priority"],
-            "suitability_score": h["suitability_score"],
-            "specialty_match": h["specialty_match"],
-            "capability_match": h["capability_match"],
-            "reason": h["reason"]
-        })
+    return TokenResponse(
+        access_token=access_token,
+        token_type="Bearer",
+        expires_in_minutes=1440,
+        user=user_resp,
+        permissions=permissions
+    )
 
+
+@app.post("/api/v2/auth/register", response_model=UserResponse)
+def register_user(
+    reg_data: UserRegisterRequest,
+    current_user: UserModel = Depends(require_roles("SYSTEM_ADMIN", "PHC_DOCTOR")),
+    db: Session = Depends(get_db)
+):
+    """
+    Registers a new user account (Requires SYSTEM_ADMIN or PHC_DOCTOR role).
+    """
+    existing = db.query(UserModel).filter(
+        (UserModel.username == reg_data.username) | (UserModel.email == reg_data.email)
+    ).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Username or email is already registered."
+        )
+
+    new_user = UserModel(
+        id=f"usr_{uuid.uuid4()}",
+        username=reg_data.username,
+        email=reg_data.email,
+        password_hash=hash_password(reg_data.password),
+        full_name=reg_data.full_name,
+        role=reg_data.role,
+        license_number=reg_data.license_number,
+        facility_id=reg_data.facility_id,
+        assigned_villages_json=json.dumps(reg_data.assigned_villages or []),
+        is_active=1,
+        created_at=datetime.utcnow().isoformat()
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return new_user
+
+
+@app.get("/api/v2/auth/me", response_model=UserProfileResponse)
+def get_current_user_profile(current_user: UserModel = Depends(get_current_user)):
+    """
+    Returns the authenticated user profile and active permissions.
+    """
+    permissions = list(ROLE_PERMISSIONS.get(current_user.role, set()))
+    user_resp = UserResponse(
+        id=current_user.id,
+        username=current_user.username,
+        email=current_user.email,
+        full_name=current_user.full_name,
+        role=current_user.role,
+        license_number=current_user.license_number,
+        facility_id=current_user.facility_id,
+        assigned_villages=current_user.assigned_villages,
+        is_active=current_user.is_active,
+        created_at=current_user.created_at,
+        last_login_at=current_user.last_login_at
+    )
+    return UserProfileResponse(user=user_resp, permissions=permissions)
+
+
+@app.get("/api/v2/auth/users", response_model=List[UserResponse])
+def get_all_users(
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Returns all active system accounts (available for quick switching during field & clinic pilot).
+    """
+    users = db.query(UserModel).filter(UserModel.is_active == 1).all()
+    results = []
+    for u in users:
+        results.append(UserResponse(
+            id=u.id,
+            username=u.username,
+            email=u.email,
+            full_name=u.full_name,
+            role=u.role,
+            license_number=u.license_number,
+            facility_id=u.facility_id,
+            assigned_villages=u.assigned_villages,
+            is_active=u.is_active,
+            created_at=u.created_at,
+            last_login_at=u.last_login_at
+        ))
+    return results
+
+
+# ─── CLINICIAN REVIEW & ATTESTATION ENDPOINTS (TASK-012) ──────────────────────
+
+@app.get("/api/v2/reviews/pending", response_model=List[PendingReviewItem])
+def get_pending_clinical_reviews(
+    current_user: UserModel = Depends(require_permissions("reviews:view_queue")),
+    db: Session = Depends(get_db)
+):
+    """
+    Lists all assessments in REVIEW_REQUIRED or ASSIGNED state,
+    ordered by emergency urgency (EMERGENCY red flags first, then HIGH risk).
+    """
+    return list_pending_reviews(db=db, facility_id=current_user.facility_id)
+
+
+@app.post("/api/v2/reviews/{assessment_id}/assign")
+def assign_review(
+    assessment_id: str,
+    current_user: UserModel = Depends(require_permissions("reviews:perform")),
+    db: Session = Depends(get_db)
+):
+    """
+    Assigns an assessment to the currently logged in doctor.
+    """
+    assigned = assign_review_to_doctor(db=db, assessment_id=assessment_id, doctor_user=current_user)
     return {
-        "center": {"lat": 22.723, "lng": 88.483},
-        "hospitals": formatted_hospitals
+        "message": f"Assessment {assessment_id} assigned to Dr. {current_user.full_name}",
+        "assessment_id": assigned.id,
+        "review_state": assigned.review_state,
+        "reviewed_by": assigned.reviewed_by
     }
 
 
-# ==============================================================================
-# POPULATION HEALTH INTELLIGENCE & RISK CONTEXT ENDPOINTS (HMIS + NFHS-5)
-# ==============================================================================
-
-@app.get("/api/ml/population-health")
-def get_population_health(
-    district: str = "Kolkata",
-    year: Optional[int] = None
+@app.post("/api/v2/reviews/{assessment_id}/submit", response_model=ClinicalReviewResponse)
+def submit_review_decision(
+    assessment_id: str,
+    review_data: ClinicalReviewSubmitRequest,
+    current_user: UserModel = Depends(require_permissions("reviews:perform")),
+    db: Session = Depends(get_db)
 ):
     """
-    Returns population health domain summaries and context indicators for a district and year.
-    Supported domains: maternal_health, child_health, nutrition, ncd, communicable, healthcare_access.
+    Submits doctor's clinical review decision (APPROVED, MODIFIED, REJECTED),
+    enforces mandatory notes and override justification, seals digital signature hash,
+    and updates assessment state and sync journal.
     """
-    if _POPULATION_HEALTH is None:
-        raise HTTPException(status_code=503, detail="Population health engine not initialized")
-    
-    summary = _POPULATION_HEALTH.get_domain_summary(district=district, year=year)
-    if "error" in summary:
-        raise HTTPException(status_code=404, detail=summary["error"])
-    return summary
-
-
-@app.get("/api/ml/population-health/trends")
-def get_population_health_trends(
-    district: str = "Kolkata",
-    indicators: Optional[str] = None
-):
-    """
-    Returns Recharts-ready annual time series of population health indicators.
-    Indicators param can be comma-separated list of indicator names.
-    NFHS-5 is included strictly as a 2019-20 survey baseline, not continuous annual data.
-    """
-    if _POPULATION_HEALTH is None:
-        raise HTTPException(status_code=503, detail="Population health engine not initialized")
-    
-    ind_list = [i.strip() for i in indicators.split(",") if i.strip()] if indicators else None
-    trends = _POPULATION_HEALTH.get_population_health_trends(district=district, indicator_keys=ind_list)
-    if "error" in trends:
-        raise HTTPException(status_code=404, detail=trends["error"])
-    return trends
-
-
-@app.get("/api/ml/population-health/indicator-trend")
-def get_indicator_trend(
-    indicator: str,
-    district: str = "Kolkata"
-):
-    """
-    Returns detailed trend, direction, and CAGR for a specific HMIS/NFHS indicator.
-    """
-    if _POPULATION_HEALTH is None:
-        raise HTTPException(status_code=503, detail="Population health engine not initialized")
-    
-    trend = _POPULATION_HEALTH.get_indicator_trend(indicator_name=indicator, district=district)
-    if "error" in trend and trend.get("status") != "not_available":
-        raise HTTPException(status_code=404, detail=trend["error"])
-    return trend
-
-
-@app.get("/api/ml/population-health/ncd-context")
-def get_ncd_context(
-    district: str = "Kolkata",
-    year: Optional[int] = 2021
-):
-    """
-    Provides structured NCD population risk context response (Requirement 7).
-    Includes blood pressure, blood sugar, overweight, and tobacco population burden signals.
-    """
-    if _POPULATION_HEALTH is None:
-        raise HTTPException(status_code=503, detail="Population health engine not initialized")
-    
-    ctx = _POPULATION_HEALTH.get_ncd_context(district=district, year=year)
-    if "error" in ctx:
-        raise HTTPException(status_code=404, detail=ctx["error"])
-    return ctx
-
-
-@app.get("/api/ml/population-health/data-quality")
-def get_population_data_quality():
-    """
-    Returns the latest population health data quality monitoring report (Requirement 15).
-    """
-    report_file = os.path.join(os.path.dirname(__file__), "data", "processed", "population_data_quality_report.json")
-    if not os.path.exists(report_file):
-        try:
-            from ml.population_data_quality import run_data_quality_audit
-            return run_data_quality_audit()
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to generate quality report: {e}")
-    
-    with open(report_file, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-@app.get("/api/ml/population-health/dictionary")
-def get_feature_dictionary():
-    """
-    Returns the curated population feature dictionary with full data provenance (Requirement 14).
-    """
-    dict_file = os.path.join(os.path.dirname(__file__), "data", "processed", "feature_dictionary.csv")
-    if not os.path.exists(dict_file):
-        raise HTTPException(status_code=404, detail="Feature dictionary not found")
-    
-    import pandas as pd
-    df_dict = pd.read_csv(dict_file)
-    return {
-        "total_curated_features": len(df_dict),
-        "features": df_dict.to_dict(orient="records"),
-        "disclaimer": _POP_DISCLAIMER
-    }
-
-
-@app.get("/api/ml/population-health/snowflake/metadata")
-def get_snowflake_metadata():
-    """Returns Snowflake Schema architecture, table dimensions, and fact statistics."""
-    if _POPULATION_HEALTH is None:
-        raise HTTPException(status_code=503, detail="Population health engine not initialized")
-    return _POPULATION_HEALTH.query_snowflake_metadata()
-
-
-@app.get("/api/ml/population-health/snowflake/query")
-def query_snowflake_schema(
-    district: str = "Kolkata",
-    year: Optional[int] = None,
-    fiscal_year: Optional[str] = None,
-    source: Optional[str] = None,
-    domain: Optional[str] = None,
-    facility_category: Optional[str] = None,
-    limit: int = 100
-):
-    """
-    Direct multidimensional query against the Snowflake Schema fact_health_indicator table
-    and its normalized dimensions (dim_time, dim_district, dim_indicator, dim_source, dim_facility, dim_category).
-    """
-    if _POPULATION_HEALTH is None:
-        raise HTTPException(status_code=503, detail="Population health engine not initialized")
-    return _POPULATION_HEALTH.query_snowflake_facts(
-        district=district,
-        year=year,
-        fiscal_year=fiscal_year,
-        source=source,
-        domain=domain,
-        facility_category=facility_category,
-        limit=limit
+    result = submit_clinician_review(
+        db=db,
+        assessment_id=assessment_id,
+        reviewer=current_user,
+        decision=review_data.decision,
+        clinical_notes=review_data.clinical_notes,
+        override_reason=review_data.override_reason,
+        modified_risk_level=review_data.modified_risk_level,
+        modified_triage_state=review_data.modified_triage_state,
+        modified_action=review_data.modified_action,
+        modified_referral_status=review_data.modified_referral_status,
+        device_id=f"doc_{current_user.id}"
     )
+    return result
 
 
-class ScreeningEnrichmentPayload(BaseModel):
-    vitals: Optional[Dict[str, Any]] = None
-    symptoms: Optional[List[str]] = None
-    risk_factors: Optional[List[str]] = None
-    risk_level: Optional[str] = "Low"
-    has_emergency_red_flags: Optional[bool] = False
-    district: Optional[str] = "Kolkata"
-
-
-@app.post("/api/ml/population-health/enrich-screening")
-def enrich_screening(payload: ScreeningEnrichmentPayload):
+@app.get("/api/v2/reviews/{assessment_id}/history", response_model=List[ReviewHistoryItem])
+def get_assessment_review_history(
+    assessment_id: str,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """
-    Enriches individual patient screening with population risk context (Requirement 8 & 12).
-    CLINICAL BOUNDARY: Population dataset never overrides patient vitals or reported symptoms.
+    Retrieves the complete immutable audit trail of clinical reviews and attestations for an assessment.
     """
-    if _POPULATION_HEALTH is None:
-        raise HTTPException(status_code=503, detail="Population health engine not initialized")
-    
-    patient_data = {
-        "vitals": payload.vitals or {},
-        "symptoms": payload.symptoms or [],
-        "risk_factors": payload.risk_factors or [],
-        "risk_level": payload.risk_level or "Low",
-        "has_emergency_red_flags": payload.has_emergency_red_flags or False
-    }
-    return _POPULATION_HEALTH.enrich_screening_context(
-        patient_assessment=patient_data,
-        district=payload.district or "Kolkata"
-    )
-
+    return get_review_history(db=db, assessment_id=assessment_id)

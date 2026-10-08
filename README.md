@@ -1,230 +1,170 @@
-# RapiDChecK — RuralHealth AI 🏥🤖
+# RapiDChecK - RuralHealth AI 🏥🤖
+> **Clinically Governed, Offline-First Disease Triage & Rural Health Access Platform**  
+> Built for ASHA/ANM Frontline Workers, Primary Health Centre (PHC) Medical Officers, and District Health Authorities across India.
 
-> **AI-Powered Early Disease Risk Prediction & Kolkata Population Health Intelligence Platform**  
-> Designed for ASHA/ANM community health workers, Primary Health Centre (PHC) medical officers, district health authorities, and rural patients across India.
-
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16+-336791.svg?style=flat&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![React](https://img.shields.io/badge/React-19.0+-61DAFB.svg?style=flat&logo=react&logoColor=black)](https://react.dev/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-3178C6.svg?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Vite](https://img.shields.io/badge/Vite-6.0+-646CFF.svg?style=flat&logo=vite&logoColor=white)](https://vitejs.dev/)
-[![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-4.0+-38B2AC.svg?style=flat&logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
-[![Ollama](https://img.shields.io/badge/Ollama-Gemma_3_270M-black.svg?style=flat&logo=ollama&logoColor=white)](https://ollama.com)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9+-3178C6.svg?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Dexie.js](https://img.shields.io/badge/Dexie.js-v4.0_IndexedDB-2C8EBB.svg?style=flat)](https://dexie.org/)
 [![Scikit-Learn](https://img.shields.io/badge/scikit--learn-ML_Engine-F7931E.svg?style=flat&logo=scikit-learn&logoColor=white)](https://scikit-learn.org/)
-[![SQLite](https://img.shields.io/badge/SQLite-Database-003B57.svg?style=flat&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![Docker](https://img.shields.io/badge/Docker-Compose_HA-2496ED.svg?style=flat&logo=docker&logoColor=white)](https://www.docker.com/)
 
 ---
 
 ## 🌟 Executive Summary
 
-**RuralHealth AI (RapiDChecK)** bridges the critical healthcare access gap in low-resource and remote rural environments. Operating with an **offline-first** philosophy, the platform enables community health workers (ASHA / ANMs) to conduct doorstep screening, early disease risk triage, and data-aware population health inquiry without requiring persistent internet connectivity.
+**RapiDChecK / RuralHealth AI** solves the healthcare delivery bottleneck in remote, low-connectivity rural regions. In areas with intermittent power, scarce internet, and severe specialist shortages, the platform empowers grassroots community health workers (ASHA/ANM workers) to conduct structured clinical risk triage at the patient's doorstep.
 
-```
-                    ┌─────────────────────────────────────────────────────────┐
-                    │                     RURALHEALTH AI                      │
-                    └────────────────────────────┬────────────────────────────┘
-                                                 │
-                                                 ▼
-                                        INTENT ROUTER LAYER
-                                                 │
-                   ┌─────────────────────────────┴─────────────────────────────┐
-                   │                                                           │
-                   ▼                                                           ▼
-         HEALTH QUESTION / RAG                                        DATASET & ANALYTICS QUERY
-                   │                                                           │
-                   ▼                                                           ▼
-       CLINICAL KNOWLEDGE BASE                                        KOLKATA HEALTH DATA ENGINE
-   • Pathophysiology & symptoms                                  • 14 annual fiscal years (2008–2022)
-   • ASHA screening guidelines                                   • 1955 features (HMIS & NFHS-5)
-   • Multilingual (EN / BN / HI)                                 • Deterministic trends & comparisons
-                   │                                                           │
-                   └─────────────────────────────┬─────────────────────────────┘
-                                                 │
-                                                 ▼
-                                     LOCAL GEMMA 3 270M (Ollama)
-                                     Natural Language Explanation
-                                                 │
-                                                 ▼
-                                      GROUNDED RESPONSE CARD
-                               (Visual Badge + Source + Exact Data)
-```
+### Authoritative Architecture Flow:
+$$\text{Patient Registration} \longrightarrow \text{Vitals \& Symptom Intake} \longrightarrow \text{Deterministic Safety Engine} \longrightarrow \text{Durable Local Outbox} \longrightarrow \text{Authenticated Sync (OCC + Idempotency)} \longrightarrow \text{PostgreSQL 16} \longrightarrow \text{Clinician Review \& HMAC Attestation}$$
 
 ---
 
-## ✨ Key Features & Capabilities
+## 📚 Detailed Documentation Hub
 
-### 1. 📊 Kolkata Health Intelligence & Data Engine
-* **Deterministic Analytics Layer**: Python computes exact statistics, trends, and multi-year comparisons; Gemma explains the findings without doing manual arithmetic or hallucinating numbers.
-* **Dataset Schema & Catalog**:
-  * **14 Annual Rows**: Fiscal years `2008-09` to `2021-22`.
-  * **1957 Columns (1955 Health Features)**: Structured across Communicable diseases, NCDs, Maternal/Child health, Immunization, and Diagnostics.
-  * **8,202 HMIS Numeric Records Processed**: Forming the longitudinal yearly time-series backbone.
-  * **73 NFHS-5 Survey Features**: Cross-sectional factsheet indicators (attached exclusively to `2019–20`).
-* **Statistical Limitation Awareness**: Explicitly labels low-sample high-dimensional properties ($p \gg n$; $1957 > 14$) as exploratory and non-causal.
+For in-depth architectural and technical specifications, refer to our comprehensive documentation modules:
 
-### 2. 🤖 Offline Local AI Chat Assistant (Gemma 3 270M)
-* **Local Ollama Integration**: Runs entirely on-device via `http://localhost:11434` with zero external cloud dependencies.
-* **Context-Aware Intent Routing**:
-  * `📊 DATASET INSIGHT`: Dataset summary, feature counts, NFHS-5 period, and indicator discovery.
-  * `📊 TREND ANALYSIS`: 14-year time series, net change, % change, and trend direction.
-  * `📊 DATASET COMPARISON`: Deterministic difference between fiscal years (e.g. `2018-19` vs `2020-21`).
-  * `🩺 HEALTH EDUCATION`: Clinically verified medical explanations in simple language.
-  * `📋 WORKFLOW GUIDANCE`: ASHA screening protocols and red-flag escalation triggers.
-  * `🛡️ CLINICAL SAFETY BOUNDARY`: Safe refusal of autonomous prescription and diagnosis requests.
-* **Multilingual Fluency**: Native support for **English**, **Bengali (বাংলা)**, and **Hindi (हिंदी)**.
-* **Multi-Turn Context Window**: Bounded conversational memory that resolves contextual pronouns (e.g., *"What is hypertension?"* $\rightarrow$ *"How does the Kolkata dataset represent it?"*).
+| Document | Description | Key Topics Covered |
+|---|---|---|
+| [**`docs/PROJECT.md`**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/PROJECT.md) | **Master Engineering & System Architecture** | Component topology, directory structure, Docker Compose stack, CI/CD validation gates. |
+| [**`docs/DATABASE.md`**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/DATABASE.md) | **Database Architecture & Schema Specification** | PostgreSQL 16 engine enforcement, connection pooling, full relational schemas, Alembic migrations, ETL migration pipeline. |
+| [**`docs/AUTH.md`**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/AUTH.md) | **Authentication, RBAC & Cryptographic Attestation** | PBKDF2-HMAC-SHA256 (600k iter), JWT claims, fine-grained RBAC matrix, facility isolation, HMAC-SHA256 attestation, 23 adversarial tests. |
+| [**`docs/FEATURE.md`**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/FEATURE.md) | **Features, Capabilities & Clinical Engine** | Dexie v4 outbox, 20 offline failure scenarios, 10/10 golden vectors, ML disease classifier, clinician review queue, voice dictation. |
+| [**`docs/validation/`**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/validation/) | **Production Validation Records & Test Artifacts** | Baseline runtime report, requirements-to-test matrix, live validation records, and machine-readable JSON artifacts. |
 
-### 3. 📴 Offline-First Clinical Screening Engine
-* **IndexedDB (Dexie.js)**: Full offline client-side database allowing continuous screening in zero-connectivity environments.
-* **Deterministic Multi-Domain Risk Stratification**:
-  * Triage for **Cardiovascular / Hypertension**, **Diabetes**, **Respiratory / TB**, and **Maternal Malnutrition**.
-  * Classifies into **Low**, **Moderate**, and **High Risk** tiers with explainable contributing factors.
-* **Machine Learning Disease Classifier**: Scikit-Learn Logistic Regression (328 symptom features, 512 disease classes) with **95.24% Top-3 accuracy**.
-* **Automatic Background Sync**: Reactive heartbeat (`/api/health`) that pushes queued screenings via `POST /api/sync` upon reconnection.
+---
 
-### 4. 🏥 Community Health Worker & PHC Doctor Dashboards
-* **Census & High-Risk Priority Queue**: Real-time referral management for Primary Health Centre doctors.
-* **Village Coverage & Interactive Mapping**: Google Maps Platform with OpenStreetMap / Nominatim fallback for geospatial facility identification.
-* **Hands-Free Voice Dictation**: Web Speech API for regional voice input (`hi-IN`, `bn-IN`, `en-IN`).
+## 🚀 Key Core Capabilities
+
+### 1. 📴 Offline-First Durability & Outbox Queue
+- **Zero-Connectivity Field Operation:** Full screening capabilities on mobile/tablet devices via **IndexedDB (Dexie v4)**.
+- **Single-Transaction Atomicity:** Domain records and outbox queue entries are committed together in a single atomic transaction.
+- **20 Offline Failure Scenarios (`TEST-OFF-001` – `TEST-OFF-020`):** Survives network drops during sync, server timeouts after commit, process crashes, and duplicate burst retransmissions with 0% data loss.
+- **Two-Device Concurrent Mutation:** Preserves non-conflicting field edits via 3-way merge and prevents silent overwrites via Optimistic Concurrency Control (OCC `409 Conflict`).
+
+### 2. 🩺 Clinically Governed Triage & Safety Engine
+- **No Silent Defaulting:** Missing vital signs never default to normal values; absent vitals explicitly trigger `uncertainty_state="INSUFFICIENT_DATA"` and `risk_score=None`.
+- **Deterministic Emergency Short-Circuit:** Acute conditions (hypertensive crisis, suspected acute coronary syndrome, diabetic emergencies, active TB hemoptysis) instantly trigger `triage_state="EMERGENCY"`, `is_emergency=1`, and mandatory doctor review.
+- **Cross-Platform Golden Vector Equivalence:** 10/10 multi-condition golden vectors match identically across Python backend and TypeScript client.
+- **Informational ML Disease Classifier:** Trained on Kaggle Disease & Symptoms Dataset (189,647 records, 328 symptom features, 512 classes) achieving **95.24% Top-3 Accuracy**. Strict safety guardrails ensure ML cannot override safety rules or downgrade emergencies.
+
+### 3. 🔐 Production Security, RBAC & Server Attestation
+- **Cryptographic Password Hashing:** PBKDF2-HMAC-SHA256 with 600,000 iterations and unique 16-byte salts.
+- **JWT Claims Verification:** Validates `sub`, `role`, `facility_id`, `iss`, `aud`, and `exp`.
+- **Enforced RBAC Matrix:** Frontline workers cannot perform clinical reviews or overrides (`403 Forbidden`).
+- **Multi-Tenant Facility Isolation:** Medical officers are strictly confined to their registered facility boundaries.
+- **Server-Side Cryptographic Attestation (HMAC-SHA256):** Seals doctor review decisions over canonical payloads (`review_id|assessment_id|reviewer_id|decision|timestamp|override_reason|workflow_version|ruleset_version`). Tampering with any parameter immediately invalidates verification.
+
+### 4. 🗣️ Multilingual Voice Dictation & Telemedicine
+- **Regional Languages:** Instant UI localization in **English**, **Hindi (हिंदी)**, and **Bengali (বাংলা)**.
+- **Speech-to-Text:** Hands-free symptom input powered by the **Web Speech API** supporting Indian regional accents (`hi-IN`, `bn-IN`, `en-IN`).
+- **Smart Hospital Locator:** Dual-engine mapping with **Google Maps Platform** and automated fallback to **OpenStreetMap / Nominatim**.
+- **Teleconsultation Scheduling:** Direct booking of specialist teleconsultations into PHC doctor calendars.
 
 ---
 
 ## 🛠️ Technology Stack
 
-| Layer | Technologies | Role |
-| :--- | :--- | :--- |
-| **Frontend** | React 19, TypeScript, Vite, Tailwind CSS v4 | Responsive, mobile-first community UI |
-| **Offline Storage** | Dexie.js (IndexedDB), Service Worker PWA | Offline screening persistence |
-| **Local AI Runtime** | Ollama, Gemma 3 270M | On-device multilingual reasoning |
-| **Backend Framework** | Python 3.10+, FastAPI, Uvicorn | Asynchronous REST & Streaming API |
-| **Data Engine** | Pandas, NumPy, JSON Catalogs | Deterministic health data analytics |
-| **ML & Analytics** | Scikit-Learn, Joblib | 512-class clinical disease predictor |
-| **Database & ORM** | SQLite, SQLAlchemy 2.0, Pydantic v2 | Structured relational persistence |
-
----
-
-## 📁 Repository Structure
-
 ```
-.
-├── Health-AI-main/
-│   ├── backend/
-│   │   ├── main.py                     # FastAPI routes & API definitions
-│   │   ├── ml_engine.py                # Deterministic screening risk triage
-│   │   ├── database.py                 # SQLAlchemy models & SQLite setup
-│   │   ├── schemas.py                  # Pydantic schemas & validators
-│   │   ├── requirements.txt            # Python dependencies
-│   │   ├── .env.example                # Safe environment variable template
-│   │   ├── ai/
-│   │   │   └── data_catalog/           # Generated dataset catalogs
-│   │   │       ├── dataset_metadata.json
-│   │   │       ├── feature_catalog.json
-│   │   │       ├── category_catalog.json
-│   │   │       └── year_catalog.json
-│   │   ├── prompts/
-│   │   │   └── ruralhealth_ai.py       # System prompt & clinical safety governance
-│   │   ├── services/
-│   │   │   ├── ollama_service.py       # Ollama LLM integration & memory
-│   │   │   └── kolkata_health_data_service.py # Deterministic data analytics engine
-│   │   └── ml/
-│   │       ├── predictor.py            # ML disease classifier
-│   │       └── population_health.py    # Aggregate health engine
-│   │
-│   ├── frontend/
-│   │   ├── src/
-│   │   │   ├── App.tsx                 # Root application component
-│   │   │   ├── components/
-│   │   │   │   ├── ChatAssistantPage.tsx   # Full-page data-aware chat assistant
-│   │   │   │   ├── HealthChatbot.tsx       # Floating health assistant widget
-│   │   │   │   ├── ScreeningForm.tsx       # Patient intake & vitals form
-│   │   │   │   ├── Dashboard.tsx           # PHC Doctor census & referrals
-│   │   │   │   └── maps/                   # Facility locator components
-│   │   │   ├── db/                     # Dexie.js offline schema
-│   │   │   └── i18n/                   # English, Hindi, Bengali translations
-│   │   ├── package.json
-│   │   └── vite.config.ts
-│   │
-│   └── kolkata_model_output/
-│       ├── kolkata_model_training_dataset.csv  # 14 rows × 1957 columns
-│       ├── feature_dictionary.csv              # 1955 metadata definitions
-│       └── processing_summary.txt              # Data ingestion summary
-│
-├── .gitignore                          # Comprehensive security & build exclusions
-├── .env.example                        # Root environment template
-└── README.md                           # Documentation
+┌──────────────────────────────────────────────────────────────────────────┐
+│ FRONTEND: React 19 • TypeScript 5.9 • Vite 6 • Tailwind CSS 4 • Dexie v4 │
+├──────────────────────────────────────────────────────────────────────────┤
+│ BACKEND:  FastAPI 0.115+ • Python 3.11 • SQLAlchemy 2.0 • PyJWT • Pytest │
+├──────────────────────────────────────────────────────────────────────────┤
+│ DATABASE: PostgreSQL 16 Alpine (Production) • SQLite 3 (Testing Fixtures)│
+├──────────────────────────────────────────────────────────────────────────┤
+│ DEPLOY:   Docker Compose • NGINX Reverse Proxy • Multi-Stage Containers │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🚀 Getting Started
+## ⚡ Quick Start & Development Setup
 
-### Prerequisites
-* **Node.js** (v18+) & **npm**
-* **Python** (3.10+)
-* **Ollama** installed locally ([ollama.com](https://ollama.com))
+### Option A: Complete Docker Compose Stack (Recommended for Production)
+```powershell
+# 1. Clone the repository
+git clone https://github.com/your-org/Health-AI.git
+cd Health-AI
 
-### 1. Start Local Ollama Model
-```bash
-# Pull and start the compact local model
-ollama pull gemma3:270m
-ollama serve
+# 2. Configure environment variables
+cp Health-AI-main/backend/.env.example Health-AI-main/backend/.env
+
+# 3. Launch all containers (PostgreSQL 16, Backend, Frontend)
+docker-compose up -d --build
+
+# 4. Access the application
+# Frontend UI:   http://localhost
+# Backend API:   http://localhost:8000
+# API Docs:      http://localhost:8000/docs
 ```
 
-### 2. Backend Setup
-```bash
+### Option B: Local Development Setup
+
+#### 1. Backend Setup (FastAPI & Python 3.11)
+```powershell
 cd Health-AI-main/backend
 
 # Create and activate virtual environment
-python3 -m venv venv
-source venv/bin/activate
+python -m venv venv
+.\venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Start FastAPI server
-uvicorn main:app --host 127.0.0.1 --port 8000 --reload
+# Run backend development server
+uvicorn main:app --reload --port 8000
 ```
 
-### 3. Frontend Setup
-```bash
+#### 2. Frontend Setup (React & Vite)
+```powershell
 cd Health-AI-main/frontend
 
 # Install dependencies
 npm install
 
-# Run Vite development server
+# Start Vite dev server
 npm run dev
 ```
-Open **`http://localhost:5173`** in your browser.
 
 ---
 
-## 📡 Key API Endpoints
+## 🧪 Comprehensive Automated Test Execution
 
-| Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| `GET` | `/api/health` | Backend & database health status |
-| `GET` | `/api/ai/ollama/health` | Local Ollama connection & model status |
-| `GET` | `/api/ai/data/summary` | Factual summary of Kolkata Health Dataset |
-| `GET` | `/api/ai/data/features/search?q={query}` | Semantic search across 1,955 health indicators |
-| `GET` | `/api/ai/data/indicator/{feature}` | Time series values for a specific indicator |
-| `GET` | `/api/ai/data/trend/{feature}` | Deterministic trend statistics across fiscal years |
-| `POST` | `/api/ai/data/compare` | Multi-year comparison (`feature`, `year1`, `year2`) |
-| `POST` | `/api/ai/chat` | Data-aware AI chat with safety guardrails |
-| `POST` | `/api/ai/chat/stream` | Real-time SSE token delivery stream |
-| `POST` | `/api/assess` | Deterministic patient screening risk evaluation |
-| `POST` | `/api/sync` | Batch sync for offline patient screening records |
+Run the complete 58-test production verification suite:
+```powershell
+cd Health-AI-main/backend
 
----
+# Execute all backend tests
+pytest test_clinical_safety.py test_golden_vectors.py test_sync_v2.py test_auth_review.py test_adversarial_security.py -v
+```
 
-## 🛡️ Clinical Safety & Governance Boundaries
-
-RuralHealth AI adheres to strict medical decision-support principles:
-1. **Non-Diagnostic & Non-Prescribing**: The platform never assigns autonomous clinical diagnoses or issues drug prescriptions.
-2. **Clinical Authority**: All clinical risk stratifications and treatment plans require verification by licensed Primary Health Centre (PHC) Medical Officers.
-3. **Data Separation**: Aggregate population datasets (Kolkata HMIS / NFHS-5) are strictly decoupled from individual patient records.
-4. **No Numerical Hallucinations**: Statistical figures and trends are calculated deterministically by Python prior to natural-language summarization.
+### Verified Test Results:
+- **`test_clinical_safety.py`:** 11/11 Passed (Red flags, uncertainty, vital defaults)
+- **`test_golden_vectors.py`:** 10/10 Passed (Cross-platform canonical vector equivalence)
+- **`test_sync_v2.py`:** 5/5 Passed (Idempotency, OCC conflict detection, tombstones, pull pagination)
+- **`test_auth_review.py`:** 9/9 Passed (PBKDF2 hashing, JWT login, review queue, attestation)
+- **`test_adversarial_security.py`:** 23/23 Passed (AUTH-001–009, RBAC-001–005, REV-001–009, ATT-001–009, DB-001–007)
+- **Grand Total:** **58 / 58 Tests Passed (100% Pass Rate)**
 
 ---
 
-## 📄 License
-This project is developed for public health innovation and community health empowerment under the MIT License.
+## 📊 Default Development & Pilot Credentials
+
+> *Note: These credentials are seeded automatically for development and pilot testing environments. In production, rotate all passwords immediately.*
+
+| Role | Username | Default Password | Assigned Facility | Permissions Summary |
+|---|---|---|---|---|
+| **System Admin** | `admin` | `admin123` | `FAC_MAIN` | Full administrative control, user management, system config. |
+| **PHC Doctor** | `dr.sharma` | `doctor123` | `PHC_RAMPUR` | Review pending triage queue, perform clinical reviews, clinical overrides. |
+| **ASHA Worker** | `anita.asha` | `asha123` | `PHC_RAMPUR` | Patient registration, vital intake, offline screening, sync push/pull. |
+| **District Officer**| `officer.verma` | `officer123` | `DISTRICT_HQ` | High-level disease analytics, referral monitoring, audit log inspection. |
+
+---
+
+## 📄 License & Ethical Medical Governance
+
+This project is licensed under the **MIT License**.
+
+> **Clinical Disclaimer:** RapiDChecK / RuralHealth AI is a clinical decision-support and triage platform designed for qualified frontline health workers and medical officers. It does not replace professional clinical judgement or laboratory diagnostics. All high-risk and emergency screenings mandate authoritative clinical review and medical officer signoff.

@@ -8,7 +8,9 @@
     "typecheck": "tsc -b",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:outbox": "npx tsx test_task004_outbox.js",
+    "test:golden": "node test_golden_vectors.js"
   },
   "dependencies": {
     "@types/leaflet": "^1.9.22",
@@ -35,6 +37,7 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.4",
+    "fake-indexeddb": "^6.2.5",
     "oxlint": "^1.75.0",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",

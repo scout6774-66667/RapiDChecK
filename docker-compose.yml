@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: rapidcheck_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ruralhealth_prod
+      POSTGRES_USER: rapidcheck_user
+      POSTGRES_PASSWORD: SuperSecurePassword123!
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rapidcheck_user -d ruralhealth_prod"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./Health-AI-main/backend
+      dockerfile: Dockerfile
+    container_name: rapidcheck_backend
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: postgresql+psycopg2://rapidcheck_user:SuperSecurePassword123!@postgres:5432/ruralhealth_prod
+      JWT_SECRET_KEY: dev_production_jwt_secret_key_change_in_real_deployment
+      REVIEW_SECRET_KEY: dev_production_review_attestation_secret_key
+      CORS_ORIGINS: http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./Health-AI-main/frontend
+      dockerfile: Dockerfile
+    container_name: rapidcheck_frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+    driver: local

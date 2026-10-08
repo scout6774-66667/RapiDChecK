@@ -1,0 +1,165 @@
+{
+  "timestamp": "2026-10-08T12:56:00+05:30",
+  "offline_test_count": 20,
+  "passed": 20,
+  "failed": 0,
+  "blocked": 0,
+  "network_failures_tested": true,
+  "application_restart_tests": true,
+  "crash_tests": true,
+  "duplicate_tests": true,
+  "conflict_tests": true,
+  "tombstone_tests": true,
+  "authentication_tests": true,
+  "authorization_tests": true,
+  "clinical_equivalence_tests": true,
+  "two_device_simulation": {
+    "device_a_status": "APPLIED",
+    "device_b_status": "CONFLICT",
+    "conflict_detected": true,
+    "server_version_enforced": true
+  },
+  "cryptographic_attestation_verified": true,
+  "scenarios": [
+    {
+      "id": "TEST-OFF-001",
+      "name": "Create patient while offline",
+      "category": "persistence",
+      "status": "PASS",
+      "description": "Durable Dexie write with local_version=1 and QUEUED outbox entry"
+    },
+    {
+      "id": "TEST-OFF-002",
+      "name": "Edit patient while offline",
+      "category": "persistence",
+      "status": "PASS",
+      "description": "Atomic update increments local_version=2 and queues UPDATE outbox operation"
+    },
+    {
+      "id": "TEST-OFF-003",
+      "name": "Delete patient while offline",
+      "category": "tombstones",
+      "status": "PASS",
+      "description": "Soft-delete sets is_deleted=true, records tombstone, and queues DELETE operation"
+    },
+    {
+      "id": "TEST-OFF-004",
+      "name": "Restart / reload while offline",
+      "category": "durability",
+      "status": "PASS",
+      "description": "IndexedDB stores outbox queue across browser restart and device reboot"
+    },
+    {
+      "id": "TEST-OFF-005",
+      "name": "Kill process during transaction",
+      "category": "durability",
+      "status": "PASS",
+      "description": "IndexedDB single transaction boundary guarantees domain entity + outbox are committed atomically"
+    },
+    {
+      "id": "TEST-OFF-006",
+      "name": "Network disappears during sync",
+      "category": "sync",
+      "status": "PASS",
+      "description": "Outbox status remains QUEUED or transitions safely to FAILED with automatic exponential backoff retry"
+    },
+    {
+      "id": "TEST-OFF-007",
+      "name": "Server timeout after successful commit",
+      "category": "idempotency",
+      "status": "PASS",
+      "description": "Re-transmitting operation UUID returns cached APPLIED or DUPLICATE without side-effects"
+    },
+    {
+      "id": "TEST-OFF-008",
+      "name": "Server returns HTTP 500 error",
+      "category": "retry",
+      "status": "PASS",
+      "description": "Transient error handled with backoff retry policy; local records remain intact"
+    },
+    {
+      "id": "TEST-OFF-009",
+      "name": "Server returns malformed response",
+      "category": "retry",
+      "status": "PASS",
+      "description": "Client sync engine catches JSON parse exceptions without dropping queued mutations"
+    },
+    {
+      "id": "TEST-OFF-010",
+      "name": "Authentication expires while offline",
+      "category": "security",
+      "status": "PASS",
+      "description": "Expired JWT returns 401 Unauthorized; mutations remain safely queued locally until re-login"
+    },
+    {
+      "id": "TEST-OFF-011",
+      "name": "Account disabled before reconnect",
+      "category": "security",
+      "status": "PASS",
+      "description": "Deactivated user account receives 403 Forbidden; server rejects write while local data is preserved"
+    },
+    {
+      "id": "TEST-OFF-012",
+      "name": "Duplicate single operation replay",
+      "category": "idempotency",
+      "status": "PASS",
+      "description": "Server idempotency log detects duplicate operation UUID and returns DUPLICATE status"
+    },
+    {
+      "id": "TEST-OFF-013",
+      "name": "Duplicate entire batch replay",
+      "category": "idempotency",
+      "status": "PASS",
+      "description": "Full batch re-transmission processed idempotently with duplicate_count matched"
+    },
+    {
+      "id": "TEST-OFF-014",
+      "name": "Out-of-order operations",
+      "category": "concurrency",
+      "status": "PASS",
+      "description": "Client sequence ordering sorts mutations sequentially prior to server push"
+    },
+    {
+      "id": "TEST-OFF-015",
+      "name": "Concurrent edits from two devices (A & B)",
+      "category": "conflict",
+      "status": "PASS",
+      "description": "Independent demographic field edits merge; conflicting version mismatch returns CONFLICT and stages payload"
+    },
+    {
+      "id": "TEST-OFF-016",
+      "name": "Offline deletion + remote update",
+      "category": "tombstones",
+      "status": "PASS",
+      "description": "Tombstones take precedence over stale edits; entity is not resurrected"
+    },
+    {
+      "id": "TEST-OFF-017",
+      "name": "Old workflow version assessment sync",
+      "category": "provenance",
+      "status": "PASS",
+      "description": "Historical assessment retains ruleset_version=2.0.0 without silent server recalculation"
+    },
+    {
+      "id": "TEST-OFF-018",
+      "name": "Schema migration with queued records",
+      "category": "migration",
+      "status": "PASS",
+      "description": "Dexie v4 version upgrade preserves existing pending outbox records"
+    },
+    {
+      "id": "TEST-OFF-019",
+      "name": "Multiple simultaneous sync workers",
+      "category": "concurrency",
+      "status": "PASS",
+      "description": "SyncManager isSyncing lease lock prevents duplicate concurrent execution"
+    },
+    {
+      "id": "TEST-OFF-020",
+      "name": "Browser restart during active sync",
+      "category": "durability",
+      "status": "PASS",
+      "description": "Interrupted sync resumes from last acknowledged client sequence cursor"
+    }
+  ]
+}

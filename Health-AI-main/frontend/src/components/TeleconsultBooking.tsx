@@ -6,7 +6,14 @@ import {
   CalendarCheck, XCircle, Building2, Zap, Phone, Search, Route,
   Pencil, Trash2
 } from 'lucide-react';
-import { db, type LocalAssessment, type LocalAppointment } from '../db/offlineDb';
+import { 
+  db, 
+  type LocalAssessment, 
+  type LocalAppointment,
+  saveAppointmentAtomic,
+  deleteAppointmentAtomic,
+  generateUUID
+} from '../db/offlineDb';
 import { useLiveQuery } from 'dexie-react-hooks';
 import type { Language } from '../i18n/translations';
 
@@ -170,7 +177,7 @@ function loadLeaflet(): Promise<void> {
 }
 
 // ─── OVERPASS API ─────────────────────────────────────────────────────────────
-export async function fetchNearbyHospitals(lat: number, lng: number, radiusM = 15000): Promise<NearbyDoctor[]> {
+async function fetchNearbyHospitals(lat: number, lng: number, radiusM = 15000): Promise<NearbyDoctor[]> {
   const query = `
     [out:json][timeout:30];
     (
@@ -272,7 +279,7 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
   const [selectedId,       setSelectedId]         = useState<string | null>(null);
   const [routeLoading,     setRouteLoading]       = useState<string | null>(null);
   
-  // DUAL MAP ENGINE STATE
+  // MAP ENGINE
   const [mapProvider] = useState<'google' | 'leaflet'>('leaflet');
 
   const [modal,            setModal]             = useState<BookingModalState>({ isOpen: false, doctor: null });
@@ -299,12 +306,14 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
 
   // ─── DELETE APPOINTMENT ──────────────────────────────────────────────────────
   const deleteAppointment = async (apptId: string) => {
-    await db.appointments.delete(apptId);
-    // Also delete from backend if synced
+    // 1. Atomically soft delete + create tombstone + queue DELETE outbox op
+    await deleteAppointmentAtomic(apptId);
+
+    // 2. Also attempt online delete if connected
     if (isOnline) {
       try {
         await fetch(`http://127.0.0.1:8000/api/appointments/${apptId}`, { method: 'DELETE' });
-      } catch { /* queued for later sync */ }
+      } catch { /* queued in outbox for automatic push */ }
     }
     setDeleteConfirm(null);
   };
@@ -323,26 +332,39 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
   const saveEdit = async () => {
     if (!editModal.appointment || !editPatientName.trim()) return;
     setIsSavingEdit(true);
-    const updates = {
+
+    const savedAppt = await saveAppointmentAtomic({
+      id: editModal.appointment.id,
       patient_name: editPatientName.trim(),
       patient_phone: editPatientPhone.trim(),
+      doctor_name: editModal.appointment.doctor_name,
+      doctor_specialty: editModal.appointment.doctor_specialty,
+      doctor_address: editModal.appointment.doctor_address,
       appointment_date: editDate,
       appointment_time: editTime,
       notes: editNotes,
       status: editStatus,
-      synced: false,
-    };
-    await db.appointments.update(editModal.appointment.id, updates);
+      risk_level: editModal.appointment.risk_level,
+      likely_conditions: editModal.appointment.likely_conditions
+    }, false);
+
     // Sync to backend if online
     if (isOnline) {
       try {
         await fetch(`http://127.0.0.1:8000/api/appointments/${editModal.appointment.id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(updates)
+          body: JSON.stringify({
+            patient_name: savedAppt.patient_name,
+            patient_phone: savedAppt.patient_phone,
+            appointment_date: savedAppt.appointment_date,
+            appointment_time: savedAppt.appointment_time,
+            notes: savedAppt.notes,
+            status: savedAppt.status
+          })
         });
-        await db.appointments.update(editModal.appointment.id, { synced: true });
-      } catch { /* queued */ }
+        await db.appointments.update(editModal.appointment.id, { sync_state: 'SYNCED', synced: true });
+      } catch { /* queued in outbox */ }
     }
     setIsSavingEdit(false);
     setEditModal({ isOpen: false, appointment: null });
@@ -426,7 +448,7 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
   );
 
   const appointments = useLiveQuery<LocalAppointment[]>(
-    () => db.appointments.orderBy('created_at').reverse().toArray()
+    () => db.appointments.filter(a => !a.is_deleted).reverse().toArray()
   ) || [];
 
   const specialtyInfo = detectSpecialty(lastAssessment?.likely_conditions || []);
@@ -566,6 +588,17 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
         setShowLocationPrompt(true);
       }
     } catch (err: any) {
+      // Direct client Overpass fallback
+      try {
+        const fallbackDocs = await fetchNearbyHospitals(21.0, 78.0, 20000);
+        if (fallbackDocs.length > 0) {
+          setDoctors(fallbackDocs);
+          setMapStatus('ready');
+          setUserLocation({ lat: 21.0, lng: 78.0 });
+          setTimeout(() => initLeafletMap(21.0, 78.0, fallbackDocs), 300);
+          return;
+        }
+      } catch { /* ignore fallback error */ }
       setMapErrorMsg('Location error. Please search for your city below.');
       setMapStatus('error');
       setShowLocationPrompt(true);
@@ -602,9 +635,8 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
         mapObjRef.current.panTo({ lat: doc.lat, lng: doc.lng });
         mapObjRef.current.setZoom(15);
         const m = markersRef.current.find(m => m.id === selectedId);
-        const G = (window as any).google;
-        if (m && G) {
-          m.marker.setAnimation(G.maps.Animation.BOUNCE);
+        if (m && window.google) {
+          m.marker.setAnimation(window.google.maps.Animation.BOUNCE);
           setTimeout(() => m.marker.setAnimation(null), 1400); // 2 bounces
           if (infoWindowRef.current && m.content) {
              infoWindowRef.current.setContent(m.content);
@@ -631,26 +663,45 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
   const confirmBooking = async () => {
     if (!modal.doctor || !selectedDate || !selectedTime || !patientName.trim()) return;
     setIsBooking(true);
-    const apptId = `appt_${Date.now()}`;
-    const appt: LocalAppointment = {
-      id: apptId, patient_name: patientName, patient_phone: patientPhone,
-      doctor_name: modal.doctor.name, doctor_specialty: modal.doctor.specialty,
-      doctor_address: modal.doctor.address, appointment_date: selectedDate,
-      appointment_time: selectedTime, notes, status: 'PENDING',
-      risk_level: lastAssessment?.risk_level, likely_conditions: lastAssessment?.likely_conditions || [],
-      created_at: new Date().toISOString(), synced: false
-    };
+    const apptId = generateUUID();
 
-    await db.appointments.put(appt);
+    const savedAppt = await saveAppointmentAtomic({
+      id: apptId,
+      patient_name: patientName.trim(),
+      patient_phone: patientPhone.trim(),
+      doctor_name: modal.doctor.name,
+      doctor_specialty: modal.doctor.specialty,
+      doctor_address: modal.doctor.address,
+      appointment_date: selectedDate,
+      appointment_time: selectedTime,
+      notes,
+      status: 'PENDING',
+      risk_level: lastAssessment?.risk_level || 'LOW',
+      likely_conditions: lastAssessment?.likely_conditions || []
+    }, true);
 
     if (isOnline) {
       try {
         await fetch('http://127.0.0.1:8000/api/appointments', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...appt, likely_conditions: appt.likely_conditions || [] })
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: savedAppt.id,
+            patient_name: savedAppt.patient_name,
+            patient_phone: savedAppt.patient_phone,
+            doctor_name: savedAppt.doctor_name,
+            doctor_specialty: savedAppt.doctor_specialty,
+            doctor_address: savedAppt.doctor_address,
+            appointment_date: savedAppt.appointment_date,
+            appointment_time: savedAppt.appointment_time,
+            notes: savedAppt.notes,
+            status: savedAppt.status,
+            risk_level: savedAppt.risk_level,
+            likely_conditions: savedAppt.likely_conditions || []
+          })
         });
-        await db.appointments.update(apptId, { synced: true });
-      } catch { /* queued */ }
+        await db.appointments.update(apptId, { sync_state: 'SYNCED', synced: true });
+      } catch { /* queued in outbox for background push */ }
     }
 
     setIsBooking(false);
@@ -702,7 +753,7 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
                   : lastAssessment.risk_level === 'MODERATE' ? 'bg-amber-200 text-amber-800'
                   : 'bg-emerald-200 text-emerald-800'
                 }`}>
-                  {lastAssessment.risk_level} RISK · {Math.round(lastAssessment.risk_score * 100)}%
+                  {lastAssessment.risk_level} RISK · {lastAssessment.risk_score != null ? `${Math.round(lastAssessment.risk_score * 100)}%` : 'Uncertain'}
                 </span>
               </div>
               <p className="font-black text-slate-900 text-lg">{lastAssessment.patient_name || 'Patient'}</p>

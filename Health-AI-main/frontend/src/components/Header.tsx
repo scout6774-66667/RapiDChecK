@@ -1,10 +1,10 @@
 import React from 'react';
-import { Activity, RefreshCw, Globe, PlusCircle, Stethoscope, Users, Wifi, WifiOff, AlertTriangle, Video, Sun, Moon } from 'lucide-react';
+import { Activity, RefreshCw, Globe, PlusCircle, Stethoscope, Users, Wifi, WifiOff, AlertTriangle, Video, Sun, Moon, BookOpen } from 'lucide-react';
 import { translations, type Language } from '../i18n/translations';
 
 interface HeaderProps {
-  currentTab: 'asha' | 'phc' | 'patients' | 'high-risk' | 'teleconsult';
-  onTabChange: (tab: 'asha' | 'phc' | 'patients' | 'high-risk' | 'teleconsult') => void;
+  currentTab: 'asha' | 'phc' | 'patients' | 'high-risk' | 'teleconsult' | 'resources';
+  onTabChange: (tab: 'asha' | 'phc' | 'patients' | 'high-risk' | 'teleconsult' | 'resources') => void;
   lang: Language;
   onLangChange: (lang: Language) => void;
   isOnline: boolean;
@@ -128,6 +128,19 @@ export const Header: React.FC<HeaderProps> = ({
             >
               <Video className="w-4 h-4 text-indigo-400" />
               <span>Book Doctor</span>
+            </button>
+
+            {/* Health Resources Tab */}
+            <button
+              onClick={() => onTabChange('resources')}
+              className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all ${
+                currentTab === 'resources'
+                  ? 'bg-gradient-to-r from-teal-500 to-emerald-400 text-slate-950 shadow-md shadow-teal-500/30 scale-105'
+                  : 'text-teal-300 hover:text-white hover:bg-teal-900/40 border border-teal-500/30'
+              }`}
+            >
+              <BookOpen className="w-4 h-4 text-teal-400" />
+              <span>Health Resources</span>
             </button>
 
           </div>

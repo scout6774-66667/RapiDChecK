@@ -1,0 +1,36 @@
+{
+  "artifact": "concurrency-validation",
+  "timestamp": "2026-10-08T07:57:15.869722+00:00",
+  "git_commit": "ab74f35",
+  "simulation": "Two-Device Concurrent Offline Mutation & Sync",
+  "scenarios": [
+    {
+      "scenario": "CONC-001: Non-conflicting field updates on independent devices",
+      "device_a": "Update phone number to 9876543210",
+      "device_b": "Update village to West Sector",
+      "resolution": "Both updates preserved via 3-way semantic merge",
+      "status": "PASS"
+    },
+    {
+      "scenario": "CONC-002: Direct conflict on identical field",
+      "device_a": "Update risk_level to HIGH (v1 -> v2)",
+      "device_b": "Update risk_level to LOW (v1 -> v2)",
+      "resolution": "Device A committed; Device B receives OCC CONFLICT (409); no silent overwrite",
+      "status": "PASS"
+    },
+    {
+      "scenario": "CONC-003: Delete vs Update race condition",
+      "device_a": "Delete patient record (is_deleted=1, tombstone created)",
+      "device_b": "Update patient symptoms with stale base_version",
+      "resolution": "Tombstone enforced; mutation rejected; record not resurrected",
+      "status": "PASS"
+    },
+    {
+      "scenario": "CONC-004: 100x Duplicate Operation Submission",
+      "device": "Device A retries same operation 100 times",
+      "resolution": "Single database write; 99 idempotent cached responses returned",
+      "status": "PASS"
+    }
+  ],
+  "verdict": "PASS"
+}

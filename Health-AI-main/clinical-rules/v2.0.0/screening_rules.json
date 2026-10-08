@@ -1,0 +1,158 @@
+{
+  "rulesetVersion": "2.0.0",
+  "baseScore": 0.05,
+  "minScore": 0.05,
+  "maxScore": 0.98,
+  "domains": [
+    {
+      "domain": "DIABETES_METABOLIC",
+      "rules": [
+        {
+          "id": "R-DM-01",
+          "criteria": "glucose_mg_dl >= 200",
+          "scoreDelta": 0.40,
+          "factor": "Severely Elevated Blood Glucose ({glucose_mg_dl} mg/dL >= 200 mg/dL)",
+          "condition": "Elevated Diabetes Screening Risk — Further Evaluation Recommended",
+          "forcedLevel": "HIGH"
+        },
+        {
+          "id": "R-DM-02",
+          "criteria": "glucose_mg_dl >= 140 AND glucose_mg_dl < 200",
+          "scoreDelta": 0.25,
+          "factor": "Elevated Blood Glucose ({glucose_mg_dl} mg/dL >= 140 mg/dL)",
+          "condition": "Elevated Diabetes Screening Risk — Further Evaluation Recommended",
+          "forcedLevel": "MODERATE"
+        },
+        {
+          "id": "R-DM-03",
+          "criteria": "glucose_mg_dl >= 126 AND glucose_mg_dl < 140",
+          "scoreDelta": 0.20,
+          "factor": "Fasting Blood Glucose in High Risk Range ({glucose_mg_dl} mg/dL)",
+          "condition": "Elevated Diabetes Screening Risk — Further Evaluation Recommended"
+        },
+        {
+          "id": "R-DM-04",
+          "criteria": "symptoms intersect [frequent urination, increased thirst, excessive thirst, unexplained weight loss, blurred vision, extreme fatigue]",
+          "scoreDeltaPerMatch": 0.15,
+          "factor": "Reported diabetes-related symptoms: {matched_symptoms}",
+          "condition": "Elevated Diabetes Screening Risk — Further Evaluation Recommended"
+        },
+        {
+          "id": "R-DM-05",
+          "criteria": "family_history contains diabetes",
+          "scoreDelta": 0.10,
+          "factor": "Family history of Diabetes mellitus",
+          "condition": "Elevated Diabetes Screening Risk — Further Evaluation Recommended"
+        }
+      ]
+    },
+    {
+      "domain": "CARDIOVASCULAR_HYPERTENSION",
+      "rules": [
+        {
+          "id": "R-HTN-01",
+          "criteria": "(systolic_bp >= 140 AND systolic_bp < 180) OR (diastolic_bp >= 90 AND diastolic_bp < 120)",
+          "scoreDelta": 0.30,
+          "factor": "Stage 2 Elevated Blood Pressure (BP: {systolic_bp}/{diastolic_bp} mmHg)",
+          "condition": "Possible Hypertension / Cardiovascular-Related Concern",
+          "forcedLevel": "HIGH_IF_SBP_160"
+        },
+        {
+          "id": "R-HTN-02",
+          "criteria": "(systolic_bp >= 130 AND systolic_bp < 140) OR (diastolic_bp >= 80 AND diastolic_bp < 90)",
+          "scoreDelta": 0.15,
+          "factor": "Stage 1 Borderline Blood Pressure (BP: {systolic_bp}/{diastolic_bp} mmHg)",
+          "condition": "Possible Hypertension / Cardiovascular-Related Concern"
+        },
+        {
+          "id": "R-HTN-03",
+          "criteria": "symptoms intersect [dizziness, palpitations, swelling, swelling in legs, breathlessness]",
+          "scoreDelta": 0.25,
+          "factor": "Cardiovascular warning signs: {matched_symptoms}",
+          "condition": "Possible Hypertension / Cardiovascular-Related Concern"
+        },
+        {
+          "id": "R-HTN-04",
+          "criteria": "smoking_status == Current",
+          "scoreDelta": 0.15,
+          "factor": "Current tobacco / smoking habit (elevated vascular risk)"
+        },
+        {
+          "id": "R-HTN-05",
+          "criteria": "physical_activity == Sedentary",
+          "scoreDelta": 0.05,
+          "factor": "Sedentary lifestyle reported"
+        }
+      ]
+    },
+    {
+      "domain": "RESPIRATORY_TB_TRIAGE",
+      "rules": [
+        {
+          "id": "R-TB-01",
+          "criteria": "temperature_f >= 101.0 AND temperature_f < 104.0",
+          "scoreDelta": 0.25,
+          "factor": "High Fever Recorded ({temperature_f}°F)",
+          "condition": "Acute Respiratory Infection Screening Concern"
+        },
+        {
+          "id": "R-TB-02",
+          "criteria": "temperature_f >= 99.5 AND temperature_f < 101.0",
+          "scoreDelta": 0.10,
+          "factor": "Mild Low-Grade Fever ({temperature_f}°F)",
+          "condition": "Acute Respiratory Infection Screening Concern"
+        },
+        {
+          "id": "R-TB-03",
+          "criteria": "symptoms intersect [cough, persistent cough, night sweats, fever, weight loss]",
+          "scoreDelta": 0.15,
+          "factor": "Respiratory symptoms: {matched_symptoms}",
+          "condition": "Acute Respiratory Infection Screening Concern"
+        },
+        {
+          "id": "R-TB-04",
+          "criteria": "symptom_duration_days >= 14 AND (symptoms contain cough OR persistent cough)",
+          "scoreDelta": 0.35,
+          "factor": "Persistent cough lasting {symptom_duration_days} days (High priority TB screening criteria)",
+          "condition": "Possible TB-Related Concern — Urgent Sputum Screening Recommended",
+          "forcedLevel": "HIGH"
+        }
+      ]
+    },
+    {
+      "domain": "ANEMIA_CONSTITUTIONAL",
+      "rules": [
+        {
+          "id": "R-ANE-01",
+          "criteria": "symptoms intersect [weakness, fatigue, dizziness, nausea, swelling, pale skin] count >= 2",
+          "scoreDelta": 0.15,
+          "factor": "General constitutional symptoms: {matched_symptoms}",
+          "condition": "General Nutritional / Anemia Evaluation Recommended"
+        }
+      ]
+    },
+    {
+      "domain": "ANTHROPOMETRIC_AND_VITALS",
+      "rules": [
+        {
+          "id": "R-BMI-01",
+          "criteria": "bmi >= 30.0",
+          "scoreDelta": 0.10,
+          "factor": "Obesity Category (BMI {bmi} kg/m²)"
+        },
+        {
+          "id": "R-BMI-02",
+          "criteria": "bmi < 18.5",
+          "scoreDelta": 0.10,
+          "factor": "Underweight Category (BMI {bmi} kg/m²)"
+        },
+        {
+          "id": "R-HR-01",
+          "criteria": "heart_rate_bpm >= 100 AND heart_rate_bpm < 150",
+          "scoreDelta": 0.15,
+          "factor": "Elevated Heart Rate ({heart_rate_bpm} bpm)"
+        }
+      ]
+    }
+  ]
+}
