@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Mic, MicOff, AlertCircle, Keyboard, Plus, Square, RotateCcw } from 'lucide-react';
+import { Mic, AlertCircle, Keyboard, Plus, Square, RotateCcw } from 'lucide-react';
 
 interface VoiceInputButtonProps {
   onTranscript: (text: string) => void;

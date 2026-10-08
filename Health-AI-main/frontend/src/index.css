@@ -1,49 +1,74 @@
 @import "tailwindcss";
 
-@custom-variant dark (&:where(.dark, .dark *));
+:root {
+  --color-primary: #0A9F68;
+  --color-primary-hover: #088758;
+  --color-primary-light: #E7F7F0;
+  --color-navy: #102A56;
+  --color-navy-light: #1A365D;
+  --color-background: #F4F9FA;
+  --color-card: #FFFFFF;
+  --color-border: #E5EEF1;
+  --color-danger: #EF4444;
+  --color-danger-bg: #FEF2F2;
+  --color-warning: #F59E0B;
+  --color-warning-bg: #FFFBEB;
+  --color-success: #10B981;
+  --color-success-bg: #ECFDF5;
+  --color-info: #3B82F6;
+  --color-info-bg: #EFF6FF;
+  --color-purple: #8B5CF6;
+  --color-purple-bg: #F5F3FF;
+}
 
 @layer base {
   body {
-    @apply bg-slate-100 text-slate-900 antialiased selection:bg-emerald-500 selection:text-white;
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
-    transition: background-color 0.3s ease, color 0.3s ease;
+    background-color: #F4F9FA;
+    color: #102A56;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
-  .dark body,
-  .dark {
-    @apply bg-slate-900 text-slate-100 selection:bg-emerald-400 selection:text-slate-900;
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Plus Jakarta Sans', 'Inter', system-ui, sans-serif;
+    color: #102A56;
   }
 }
 
-/* Light scrollbar */
+.font-handwriting {
+  font-family: 'Caveat', cursive;
+}
+
+/* Custom scrollbars */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #f1f5f9;
+  background: #F1F5F9;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: #CBD5E1;
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: #94A3B8;
 }
 
-/* Dark scrollbar */
-.dark ::-webkit-scrollbar-track {
-  background: #1e293b;
+/* Glass & Card effects */
+.health-card {
+  background: #FFFFFF;
+  border: 1px solid #E5EEF1;
+  border-radius: 1rem;
+  box-shadow: 0 1px 3px 0 rgba(16, 42, 86, 0.04), 0 1px 2px -1px rgba(16, 42, 86, 0.02);
+  transition: all 0.2s ease-in-out;
 }
 
-.dark ::-webkit-scrollbar-thumb {
-  background: #475569;
-  border-radius: 9999px;
+.health-card:hover {
+  box-shadow: 0 4px 12px 0 rgba(16, 42, 86, 0.06);
 }
 
-.dark ::-webkit-scrollbar-thumb:hover {
-  background: #64748b;
-}
