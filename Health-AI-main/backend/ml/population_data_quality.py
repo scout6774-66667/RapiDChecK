@@ -24,6 +24,9 @@ import pandas as pd
 import numpy as np
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
 DATA_PATH = os.path.join(BASE_DIR, "data", "processed", "kolkata_population_health.csv")
 DICT_PATH = os.path.join(BASE_DIR, "data", "processed", "feature_dictionary.csv")
 REPORT_PATH = os.path.join(BASE_DIR, "data", "processed", "population_data_quality_report.json")
@@ -238,18 +241,163 @@ def run_data_quality_audit(
                 "missingness_rate_pct": round((dom_nulls / dom_cells) * 100, 1)
             }
 
-    record_check(
-        "missingness_documentation",
-        passed=True,  # Missingness is documented transparently
-        is_warning=False,
-        details={
-            "total_cells": int(df[feat_cols].size),
-            "total_missing_cells": int(df[feat_cols].isnull().sum().sum()),
-            "hmis_missing_rate_pct": round((df[hmis_cols].isnull().sum().sum() / (len(df) * len(hmis_cols))) * 100, 1) if hmis_cols else 0,
-            "nfhs_expected_survey_missing_rate_pct": round((df[nfhs_cols].isnull().sum().sum() / (len(df) * len(nfhs_cols))) * 100, 1) if nfhs_cols else 0,
-            "domains": domain_summary
-        }
-    )
+    # ==========================================================================
+    # 9. SNOWFLAKE SCHEMA INTEGRITY CHECKS (Database Layer)
+    # ==========================================================================
+    try:
+        from database import (
+            SessionLocal, DimState, DimDistrict, DimTime, DimSource, DimUnit,
+            DimFacility, DimCategory, DimIndicatorHead, DimIndicator, FactHealthIndicator
+        )
+        from sqlalchemy import func
+
+        db_session = SessionLocal()
+        try:
+            total_facts = db_session.query(FactHealthIndicator).count()
+
+            # 9a. Fact Grain Duplicates
+            dup_facts = (
+                db_session.query(
+                    FactHealthIndicator.time_id,
+                    FactHealthIndicator.district_id,
+                    FactHealthIndicator.indicator_id,
+                    FactHealthIndicator.facility_id,
+                    FactHealthIndicator.category_id,
+                    FactHealthIndicator.source_id,
+                    func.count(FactHealthIndicator.fact_id)
+                )
+                .group_by(
+                    FactHealthIndicator.time_id,
+                    FactHealthIndicator.district_id,
+                    FactHealthIndicator.indicator_id,
+                    FactHealthIndicator.facility_id,
+                    FactHealthIndicator.category_id,
+                    FactHealthIndicator.source_id
+                )
+                .having(func.count(FactHealthIndicator.fact_id) > 1)
+                .count()
+            )
+            record_check(
+                "snowflake_duplicate_facts",
+                passed=(dup_facts == 0),
+                is_warning=False,
+                details={
+                    "duplicate_grain_records": int(dup_facts),
+                    "total_facts": int(total_facts),
+                    "description": "Verifies that no duplicate fact records exist for the defined grain."
+                }
+            )
+
+            # 9b. Foreign Key & Orphaned Facts Check
+            valid_time_ids = set(r[0] for r in db_session.query(DimTime.time_id).all())
+            valid_dist_ids = set(r[0] for r in db_session.query(DimDistrict.district_id).all())
+            valid_ind_ids = set(r[0] for r in db_session.query(DimIndicator.indicator_id).all())
+            valid_src_ids = set(r[0] for r in db_session.query(DimSource.source_id).all())
+
+            orphan_facts = db_session.query(FactHealthIndicator).filter(
+                ~FactHealthIndicator.time_id.in_(valid_time_ids) |
+                ~FactHealthIndicator.district_id.in_(valid_dist_ids) |
+                ~FactHealthIndicator.indicator_id.in_(valid_ind_ids) |
+                ~FactHealthIndicator.source_id.in_(valid_src_ids)
+            ).count()
+
+            record_check(
+                "snowflake_foreign_key_integrity",
+                passed=(orphan_facts == 0),
+                is_warning=False,
+                details={
+                    "orphaned_facts_count": int(orphan_facts),
+                    "description": "Verifies 100% referential integrity across all foreign keys."
+                }
+            )
+
+            # 9c. NFHS-5 Strict Temporal Isolation (2019-20 survey snapshot only)
+            nfhs_src = db_session.query(DimSource).filter_by(source_name="NFHS-5").first()
+            time_2019 = db_session.query(DimTime).filter_by(fiscal_year="2019-20").first()
+
+            if nfhs_src and time_2019:
+                nfhs_leaked = db_session.query(FactHealthIndicator).filter(
+                    FactHealthIndicator.source_id == nfhs_src.source_id,
+                    FactHealthIndicator.time_id != time_2019.time_id
+                ).count()
+                total_nfhs_in_db = db_session.query(FactHealthIndicator).filter(
+                    FactHealthIndicator.source_id == nfhs_src.source_id
+                ).count()
+
+                record_check(
+                    "snowflake_nfhs_temporal_isolation",
+                    passed=(nfhs_leaked == 0 and total_nfhs_in_db == 73),
+                    is_warning=False,
+                    details={
+                        "leaked_non_survey_facts": int(nfhs_leaked),
+                        "total_nfhs_facts_recorded": int(total_nfhs_in_db),
+                        "expected_survey_year": "2019-20",
+                        "description": "Verifies NFHS-5 is strictly restricted to 2019-20 without forward or backward filling."
+                    }
+                )
+
+            # 9d. HMIS Fiscal Year Continuity (14 continuous years: 2008-09 to 2021-22)
+            hmis_src = db_session.query(DimSource).filter_by(source_name="HMIS").first()
+            if hmis_src:
+                hmis_observed_years = (
+                    db_session.query(DimTime.year)
+                    .join(FactHealthIndicator.time_period)
+                    .filter(FactHealthIndicator.source_id == hmis_src.source_id)
+                    .distinct()
+                    .count()
+                )
+                record_check(
+                    "snowflake_hmis_fiscal_continuity",
+                    passed=(hmis_observed_years == 14),
+                    is_warning=False,
+                    details={
+                        "observed_years_count": int(hmis_observed_years),
+                        "expected_years_count": 14,
+                        "description": "Verifies HMIS administrative data covers 14 unbroken fiscal years (2008-09 to 2021-22)."
+                    }
+                )
+
+            # 9e. Provenance Completeness
+            missing_provenance = db_session.query(FactHealthIndicator).filter(
+                (FactHealthIndicator.raw_feature_name == None) |
+                (FactHealthIndicator.raw_feature_name == "") |
+                (FactHealthIndicator.source_id == None)
+            ).count()
+
+            record_check(
+                "snowflake_provenance_completeness",
+                passed=(missing_provenance == 0),
+                is_warning=False,
+                details={
+                    "missing_provenance_facts": int(missing_provenance),
+                    "description": "Verifies 100% of fact records are traceable to source dataset and original raw feature name."
+                }
+            )
+
+            # Record snowflake dimension counts in summary
+            report["snowflake_schema_summary"] = {
+                "dim_state": db_session.query(DimState).count(),
+                "dim_district": db_session.query(DimDistrict).count(),
+                "dim_time": db_session.query(DimTime).count(),
+                "dim_source": db_session.query(DimSource).count(),
+                "dim_unit": db_session.query(DimUnit).count(),
+                "dim_facility": db_session.query(DimFacility).count(),
+                "dim_category": db_session.query(DimCategory).count(),
+                "dim_indicator_head": db_session.query(DimIndicatorHead).count(),
+                "dim_indicator": db_session.query(DimIndicator).count(),
+                "fact_health_indicator": total_facts
+            }
+
+        finally:
+            db_session.close()
+
+    except Exception as db_err:
+        record_check(
+            "snowflake_schema_audit",
+            passed=False,
+            is_warning=True,
+            details={"error": str(db_err), "note": "Database schema audit encountered an issue"}
+        )
 
     def _json_default(o):
         if isinstance(o, (np.bool_, bool)):

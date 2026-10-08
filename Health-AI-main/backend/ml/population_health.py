@@ -16,12 +16,26 @@ CLINICAL SAFETY PRINCIPLES:
 
 import os
 import json
+import sys
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
 import pandas as pd
 import numpy as np
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
+try:
+    from database import (
+        SessionLocal, DimState, DimDistrict, DimTime, DimSource, DimUnit,
+        DimFacility, DimCategory, DimIndicatorHead, DimIndicator, FactHealthIndicator
+    )
+    _DB_AVAILABLE = True
+except Exception as _e:
+    _DB_AVAILABLE = False
+    print(f"[population_health] Database not loaded: {_e}")
+
 DATA_PATH = os.path.join(BASE_DIR, "data", "processed", "kolkata_population_health.csv")
 DICT_PATH = os.path.join(BASE_DIR, "data", "processed", "feature_dictionary.csv")
 QUALITY_REPORT_PATH = os.path.join(BASE_DIR, "data", "processed", "population_data_quality_report.json")
@@ -129,6 +143,82 @@ class STEPSProvider(BaseHealthDataProvider):
         }
 
 
+class SnowflakeSchemaProvider(BaseHealthDataProvider):
+    """Provides dimensional Snowflake Schema access to population health intelligence."""
+
+    def __init__(self, session_factory=None):
+        self.session_factory = session_factory or (SessionLocal if _DB_AVAILABLE else None)
+
+    def get_data(self, district: str = "Kolkata") -> pd.DataFrame:
+        if not self.session_factory:
+            return pd.DataFrame()
+        session = self.session_factory()
+        try:
+            dist = session.query(DimDistrict).filter(DimDistrict.district_name.ilike(district)).first()
+            if not dist:
+                return pd.DataFrame()
+
+            rows = (
+                session.query(
+                    DimTime.year,
+                    DimTime.fiscal_year,
+                    DimDistrict.district_name.label("district"),
+                    DimIndicator.curated_feature_name,
+                    FactHealthIndicator.value
+                )
+                .join(FactHealthIndicator.time_period)
+                .join(FactHealthIndicator.district)
+                .join(FactHealthIndicator.indicator)
+                .filter(FactHealthIndicator.district_id == dist.district_id)
+                .filter(DimIndicator.is_curated == True)
+                .all()
+            )
+            if not rows:
+                return pd.DataFrame()
+
+            records = []
+            for r in rows:
+                c_names = [n.strip() for n in str(r.curated_feature_name).split(",") if n.strip()]
+                for cn in c_names:
+                    records.append({
+                        "year": r.year,
+                        "fiscal_year": r.fiscal_year,
+                        "district": r.district,
+                        "feature": cn,
+                        "value": r.value
+                    })
+
+            df_temp = pd.DataFrame(records)
+            pivoted = df_temp.pivot_table(
+                index=["year", "fiscal_year", "district"],
+                columns="feature",
+                values="value"
+            ).reset_index()
+            return pivoted
+        finally:
+            session.close()
+
+    def get_metadata(self) -> Dict[str, Any]:
+        if not self.session_factory:
+            return {"status": "db_not_available"}
+        session = self.session_factory()
+        try:
+            return {
+                "source": "Snowflake Dimensional Schema (SQLite)",
+                "tables": [
+                    "dim_state", "dim_district", "dim_time", "dim_source",
+                    "dim_unit", "dim_facility", "dim_category",
+                    "dim_indicator_head", "dim_indicator", "fact_health_indicator"
+                ],
+                "total_indicators": session.query(DimIndicator).count(),
+                "total_facts": session.query(FactHealthIndicator).count(),
+                "curated_indicators": session.query(DimIndicator).filter_by(is_curated=True).count(),
+                "provenance": ["HMIS West Bengal", "NFHS-5 Kolkata"]
+            }
+        finally:
+            session.close()
+
+
 # ==============================================================================
 # 2. POPULATION HEALTH INTELLIGENCE ENGINE
 # ==============================================================================
@@ -140,6 +230,7 @@ class PopulationHealthIntelligence:
         self.data_path = data_path
         self.dict_path = dict_path
         self._load_data()
+        self.snowflake_provider = SnowflakeSchemaProvider()
 
     def _load_data(self):
         if not os.path.exists(self.data_path) or not os.path.exists(self.dict_path):
@@ -158,6 +249,192 @@ class PopulationHealthIntelligence:
     def get_available_years(self, district: str = "Kolkata") -> List[int]:
         sub = self.df[self.df["district"].str.lower() == district.lower()]
         return sorted(sub["year"].dropna().unique().astype(int).tolist())
+
+    # ── Snowflake Relational Queries ──────────────────────────────────────────
+
+    def query_snowflake_indicator_trend(self, indicator_name: str, district: str = "Kolkata") -> Dict[str, Any]:
+        """Queries relational Snowflake Schema for detailed trend and provenance."""
+        if not _DB_AVAILABLE:
+            return self.get_indicator_trend(indicator_name, district)
+
+        session = SessionLocal()
+        try:
+            ind = (
+                session.query(DimIndicator)
+                .filter(
+                    (DimIndicator.indicator_code == indicator_name) |
+                    (DimIndicator.curated_feature_name.like(f"%{indicator_name}%"))
+                )
+                .first()
+            )
+            if not ind:
+                return self.get_indicator_trend(indicator_name, district)
+
+            dist = session.query(DimDistrict).filter(DimDistrict.district_name.ilike(district)).first()
+            if not dist:
+                return {"error": f"District '{district}' not found"}
+
+            facts = (
+                session.query(
+                    DimTime.year,
+                    DimTime.fiscal_year,
+                    FactHealthIndicator.value,
+                    FactHealthIndicator.data_status,
+                    FactHealthIndicator.note,
+                    DimSource.source_name,
+                    DimUnit.unit_name,
+                    DimFacility.facility_category,
+                    DimCategory.category_name
+                )
+                .join(FactHealthIndicator.time_period)
+                .join(FactHealthIndicator.source)
+                .join(FactHealthIndicator.unit)
+                .join(FactHealthIndicator.facility)
+                .join(FactHealthIndicator.category)
+                .filter(FactHealthIndicator.indicator_id == ind.indicator_id)
+                .filter(FactHealthIndicator.district_id == dist.district_id)
+                .order_by(DimTime.year)
+                .all()
+            )
+
+            data_points = [
+                {"year": int(f.year), "fiscal_year": f.fiscal_year, "value": float(f.value), "status": f.data_status}
+                for f in facts if f.value is not None
+            ]
+
+            head_name = ind.indicator_head.indicator_head_name if ind.indicator_head else None
+
+            meta = {
+                "indicator_id": ind.indicator_id,
+                "feature_name": ind.indicator_code,
+                "curated_feature_name": ind.curated_feature_name,
+                "domain": ind.domain or "unknown",
+                "unit": ind.unit.unit_name if ind.unit else "unknown",
+                "source": ind.source.source_name if ind.source else "HMIS",
+                "original_indicator": ind.indicator_name,
+                "indicator_head": head_name,
+                "description": ind.description or "",
+                "is_curated": bool(ind.is_curated)
+            }
+
+            if not data_points:
+                return {
+                    "indicator": indicator_name,
+                    "district": district,
+                    "status": MISSING_STATES["INSUFFICIENT_DATA"],
+                    "metadata": meta,
+                    "data_points": []
+                }
+
+            direction = "stable"
+            change_pct = None
+            if len(data_points) >= 2:
+                first_val = data_points[0]["value"]
+                last_val = data_points[-1]["value"]
+                if first_val > 0:
+                    change_pct = round(((last_val - first_val) / first_val) * 100, 1)
+                    if change_pct > 5.0:
+                        direction = "increasing"
+                    elif change_pct < -5.0:
+                        direction = "decreasing"
+
+            return {
+                "indicator": indicator_name,
+                "district": district,
+                "data_points": data_points,
+                "first_available_year": data_points[0]["year"],
+                "latest_available_year": data_points[-1]["year"],
+                "latest_value": data_points[-1]["value"],
+                "total_observed_years": len(data_points),
+                "trend_direction": direction,
+                "percentage_change": change_pct,
+                "metadata": meta,
+                "disclaimer": SAFETY_DISCLAIMER
+            }
+        finally:
+            session.close()
+
+    def query_snowflake_facts(
+        self,
+        district: str = "Kolkata",
+        year: Optional[int] = None,
+        fiscal_year: Optional[str] = None,
+        source: Optional[str] = None,
+        domain: Optional[str] = None,
+        facility_category: Optional[str] = None,
+        limit: int = 100
+    ) -> Dict[str, Any]:
+        """Granular multidimensional query against fact_health_indicator and snowflake dimensions."""
+        if not _DB_AVAILABLE:
+            return {"error": "Database not initialized"}
+
+        session = SessionLocal()
+        try:
+            q = (
+                session.query(
+                    FactHealthIndicator.fact_id,
+                    DimTime.year,
+                    DimTime.fiscal_year,
+                    DimDistrict.district_name.label("district"),
+                    DimState.state_name.label("state"),
+                    DimIndicator.indicator_code,
+                    DimIndicator.indicator_name,
+                    DimIndicator.domain,
+                    DimIndicator.curated_feature_name,
+                    DimSource.source_name.label("source"),
+                    DimUnit.unit_name.label("unit"),
+                    DimFacility.facility_category,
+                    DimCategory.category_name.label("category"),
+                    FactHealthIndicator.value,
+                    FactHealthIndicator.data_status,
+                    FactHealthIndicator.raw_feature_name
+                )
+                .join(FactHealthIndicator.time_period)
+                .join(FactHealthIndicator.district)
+                .join(DimDistrict.state)
+                .join(FactHealthIndicator.indicator)
+                .join(FactHealthIndicator.source)
+                .join(FactHealthIndicator.unit)
+                .join(FactHealthIndicator.facility)
+                .join(FactHealthIndicator.category)
+            )
+
+            if district:
+                q = q.filter(DimDistrict.district_name.ilike(district))
+            if year:
+                q = q.filter(DimTime.year == year)
+            if fiscal_year:
+                q = q.filter(DimTime.fiscal_year == fiscal_year)
+            if source:
+                q = q.filter(DimSource.source_name.ilike(source))
+            if domain:
+                q = q.filter(DimIndicator.domain == domain)
+            if facility_category:
+                q = q.filter(DimFacility.facility_category == facility_category)
+
+            total_matches = q.count()
+            results = q.limit(limit).all()
+
+            return {
+                "district": district,
+                "filters_applied": {
+                    "year": year,
+                    "fiscal_year": fiscal_year,
+                    "source": source,
+                    "domain": domain,
+                    "facility_category": facility_category
+                },
+                "total_matched_observations": total_matches,
+                "returned_count": len(results),
+                "observations": [r._asdict() for r in results],
+                "disclaimer": SAFETY_DISCLAIMER
+            }
+        finally:
+            session.close()
+
+    def query_snowflake_metadata(self) -> Dict[str, Any]:
+        """Returns metadata and statistics on the Snowflake Schema."""
+        return self.snowflake_provider.get_metadata()
 
     # ── Trend Analysis ─────────────────────────────────────────────────────────
 

@@ -5,12 +5,20 @@ import numpy as np
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-RAW_CSV = os.path.join("kolkata_model_output", "kolkata_model_training_dataset.csv")
-DICT_CSV = os.path.join("kolkata_model_output", "feature_dictionary.csv")
+_CUR_DIR = os.path.dirname(os.path.abspath(__file__))
+_BACKEND_DIR = os.path.dirname(_CUR_DIR)
+_ROOT_DIR = os.path.dirname(_BACKEND_DIR)
+
+RAW_CSV = os.path.join(_ROOT_DIR, "kolkata_model_output", "kolkata_model_training_dataset.csv")
+if not os.path.exists(RAW_CSV):
+    RAW_CSV = os.path.join(_BACKEND_DIR, "data", "processed", "kolkata_model_training_dataset.csv")
+
+DICT_CSV = os.path.join(_ROOT_DIR, "kolkata_model_output", "feature_dictionary.csv")
+if not os.path.exists(DICT_CSV):
+    DICT_CSV = os.path.join(_BACKEND_DIR, "data", "raw", "raw_feature_dictionary.csv")
+
 df_raw = pd.read_csv(RAW_CSV)
 df_dict = pd.read_csv(DICT_CSV)
-
-print(f"Original shape: {df_raw.shape}")
 
 # Define curated mappings: curated_name -> { 'raw_col': ..., 'domain': ..., 'unit': ..., 'desc': ..., 'source': ... }
 # Where raw_col can be a single column or a list to merge/coalesce across era format changes (e.g. 2008-2016 vs 2017-2021)
@@ -680,48 +688,50 @@ if missing_raw_cols:
 else:
     print("All curated raw columns successfully matched in the raw dataset!")
 
-# Build curated dataframe
-curated_df = pd.DataFrame()
-curated_df['year'] = df_raw['year'].astype(int)
-curated_df['fiscal_year'] = df_raw['fiscal_year']
-curated_df['district'] = "Kolkata"
+if __name__ == "__main__":
+    # Build curated dataframe
+    curated_df = pd.DataFrame()
+    curated_df['year'] = df_raw['year'].astype(int)
+    curated_df['fiscal_year'] = df_raw['fiscal_year']
+    curated_df['district'] = "Kolkata"
 
-dict_records = []
+    dict_records = []
 
-for m in mappings:
-    c_name = m['curated_name']
-    r_col = m['raw_col']
-    series = df_raw[r_col]
-    curated_df[c_name] = series
-    
-    non_null_years = curated_df.loc[~curated_df[c_name].isnull(), 'year'].tolist()
-    yr_cov = f"{min(non_null_years)}-{max(non_null_years)} ({len(non_null_years)} yrs)" if non_null_years else "None"
-    missingness_pct = round((curated_df[c_name].isnull().sum() / len(curated_df)) * 100, 1)
+    for m in mappings:
+        c_name = m['curated_name']
+        r_col = m['raw_col']
+        series = df_raw[r_col]
+        curated_df[c_name] = series
+        
+        non_null_years = curated_df.loc[~curated_df[c_name].isnull(), 'year'].tolist()
+        yr_cov = f"{min(non_null_years)}-{max(non_null_years)} ({len(non_null_years)} yrs)" if non_null_years else "None"
+        missingness_pct = round((curated_df[c_name].isnull().sum() / len(curated_df)) * 100, 1)
 
-    dict_records.append({
-        "feature_name": c_name,
-        "original_indicator": r_col,
-        "source": m['source'],
-        "unit": m['unit'],
-        "year_coverage": yr_cov,
-        "domain": m['domain'],
-        "transformation": m['transformation'],
-        "missingness": f"{missingness_pct}%",
-        "description": m['desc']
-    })
+        dict_records.append({
+            "feature_name": c_name,
+            "original_indicator": r_col,
+            "source": m['source'],
+            "unit": m['unit'],
+            "year_coverage": yr_cov,
+            "domain": m['domain'],
+            "transformation": m['transformation'],
+            "missingness": f"{missingness_pct}%",
+            "description": m['desc']
+        })
 
-OUTPUT_CSV = os.path.join("backend", "data", "processed", "kolkata_population_health.csv")
-curated_df.to_csv(OUTPUT_CSV, index=False)
-print(f"\nSaved curated dataset to: {OUTPUT_CSV}")
-print(f"Shape: {curated_df.shape[0]} rows, {curated_df.shape[1]} columns")
+    OUTPUT_CSV = os.path.join(_BACKEND_DIR, "data", "processed", "kolkata_population_health.csv")
+    curated_df.to_csv(OUTPUT_CSV, index=False)
+    print(f"\nSaved curated dataset to: {OUTPUT_CSV}")
+    print(f"Shape: {curated_df.shape[0]} rows, {curated_df.shape[1]} columns")
 
-DICT_OUTPUT_CSV = os.path.join("backend", "data", "processed", "feature_dictionary.csv")
-dict_df = pd.DataFrame(dict_records)
-dict_df.to_csv(DICT_OUTPUT_CSV, index=False)
-print(f"Saved feature dictionary to: {DICT_OUTPUT_CSV}")
-print(f"Shape: {dict_df.shape[0]} rows, {dict_df.shape[1]} columns")
+    DICT_OUTPUT_CSV = os.path.join(_BACKEND_DIR, "data", "processed", "feature_dictionary.csv")
+    dict_df = pd.DataFrame(dict_records)
+    dict_df.to_csv(DICT_OUTPUT_CSV, index=False)
+    print(f"Saved feature dictionary to: {DICT_OUTPUT_CSV}")
+    print(f"Shape: {dict_df.shape[0]} rows, {dict_df.shape[1]} columns")
 
-# Also copy raw feature dictionary to processed if needed for provenance
-RAW_DICT_COPY = os.path.join("backend", "data", "raw", "raw_feature_dictionary.csv")
-df_dict.to_csv(RAW_DICT_COPY, index=False)
-print(f"Archived raw feature dictionary to: {RAW_DICT_COPY}")
+    # Also copy raw feature dictionary to processed if needed for provenance
+    RAW_DICT_COPY = os.path.join(_BACKEND_DIR, "data", "raw", "raw_feature_dictionary.csv")
+    df_dict.to_csv(RAW_DICT_COPY, index=False)
+    print(f"Archived raw feature dictionary to: {RAW_DICT_COPY}")
+

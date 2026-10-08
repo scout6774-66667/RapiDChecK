@@ -1,6 +1,6 @@
 {
-  "report_id": "PDQ-1791441300",
-  "generated_at": "2026-10-08T06:35:00.814601+00:00",
+  "report_id": "PDQ-1791449390",
+  "generated_at": "2026-10-08T08:49:50.403095+00:00",
   "dataset_file": "kolkata_population_health.csv",
   "total_rows": 14,
   "total_columns": 73,
@@ -77,65 +77,73 @@
         "features_in_dictionary_not_in_dataset": [],
         "features_with_unrecognized_units": [],
         "valid_unit_standards": [
-          "percentage",
           "absolute_count",
-          "inr"
+          "inr",
+          "percentage"
         ]
       }
     },
-    "missingness_documentation": {
+    "snowflake_duplicate_facts": {
       "status": "PASSED",
       "passed": true,
       "details": {
-        "total_cells": 980,
-        "total_missing_cells": 664,
-        "hmis_missing_rate_pct": 42.7,
-        "nfhs_expected_survey_missing_rate_pct": 92.9,
-        "domains": {
-          "maternal_health": {
-            "feature_count": 16,
-            "total_cells": 224,
-            "missing_cells": 140,
-            "missingness_rate_pct": 62.5
-          },
-          "child_health": {
-            "feature_count": 13,
-            "total_cells": 182,
-            "missing_cells": 113,
-            "missingness_rate_pct": 62.1
-          },
-          "nutrition": {
-            "feature_count": 11,
-            "total_cells": 154,
-            "missing_cells": 106,
-            "missingness_rate_pct": 68.8
-          },
-          "ncd": {
-            "feature_count": 14,
-            "total_cells": 196,
-            "missing_cells": 152,
-            "missingness_rate_pct": 77.6
-          },
-          "communicable": {
-            "feature_count": 8,
-            "total_cells": 112,
-            "missing_cells": 73,
-            "missingness_rate_pct": 65.2
-          },
-          "healthcare_access": {
-            "feature_count": 8,
-            "total_cells": 112,
-            "missing_cells": 80,
-            "missingness_rate_pct": 71.4
-          }
-        }
+        "duplicate_grain_records": 0,
+        "total_facts": 8275,
+        "description": "Verifies that no duplicate fact records exist for the defined grain."
+      }
+    },
+    "snowflake_foreign_key_integrity": {
+      "status": "PASSED",
+      "passed": true,
+      "details": {
+        "orphaned_facts_count": 0,
+        "description": "Verifies 100% referential integrity across all foreign keys."
+      }
+    },
+    "snowflake_nfhs_temporal_isolation": {
+      "status": "PASSED",
+      "passed": true,
+      "details": {
+        "leaked_non_survey_facts": 0,
+        "total_nfhs_facts_recorded": 73,
+        "expected_survey_year": "2019-20",
+        "description": "Verifies NFHS-5 is strictly restricted to 2019-20 without forward or backward filling."
+      }
+    },
+    "snowflake_hmis_fiscal_continuity": {
+      "status": "PASSED",
+      "passed": true,
+      "details": {
+        "observed_years_count": 14,
+        "expected_years_count": 14,
+        "description": "Verifies HMIS administrative data covers 14 unbroken fiscal years (2008-09 to 2021-22)."
+      }
+    },
+    "snowflake_provenance_completeness": {
+      "status": "PASSED",
+      "passed": true,
+      "details": {
+        "missing_provenance_facts": 0,
+        "description": "Verifies 100% of fact records are traceable to source dataset and original raw feature name."
       }
     }
   },
   "summary": {
     "all_passed": true,
-    "passed_checks": 8,
+    "passed_checks": 12,
     "failed_checks": 0,
     "warnings": 0
+  },
+  "snowflake_schema_summary": {
+    "dim_state": 1,
+    "dim_district": 1,
+    "dim_time": 14,
+    "dim_source": 2,
+    "dim_unit": 2,
+    "dim_facility": 6,
+    "dim_category": 13,
+    "dim_indicator_head": 35,
+    "dim_indicator": 1955,
+    "fact_health_indicator": 8275
   }
 }

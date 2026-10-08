@@ -1163,6 +1163,41 @@ def get_feature_dictionary():
     }
 
 
+@app.get("/api/ml/population-health/snowflake/metadata")
+def get_snowflake_metadata():
+    """Returns Snowflake Schema architecture, table dimensions, and fact statistics."""
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    return _POPULATION_HEALTH.query_snowflake_metadata()
+
+
+@app.get("/api/ml/population-health/snowflake/query")
+def query_snowflake_schema(
+    district: str = "Kolkata",
+    year: Optional[int] = None,
+    fiscal_year: Optional[str] = None,
+    source: Optional[str] = None,
+    domain: Optional[str] = None,
+    facility_category: Optional[str] = None,
+    limit: int = 100
+):
+    """
+    Direct multidimensional query against the Snowflake Schema fact_health_indicator table
+    and its normalized dimensions (dim_time, dim_district, dim_indicator, dim_source, dim_facility, dim_category).
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    return _POPULATION_HEALTH.query_snowflake_facts(
+        district=district,
+        year=year,
+        fiscal_year=fiscal_year,
+        source=source,
+        domain=domain,
+        facility_category=facility_category,
+        limit=limit
+    )
+
+
 class ScreeningEnrichmentPayload(BaseModel):
     vitals: Optional[Dict[str, Any]] = None
     symptoms: Optional[List[str]] = None
