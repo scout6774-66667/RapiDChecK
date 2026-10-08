@@ -1,0 +1,141 @@
+{
+  "report_id": "PDQ-1791441300",
+  "generated_at": "2026-10-08T06:35:00.814601+00:00",
+  "dataset_file": "kolkata_population_health.csv",
+  "total_rows": 14,
+  "total_columns": 73,
+  "year_range": [
+    2008,
+    2021
+  ],
+  "districts_covered": [
+    "Kolkata"
+  ],
+  "checks": {
+    "duplicate_rows": {
+      "status": "PASSED",
+      "passed": true,
+      "details": {
+        "duplicate_count": 0,
+        "description": "Checks if any year/district combination appears more than once."
+      }
+    },
+    "duplicate_features": {
+      "status": "PASSED",
+      "passed": true,
+      "details": {
+        "duplicate_column_names_in_dataset": 0,
+        "duplicate_features_in_dictionary": 0,
+        "description": "Checks for duplicate feature column names in dataset and dictionary."
+      }
+    },
+    "year_continuity": {
+      "status": "PASSED",
+      "passed": true,
+      "details": {
+        "min_year": 2008,
+        "max_year": 2021,
+        "actual_year_count": 14,
+        "missing_years": [],
+        "description": "Verifies that the yearly time series has no missing calendar years."
+      }
+    },
+    "nfhs_temporal_integrity": {
+      "status": "PASSED",
+      "passed": true,
+      "details": {
+        "nfhs_columns_count": 35,
+        "non_null_in_survey_year_2019": 35,
+        "non_null_in_non_survey_years": {},
+        "leakage_detected": false,
+        "description": "Ensures NFHS-5 survey baseline data is retained ONLY for 2019-20 without forward/backward filling into other annual periods."
+      }
+    },
+    "valid_percentages": {
+      "status": "PASSED",
+      "passed": true,
+      "details": {
+        "percentage_features_checked": 34,
+        "features_with_out_of_bounds_values": {},
+        "expected_range": "[0.0%, 100.0%]"
+      }
+    },
+    "non_negative_counts": {
+      "status": "PASSED",
+      "passed": true,
+      "details": {
+        "count_features_checked": 35,
+        "features_with_negative_counts": {},
+        "expected_range": ">= 0"
+      }
+    },
+    "unit_and_dictionary_consistency": {
+      "status": "PASSED",
+      "passed": true,
+      "details": {
+        "features_in_dataset_without_dictionary_entry": [],
+        "features_in_dictionary_not_in_dataset": [],
+        "features_with_unrecognized_units": [],
+        "valid_unit_standards": [
+          "percentage",
+          "absolute_count",
+          "inr"
+        ]
+      }
+    },
+    "missingness_documentation": {
+      "status": "PASSED",
+      "passed": true,
+      "details": {
+        "total_cells": 980,
+        "total_missing_cells": 664,
+        "hmis_missing_rate_pct": 42.7,
+        "nfhs_expected_survey_missing_rate_pct": 92.9,
+        "domains": {
+          "maternal_health": {
+            "feature_count": 16,
+            "total_cells": 224,
+            "missing_cells": 140,
+            "missingness_rate_pct": 62.5
+          },
+          "child_health": {
+            "feature_count": 13,
+            "total_cells": 182,
+            "missing_cells": 113,
+            "missingness_rate_pct": 62.1
+          },
+          "nutrition": {
+            "feature_count": 11,
+            "total_cells": 154,
+            "missing_cells": 106,
+            "missingness_rate_pct": 68.8
+          },
+          "ncd": {
+            "feature_count": 14,
+            "total_cells": 196,
+            "missing_cells": 152,
+            "missingness_rate_pct": 77.6
+          },
+          "communicable": {
+            "feature_count": 8,
+            "total_cells": 112,
+            "missing_cells": 73,
+            "missingness_rate_pct": 65.2
+          },
+          "healthcare_access": {
+            "feature_count": 8,
+            "total_cells": 112,
+            "missing_cells": 80,
+            "missingness_rate_pct": 71.4
+          }
+        }
+      }
+    }
+  },
+  "summary": {
+    "all_passed": true,
+    "passed_checks": 8,
+    "failed_checks": 0,
+    "warnings": 0
+  }
+}

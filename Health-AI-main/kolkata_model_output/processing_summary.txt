@@ -1,0 +1,15 @@
+KOLKATA HEALTH MODEL DATASET
+============================================================
+
+Final file: kolkata_model_training_dataset.csv
+Final rows: 14
+Final columns: 1957
+
+HMIS numeric records processed: 8202
+NFHS-5 features extracted: 73
+
+HMIS provides the yearly backbone.
+NFHS-5 values are attached only to 2019-20 because NFHS-5 is a survey for that period.
+
+IMPORTANT:
+Define the prediction target before training the ML model.

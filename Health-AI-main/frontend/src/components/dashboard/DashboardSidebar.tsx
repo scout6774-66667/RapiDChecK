@@ -21,6 +21,7 @@ export type DashboardNavTab =
   | 'referrals'
   | 'appointments'
   | 'analytics'
+  | 'population_health'
   | 'chat'
   | 'resources';
 
@@ -39,12 +40,13 @@ export const DashboardSidebar: React.FC<DashboardSidebarProps> = ({
   appointmentCount = 3,
   onCloseMobileMenu,
 }) => {
-  const navItems: { id: DashboardNavTab; label: string; icon: React.ElementType; badge?: number }[] = [
+  const navItems: { id: DashboardNavTab; label: string; icon: React.ElementType; badge?: number | string }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'screen', label: 'Screen Patients', icon: ClipboardCheck },
     { id: 'patients', label: 'Patient Directory', icon: Users },
     { id: 'referrals', label: 'Referrals', icon: Share2 },
     { id: 'appointments', label: 'Appointments', icon: Calendar, badge: appointmentCount },
+    { id: 'population_health', label: 'Population Health', icon: Heart, badge: 'HMIS' },
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },
     { id: 'chat', label: 'Chat Assistant', icon: MessageCircle },
     { id: 'resources', label: 'Health Resources', icon: BookOpen },
@@ -113,7 +115,7 @@ export const DashboardSidebar: React.FC<DashboardSidebarProps> = ({
                   <span>{item.label}</span>
                 </div>
 
-                {item.badge !== undefined && item.badge > 0 && (
+                {item.badge !== undefined && (typeof item.badge === 'string' || item.badge > 0) && (
                   <span
                     className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
                       isActive

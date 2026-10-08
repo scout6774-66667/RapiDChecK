@@ -1,6 +1,6 @@
 import uuid
 import os
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,6 +41,15 @@ try:
 except Exception as _gemini_err:
     _GEMINI = None
     print(f"[main] Gemini client not loaded: {_gemini_err}")
+
+# Import Population Health Intelligence engine (HMIS + NFHS-5 Context & Trends)
+try:
+    from ml.population_health import population_health_engine as _pop_health, SAFETY_DISCLAIMER as _POP_DISCLAIMER
+    _POPULATION_HEALTH = _pop_health
+except Exception as _pop_err:
+    _POPULATION_HEALTH = None
+    _POP_DISCLAIMER = "Population health intelligence layer"
+    print(f"[main] Population health engine not loaded: {_pop_err}")
 
 app = FastAPI(
     title="RuralHealth AI Backend",
@@ -419,7 +428,9 @@ async def health_chat(request: ChatRequest):
         )
     
     try:
-        from openai import OpenAI
+        import importlib
+        openai_mod = importlib.import_module("openai")
+        OpenAI = getattr(openai_mod, "OpenAI")
         client = OpenAI(api_key=api_key)
         
         # Build message list: system prompt + conversation history
@@ -1038,3 +1049,147 @@ def search_hospitals(location: str):
         {'id': '3', 'name': 'Sunrise Clinic', 'specialty': 'Primary Care', 'address': f'{location} East Side', 'phone': '9876543212', 'rating': 4.8, 'distance': '1.2 km', 'isOpen': True, 'lat': 22.73, 'lng': 88.47, 'amenity': 'clinic'}
     ]
     return {'center': {'lat': 22.723, 'lng': 88.483}, 'hospitals': hospitals}
+
+
+# ==============================================================================
+# POPULATION HEALTH INTELLIGENCE & RISK CONTEXT ENDPOINTS (HMIS + NFHS-5)
+# ==============================================================================
+
+@app.get("/api/ml/population-health")
+def get_population_health(
+    district: str = "Kolkata",
+    year: Optional[int] = None
+):
+    """
+    Returns population health domain summaries and context indicators for a district and year.
+    Supported domains: maternal_health, child_health, nutrition, ncd, communicable, healthcare_access.
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    
+    summary = _POPULATION_HEALTH.get_domain_summary(district=district, year=year)
+    if "error" in summary:
+        raise HTTPException(status_code=404, detail=summary["error"])
+    return summary
+
+
+@app.get("/api/ml/population-health/trends")
+def get_population_health_trends(
+    district: str = "Kolkata",
+    indicators: Optional[str] = None
+):
+    """
+    Returns Recharts-ready annual time series of population health indicators.
+    Indicators param can be comma-separated list of indicator names.
+    NFHS-5 is included strictly as a 2019-20 survey baseline, not continuous annual data.
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    
+    ind_list = [i.strip() for i in indicators.split(",") if i.strip()] if indicators else None
+    trends = _POPULATION_HEALTH.get_population_health_trends(district=district, indicator_keys=ind_list)
+    if "error" in trends:
+        raise HTTPException(status_code=404, detail=trends["error"])
+    return trends
+
+
+@app.get("/api/ml/population-health/indicator-trend")
+def get_indicator_trend(
+    indicator: str,
+    district: str = "Kolkata"
+):
+    """
+    Returns detailed trend, direction, and CAGR for a specific HMIS/NFHS indicator.
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    
+    trend = _POPULATION_HEALTH.get_indicator_trend(indicator_name=indicator, district=district)
+    if "error" in trend and trend.get("status") != "not_available":
+        raise HTTPException(status_code=404, detail=trend["error"])
+    return trend
+
+
+@app.get("/api/ml/population-health/ncd-context")
+def get_ncd_context(
+    district: str = "Kolkata",
+    year: Optional[int] = 2021
+):
+    """
+    Provides structured NCD population risk context response (Requirement 7).
+    Includes blood pressure, blood sugar, overweight, and tobacco population burden signals.
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    
+    ctx = _POPULATION_HEALTH.get_ncd_context(district=district, year=year)
+    if "error" in ctx:
+        raise HTTPException(status_code=404, detail=ctx["error"])
+    return ctx
+
+
+@app.get("/api/ml/population-health/data-quality")
+def get_population_data_quality():
+    """
+    Returns the latest population health data quality monitoring report (Requirement 15).
+    """
+    report_file = os.path.join(os.path.dirname(__file__), "data", "processed", "population_data_quality_report.json")
+    if not os.path.exists(report_file):
+        try:
+            from ml.population_data_quality import run_data_quality_audit
+            return run_data_quality_audit()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to generate quality report: {e}")
+    
+    with open(report_file, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+@app.get("/api/ml/population-health/dictionary")
+def get_feature_dictionary():
+    """
+    Returns the curated population feature dictionary with full data provenance (Requirement 14).
+    """
+    dict_file = os.path.join(os.path.dirname(__file__), "data", "processed", "feature_dictionary.csv")
+    if not os.path.exists(dict_file):
+        raise HTTPException(status_code=404, detail="Feature dictionary not found")
+    
+    import pandas as pd
+    df_dict = pd.read_csv(dict_file)
+    return {
+        "total_curated_features": len(df_dict),
+        "features": df_dict.to_dict(orient="records"),
+        "disclaimer": _POP_DISCLAIMER
+    }
+
+
+class ScreeningEnrichmentPayload(BaseModel):
+    vitals: Optional[Dict[str, Any]] = None
+    symptoms: Optional[List[str]] = None
+    risk_factors: Optional[List[str]] = None
+    risk_level: Optional[str] = "Low"
+    has_emergency_red_flags: Optional[bool] = False
+    district: Optional[str] = "Kolkata"
+
+
+@app.post("/api/ml/population-health/enrich-screening")
+def enrich_screening(payload: ScreeningEnrichmentPayload):
+    """
+    Enriches individual patient screening with population risk context (Requirement 8 & 12).
+    CLINICAL BOUNDARY: Population dataset never overrides patient vitals or reported symptoms.
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    
+    patient_data = {
+        "vitals": payload.vitals or {},
+        "symptoms": payload.symptoms or [],
+        "risk_factors": payload.risk_factors or [],
+        "risk_level": payload.risk_level or "Low",
+        "has_emergency_red_flags": payload.has_emergency_red_flags or False
+    }
+    return _POPULATION_HEALTH.enrich_screening_context(
+        patient_assessment=patient_data,
+        district=payload.district or "Kolkata"
+    )
+

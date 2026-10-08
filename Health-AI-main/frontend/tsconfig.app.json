@@ -5,8 +5,11 @@
     "lib": ["ES2023", "DOM"],
     "module": "esnext",
     "types": ["vite/client", "google.maps"],
+    "typeRoots": ["./node_modules/@types"],
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
 
     /* Bundler mode */
     "moduleResolution": "bundler",

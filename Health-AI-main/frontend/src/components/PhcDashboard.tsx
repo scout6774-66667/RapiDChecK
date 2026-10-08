@@ -7,6 +7,7 @@ import {
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { translations, type Language } from '../i18n/translations';
 import { db, type LocalAssessment } from '../db/offlineDb';
+import { PopulationHealthPanel } from './dashboard/population/PopulationHealthPanel';
 
 interface PhcDashboardProps {
   lang: Language;
@@ -19,6 +20,7 @@ export const PhcDashboard: React.FC<PhcDashboardProps> = ({ lang, isOnline, defa
   const [assessments, setAssessments] = useState<LocalAssessment[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [riskFilter, setRiskFilter] = useState(defaultRiskFilter);
+  const [dashboardView, setDashboardView] = useState<'referrals' | 'population'>('referrals');
 
   useEffect(() => {
     setRiskFilter(defaultRiskFilter);
@@ -119,6 +121,33 @@ export const PhcDashboard: React.FC<PhcDashboardProps> = ({ lang, isOnline, defa
         </div>
 
         <div className="flex items-center gap-3">
+          {/* View Switcher Tabs */}
+          <div className="bg-slate-100 p-1 rounded-2xl flex items-center gap-1">
+            <button
+              onClick={() => setDashboardView('referrals')}
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                dashboardView === 'referrals'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              Patient Referrals
+            </button>
+            <button
+              onClick={() => setDashboardView('population')}
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                dashboardView === 'population'
+                  ? 'bg-white text-[#0A9F68] shadow-xs'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <span>Population Intelligence</span>
+              <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded-full font-extrabold">
+                HMIS
+              </span>
+            </button>
+          </div>
+
           {/* Online / Offline Status Badge */}
           <span
             className={`inline-flex items-center gap-2 px-4 py-2 rounded-2xl text-xs font-black border-2 transition-all shadow-sm ${
@@ -142,6 +171,11 @@ export const PhcDashboard: React.FC<PhcDashboardProps> = ({ lang, isOnline, defa
           </button>
         </div>
       </div>
+
+      {dashboardView === 'population' ? (
+        <PopulationHealthPanel isOnline={isOnline} />
+      ) : (
+        <>
 
       {/* Offline Warning Banner */}
       {!isOnline && (
@@ -388,6 +422,8 @@ export const PhcDashboard: React.FC<PhcDashboardProps> = ({ lang, isOnline, defa
 
       </div>
 
+        </>
+      )}
     </div>
   );
 };

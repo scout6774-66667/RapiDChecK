@@ -12,6 +12,7 @@ import { db } from './db/offlineDb';
 import { useLiveQuery } from 'dexie-react-hooks';
 import WaterDropClick from './components/WaterDropClick';
 import { ArrowLeft } from 'lucide-react';
+import { PopulationHealthPanel } from './components/dashboard/population/PopulationHealthPanel';
 
 export function App() {
   const [currentTab, setCurrentTab] = useState<DashboardNavTab>('dashboard');
@@ -170,6 +171,8 @@ export function App() {
                 ? 'PHC Referrals'
                 : currentTab === 'appointments'
                 ? 'Doctor Appointments'
+                : currentTab === 'population_health'
+                ? 'Population Health Intelligence (HMIS + NFHS-5)'
                 : currentTab === 'analytics'
                 ? 'Analytics'
                 : 'Chat Assistant'}
@@ -227,6 +230,12 @@ export function App() {
         {currentTab === 'appointments' && (
           <div className="p-4 sm:p-6 max-w-7xl mx-auto">
             <TeleconsultBooking lang={lang} isOnline={isOnline} />
+          </div>
+        )}
+
+        {currentTab === 'population_health' && (
+          <div className="p-4 sm:p-6 max-w-7xl mx-auto">
+            <PopulationHealthPanel isOnline={isOnline} />
           </div>
         )}
       </div>
