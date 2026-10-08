@@ -1,12 +1,40 @@
+# ==============================================================================
+# RapiDChecK (Health-AI) Backend Dependencies
+# Production & Development Requirements
+# ==============================================================================
+
+# --- Core Web Framework & ASGI Server ---
 fastapi>=0.110.0
-uvicorn>=0.28.0
+uvicorn[standard]>=0.28.0
 pydantic>=2.6.0
+python-multipart>=0.0.9
+
+# --- Database, ORM & Migrations ---
 sqlalchemy>=2.0.28
+psycopg2-binary>=2.9.9
+alembic>=1.13.1
+
+# --- Authentication, Cryptography & Security ---
+PyJWT>=2.8.0
+passlib[bcrypt]>=1.7.4
+cryptography>=42.0.0
+
+# --- Machine Learning, Numerical Computing & Data Processing ---
 scikit-learn>=1.4.0
 numpy>=1.26.0
 pandas>=2.2.0
-openai>=1.0.0
-python-dotenv>=1.0.0
-requests>=2.31.0
+joblib>=1.3.2
+
+# --- AI Integrations & HTTP Clients ---
 google-generativeai>=0.8.0
+openai>=1.0.0
+requests>=2.31.0
 httpx>=0.27.0
+
+# --- Environment & Configuration ---
+python-dotenv>=1.0.0
+
+# --- Testing, QA & Async Support ---
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+anyio>=4.0.0
