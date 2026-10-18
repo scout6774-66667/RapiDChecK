@@ -12,6 +12,7 @@ import {
 import { PopulationDomainCard, type DomainCardData } from './PopulationDomainCard';
 import { PopulationTrendChart, type TrendSeriesRow } from './PopulationTrendChart';
 import { PopulationIndicatorTable, type IndicatorTableRow } from './PopulationIndicatorTable';
+import { apiFetch } from '../../../api/apiConfig';
 
 interface PopulationHealthPanelProps {
   isOnline: boolean;
@@ -22,6 +23,8 @@ export const PopulationHealthPanel: FC<PopulationHealthPanelProps> = ({ isOnline
   const [selectedYear, setSelectedYear] = useState<number>(2021);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+
+  const [isStale, setIsStale] = useState<boolean>(false);
 
   // Loaded data
   const [domainData, setDomainData] = useState<any>(null);
@@ -38,32 +41,60 @@ export const PopulationHealthPanel: FC<PopulationHealthPanelProps> = ({ isOnline
     setError(null);
     try {
       const [domRes, trendRes, dictRes, qualRes] = await Promise.all([
-        fetch(`http://127.0.0.1:8000/api/ml/population-health?district=${district}&year=${selectedYear}`),
-        fetch(`http://127.0.0.1:8000/api/ml/population-health/trends?district=${district}`),
-        fetch(`http://127.0.0.1:8000/api/ml/population-health/dictionary`),
-        fetch(`http://127.0.0.1:8000/api/ml/population-health/data-quality`)
+        apiFetch(`/api/ml/population-health?district=${encodeURIComponent(district)}&year=${selectedYear}`, { timeoutMs: 10000 }),
+        apiFetch(`/api/ml/population-health/trends?district=${encodeURIComponent(district)}`, { timeoutMs: 10000 }),
+        apiFetch('/api/ml/population-health/dictionary', { timeoutMs: 10000 }),
+        apiFetch('/api/ml/population-health/data-quality', { timeoutMs: 10000 })
       ]);
 
-      if (domRes.ok) {
-        const domJson = await domRes.json();
-        setDomainData(domJson);
+      // Handle non-success responses explicitly (Requirement 6)
+      if (!domRes.ok) {
+        if (domRes.status === 401) throw new Error('Authentication required: Please sign in to access population health analytics (HTTP 401).');
+        if (domRes.status === 403) throw new Error('Access forbidden: ASHA workers are not authorized to access population-level analytics (HTTP 403).');
+        if (domRes.status === 404) throw new Error(`Population health data not found for district "${district}" and year ${selectedYear} (HTTP 404).`);
+        if (domRes.status === 500) throw new Error('Internal server error encountered while aggregating population health data (HTTP 500).');
+        throw new Error(`Population health service returned HTTP ${domRes.status}.`);
       }
-      if (trendRes.ok) {
-        const trendJson = await trendRes.json();
-        setTrendData(trendJson.series || []);
-        setNfhsBaselines(trendJson.nfhs5_survey_baseline_2019 || {});
+      const domJson = await domRes.json();
+      if (!domJson || typeof domJson !== 'object' || !domJson.domains) {
+        throw new Error('Received invalid or empty population health domain summary payload.');
       }
+      setDomainData(domJson);
+
+      if (!trendRes.ok) {
+        if (trendRes.status === 401) throw new Error('Authentication required for trend analytics (HTTP 401).');
+        if (trendRes.status === 403) throw new Error('Access forbidden for trend analytics (HTTP 403).');
+        if (trendRes.status === 404) throw new Error(`Trend data not found for ${district} (HTTP 404).`);
+        if (trendRes.status === 500) throw new Error('Internal server error loading trend series (HTTP 500).');
+        throw new Error(`Trends API returned HTTP ${trendRes.status}.`);
+      }
+      const trendJson = await trendRes.json();
+      setTrendData(trendJson.series || []);
+      setNfhsBaselines(trendJson.nfhs5_survey_baseline_2019 || {});
+
       if (dictRes.ok) {
         const dictJson = await dictRes.json();
         setDictionaryFeatures(dictJson.features || []);
       }
+
       if (qualRes.ok) {
         const qualJson = await qualRes.json();
         setQualityReport(qualJson);
       }
+
+      setIsStale(false);
+      setError(null);
     } catch (err: any) {
       console.error('Failed to load population health data:', err);
-      setError('Could not connect to population health API. Ensure backend is running.');
+      const msg = err.message || 'Could not connect to population health API. Ensure backend is running.';
+      setError(msg);
+      // Mark existing data as stale rather than silently keeping it
+      setDomainData((prev: any) => {
+        if (prev !== null) {
+          setIsStale(true);
+        }
+        return prev;
+      });
     } finally {
       setLoading(false);
     }
@@ -253,6 +284,46 @@ export const PopulationHealthPanel: FC<PopulationHealthPanelProps> = ({ isOnline
           </div>
         </div>
       </div>
+
+      {/* Stale Data Warning Banner (Requirement 6) */}
+      {isStale && error && (
+        <div className="bg-amber-500/15 border border-amber-500/30 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-center gap-2.5 text-xs text-amber-950">
+            <AlertTriangle className="w-4.5 h-4.5 text-amber-600 shrink-0" />
+            <div>
+              <span className="font-bold">Displaying Stale / Cached Population Data: </span>
+              <span>{error}</span>
+            </div>
+          </div>
+          <button
+            onClick={fetchData}
+            disabled={loading}
+            className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 shrink-0"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <span>Retry Update</span>
+          </button>
+        </div>
+      )}
+
+      {/* Critical API Load Error (No Cached Data Available) */}
+      {!domainData && error && (
+        <div className="bg-rose-50 border border-rose-200 rounded-2xl p-6 text-center space-y-3">
+          <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
+            <AlertTriangle className="w-6 h-6" />
+          </div>
+          <h4 className="font-bold text-rose-950 text-base">Population Health Unavailable</h4>
+          <p className="text-xs text-rose-800 max-w-md mx-auto">{error}</p>
+          <button
+            onClick={fetchData}
+            disabled={loading}
+            className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition shadow-xs inline-flex items-center gap-1.5"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <span>Retry Connection</span>
+          </button>
+        </div>
+      )}
 
       {/* Clinical Safety Boundary Alert (Requirement 18 & 23) */}
       <div className="bg-amber-50/90 border border-amber-200/80 rounded-2xl p-4 flex items-start gap-3 shadow-xs">

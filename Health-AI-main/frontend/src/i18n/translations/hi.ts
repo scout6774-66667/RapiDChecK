@@ -158,16 +158,16 @@ export const hi = {
   },
 
   impact: {
-    eyebrow: 'प्रमुख प्रभाव',
+    eyebrow: 'प्रमुख क्षमताएं',
     title: 'मजबूत और स्वस्थ समुदायों का निर्माण',
-    stat1Value: '100+',
-    stat1Label: 'गाँव समर्थित',
-    stat2Value: '5,000+',
-    stat2Label: 'मरीजों की जांच',
-    stat3Value: '800+',
-    stat3Label: 'रेफरल समन्वित',
-    stat4Value: '1,200+',
-    stat4Label: 'फॉलो-अप प्रबंधित',
+    stat1Value: 'घर-घर देखभाल',
+    stat1Label: 'ऑफ़लाइन फ्रंटलाइन स्क्रीनिंग',
+    stat2Value: 'क्लिनिकल ट्रायज',
+    stat2Label: 'नियम-आधारित जोखिम मूल्यांकन',
+    stat3Value: 'सतत उपचार',
+    stat3Label: 'PHC रेफरल समन्वय',
+    stat4Value: 'देखभाल ट्रैकिंग',
+    stat4Label: 'सामुदायिक फॉलो-अप सहायता',
   },
 
   footer: {

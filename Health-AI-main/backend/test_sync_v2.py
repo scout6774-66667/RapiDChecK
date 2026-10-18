@@ -26,18 +26,32 @@ def override_get_db():
     finally:
         db.close()
 
+from auth_service import create_access_token, seed_default_users
+
 @pytest.fixture(autouse=True)
 def setup_database():
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     app.dependency_overrides[get_db] = override_get_db
+    db = TestingSessionLocal()
+    seed_default_users(db)
+    db.close()
     yield
     app.dependency_overrides.pop(get_db, None)
     Base.metadata.drop_all(bind=engine)
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    c = TestClient(app)
+    token = create_access_token({
+        "sub": "usr_dr_sharma",
+        "username": "dr.sharma",
+        "role": "PHC_DOCTOR",
+        "full_name": "Dr. Rajesh Sharma",
+        "facility_id": "PHC_SONPUR"
+    })
+    c.headers.update({"Authorization": f"Bearer {token}"})
+    return c
 
 
 def test_push_patient_create_and_idempotency(client):

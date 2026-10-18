@@ -6,8 +6,7 @@
  */
 
 import { db } from '../db/offlineDb';
-
-const API_BASE_URL = 'http://127.0.0.1:8000/api/v2';
+import { apiFetch } from '../api/apiConfig';
 
 export interface ResourceCategory {
   id: string;
@@ -108,9 +107,9 @@ export interface SearchResponse {
 export async function fetchResourceCategories(isOnline: boolean = true): Promise<ResourceCategory[]> {
   if (isOnline) {
     try {
-      const res = await fetch(`${API_BASE_URL}/health-resources/categories`, {
+      const res = await apiFetch('/api/v2/health-resources/categories', {
         headers: { 'Accept': 'application/json' },
-        signal: AbortSignal.timeout(5000),
+        timeoutMs: 5000,
       });
       if (res.ok) {
         const categories: ResourceCategory[] = await res.json();
@@ -147,21 +146,23 @@ export async function fetchResourceCategories(isOnline: boolean = true): Promise
 export async function searchResources(params: SearchParams, isOnline: boolean = true): Promise<SearchResponse> {
   if (isOnline) {
     try {
-      const url = new URL(`${API_BASE_URL}/health-resources`);
-      if (params.query) url.searchParams.set('query', params.query);
-      if (params.category_code) url.searchParams.set('category_code', params.category_code);
-      if (params.resource_type) url.searchParams.set('resource_type', params.resource_type);
-      if (params.role) url.searchParams.set('role', params.role);
-      if (params.condition) url.searchParams.set('condition', params.condition);
-      if (params.symptom) url.searchParams.set('symptom', params.symptom);
-      if (params.urgency_level) url.searchParams.set('urgency_level', params.urgency_level);
-      if (params.language) url.searchParams.set('language', params.language);
-      if (params.limit) url.searchParams.set('limit', String(params.limit));
-      if (params.offset) url.searchParams.set('offset', String(params.offset));
+      const queryParams = new URLSearchParams();
+      if (params.query) queryParams.set('query', params.query);
+      if (params.category_code) queryParams.set('category_code', params.category_code);
+      if (params.resource_type) queryParams.set('resource_type', params.resource_type);
+      if (params.role) queryParams.set('role', params.role);
+      if (params.condition) queryParams.set('condition', params.condition);
+      if (params.symptom) queryParams.set('symptom', params.symptom);
+      if (params.urgency_level) queryParams.set('urgency_level', params.urgency_level);
+      if (params.language) queryParams.set('language', params.language);
+      if (params.limit) queryParams.set('limit', String(params.limit));
+      if (params.offset) queryParams.set('offset', String(params.offset));
 
-      const res = await fetch(url.toString(), {
+      const queryString = queryParams.toString();
+      const endpoint = queryString ? `/api/v2/health-resources?${queryString}` : '/api/v2/health-resources';
+      const res = await apiFetch(endpoint, {
         headers: { 'Accept': 'application/json' },
-        signal: AbortSignal.timeout(6000),
+        timeoutMs: 6000,
       });
 
       if (res.ok) {
@@ -282,9 +283,9 @@ export async function searchResources(params: SearchParams, isOnline: boolean = 
 export async function fetchResourceDetail(resourceId: string, isOnline: boolean = true): Promise<HealthResourceItem | null> {
   if (isOnline) {
     try {
-      const res = await fetch(`${API_BASE_URL}/health-resources/${resourceId}`, {
+      const res = await apiFetch(`/api/v2/health-resources/${encodeURIComponent(resourceId)}`, {
         headers: { 'Accept': 'application/json' },
-        signal: AbortSignal.timeout(5000),
+        timeoutMs: 5000,
       });
       if (res.ok) {
         return await res.json();
@@ -319,11 +320,10 @@ export async function getRecommendations(
 ): Promise<RecommendationBundle> {
   if (isOnline) {
     try {
-      const res = await fetch(`${API_BASE_URL}/health-resources/recommend`, {
+      const res = await apiFetch('/api/v2/health-resources/recommend', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(7000),
+        timeoutMs: 7000,
       });
       if (res.ok) {
         return await res.json();

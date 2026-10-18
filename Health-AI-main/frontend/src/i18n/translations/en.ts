@@ -158,16 +158,16 @@ export const en = {
   },
 
   impact: {
-    eyebrow: 'KEY IMPACT',
+    eyebrow: 'CORE CAPABILITIES',
     title: 'Enabling Stronger, Healthier Communities',
-    stat1Value: '100+',
-    stat1Label: 'Villages Supported',
-    stat2Value: '5,000+',
-    stat2Label: 'Patients Screened',
-    stat3Value: '800+',
-    stat3Label: 'Referrals Coordinated',
-    stat4Value: '1,200+',
-    stat4Label: 'Follow-ups Managed',
+    stat1Value: 'Doorstep Care',
+    stat1Label: 'Offline Frontline Screening',
+    stat2Value: 'Clinical Triage',
+    stat2Label: 'Rule-Based Risk Scoring',
+    stat3Value: 'Care Continuity',
+    stat3Label: 'PHC Referral Coordination',
+    stat4Value: 'Care Tracking',
+    stat4Label: 'Community Follow-up Support',
   },
 
   footer: {

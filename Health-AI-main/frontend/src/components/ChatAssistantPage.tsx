@@ -15,11 +15,12 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
-  MessageCircleHeart, Send, Loader2, AlertCircle, Bot, User,
+  Send, Loader2, AlertCircle, Bot, User,
   Cpu, Sparkles, Trash2, RefreshCw, ShieldCheck, Database,
-  Copy, Check, ThumbsUp, ThumbsDown, Table as TableIcon
+  Copy, Check, ThumbsUp, ThumbsDown, Table as TableIcon, RotateCcw
 } from 'lucide-react';
 import { type Language } from '../i18n/translations';
+import { apiFetch } from '../api/apiConfig';
 
 interface ChatAssistantPageProps {
   lang: Language;
@@ -43,8 +44,10 @@ interface Message {
   feedback?: 'up' | 'down';
 }
 
+export type AIConnectionState = 'connected' | 'connecting' | 'unavailable' | 'generation_failed';
+
 interface OllamaStatus {
-  status: 'connected' | 'offline' | 'checking';
+  status: AIConnectionState;
   model: string;
   local: boolean;
   message?: string;
@@ -93,7 +96,10 @@ const UI_STRINGS: Record<Language, {
   emptyHint: string;
   disclaimer: string;
   localAiReady: string;
+  connecting: string;
   localAiOffline: string;
+  genFailed: string;
+  retryPrompt: string;
   dataAvailable: string;
   viewData: string;
   copied: string;
@@ -104,14 +110,17 @@ const UI_STRINGS: Record<Language, {
     placeholder: 'Ask about health concepts, Kolkata dataset, trends, or workflows...',
     send: 'Send',
     clear: 'Clear Chat',
-    offline: 'Local AI is currently unavailable. Check that Ollama is running and Gemma 3 270M is installed.',
+    offline: 'Local AI is currently unavailable. Check that Ollama is running on port 11434 with model gemma3:270m.',
     thinking: 'Analyzing dataset & generating answer...',
     emptyTitle: 'How can RuralHealth AI help you today?',
     emptySubtitle: 'Health education • Screening workflow • Kolkata dataset intelligence • Multilingual guidance',
     emptyHint: 'Suggested Questions:',
     disclaimer: 'RuralHealth AI Guidance: Assistive information only — not an autonomous diagnosis or prescription. Always consult a PHC doctor.',
     localAiReady: 'Local AI Connected',
-    localAiOffline: 'Local AI Offline',
+    connecting: 'Connecting...',
+    localAiOffline: 'AI Unavailable',
+    genFailed: 'Response generation failed',
+    retryPrompt: 'Retry Question',
     dataAvailable: 'Kolkata Health Data Available',
     viewData: 'View Data Points',
     copied: 'Copied to clipboard',
@@ -129,7 +138,10 @@ const UI_STRINGS: Record<Language, {
     emptyHint: 'सुझाए गए प्रश्न:',
     disclaimer: 'केवल सहायक जानकारी — कोई चिकित्सीय निदान या पर्चा नहीं। हमेशा PHC डॉक्टर से परामर्श लें।',
     localAiReady: 'लोकल AI कनेक्टेड',
-    localAiOffline: 'लोकल AI ऑफ़लाइन',
+    connecting: 'कनेक्ट हो रहा है...',
+    localAiOffline: 'AI अनुपलब्ध',
+    genFailed: 'उत्तर निर्माण विफल',
+    retryPrompt: 'पुनः प्रयास करें',
     dataAvailable: 'कोलकाता डेटा उपलब्ध',
     viewData: 'डेटा तालिका देखें',
     copied: 'कॉपी किया गया',
@@ -147,7 +159,10 @@ const UI_STRINGS: Record<Language, {
     emptyHint: 'প্রস্তাবিত প্রশ্নাবলী:',
     disclaimer: 'শুধুমাত্র সহায়ক তথ্য — কোনো ডাক্তারি রোগনির্ণয় বা প্রেসক্রিপশন নয়। সর্বদা চিকিৎসকের পরামর্শ নিন।',
     localAiReady: 'লোকাল AI সংযুক্ত',
-    localAiOffline: 'লোকাল AI অফলাইন',
+    connecting: 'সংযুক্ত হচ্ছে...',
+    localAiOffline: 'AI অনুপলব্ধ',
+    genFailed: 'উত্তর তৈরি ব্যর্থ হয়েছে',
+    retryPrompt: 'আবার চেষ্টা করুন',
     dataAvailable: 'কলকাতা স্বাস্থ্য ডেটা সংযুক্ত',
     viewData: 'ডেটা পয়েন্ট দেখুন',
     copied: 'কপি করা হয়েছে',
@@ -199,10 +214,11 @@ export const ChatAssistantPage: React.FC<ChatAssistantPageProps> = ({ lang }) =>
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lastFailedPrompt, setLastFailedPrompt] = useState<string | null>(null);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [expandedDataIndex, setExpandedDataIndex] = useState<number | null>(null);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus>({
-    status: 'checking',
+    status: 'connecting',
     model: 'gemma3:270m',
     local: true,
   });
@@ -214,33 +230,28 @@ export const ChatAssistantPage: React.FC<ChatAssistantPageProps> = ({ lang }) =>
 
   // Check Ollama health from FastAPI backend
   const checkOllamaHealth = useCallback(async () => {
+    setOllamaStatus((prev) => ({ ...prev, status: 'connecting' }));
     try {
-      let res: Response | null = null;
-      try {
-        res = await fetch('/api/ai/ollama/health', { signal: AbortSignal.timeout(3000) });
-      } catch {
-        res = await fetch('http://127.0.0.1:8000/api/ai/ollama/health', { signal: AbortSignal.timeout(3000) });
-      }
-
+      const res = await apiFetch('/api/ai/ollama/health', { timeoutMs: 4000 });
       if (res && res.ok) {
         const data = await res.json();
         const isConn = data.status === 'connected' || data.available === true;
         setOllamaStatus({
-          status: isConn ? 'connected' : 'offline',
+          status: isConn ? 'connected' : 'unavailable',
           model: data.model || 'gemma3:270m',
           local: true,
           message: data.message,
         });
       } else {
         setOllamaStatus({
-          status: 'offline',
+          status: 'unavailable',
           model: 'gemma3:270m',
           local: true,
         });
       }
     } catch {
       setOllamaStatus({
-        status: 'offline',
+        status: 'unavailable',
         model: 'gemma3:270m',
         local: true,
       });
@@ -262,6 +273,7 @@ export const ChatAssistantPage: React.FC<ChatAssistantPageProps> = ({ lang }) =>
 
     setInput('');
     setError(null);
+    setLastFailedPrompt(null);
 
     const newMessages: Message[] = [...messages, { role: 'user', content }];
     setMessages(newMessages);
@@ -274,27 +286,32 @@ export const ChatAssistantPage: React.FC<ChatAssistantPageProps> = ({ lang }) =>
         language: lang,
       };
 
-      let res: Response | null = null;
-      try {
-        res = await fetch('/api/ai/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-      } catch {
-        res = await fetch('http://127.0.0.1:8000/api/ai/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-      }
+      const res = await apiFetch('/api/ai/chat', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        timeoutMs: 45000,
+      });
 
       if (!res.ok) {
-        throw new Error(ui.offline);
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.detail || errJson.error || ui.offline);
       }
 
       const data = await res.json();
-      const replyContent = data.response || data.reply || 'No response generated.';
+      if (data.success === false) {
+        setLastFailedPrompt(content);
+        setOllamaStatus(prev => ({ ...prev, status: 'generation_failed' }));
+        setError(data.error || ui.genFailed);
+        return;
+      }
+
+      const replyContent = data.response || data.reply;
+      if (!replyContent) {
+        setLastFailedPrompt(content);
+        setOllamaStatus(prev => ({ ...prev, status: 'generation_failed' }));
+        setError(ui.genFailed);
+        return;
+      }
 
       setMessages([
         ...newMessages,
@@ -309,9 +326,12 @@ export const ChatAssistantPage: React.FC<ChatAssistantPageProps> = ({ lang }) =>
           data_points: data.data_points,
         },
       ]);
-    } catch (err: unknown) {
+      setOllamaStatus(prev => ({ ...prev, status: 'connected' }));
+    } catch (err: any) {
       console.error('Chat Assistant error:', err);
-      setError(ui.offline);
+      setLastFailedPrompt(content);
+      setOllamaStatus(prev => ({ ...prev, status: 'generation_failed' }));
+      setError(err?.message || ui.offline);
     } finally {
       setIsLoading(false);
     }
@@ -355,8 +375,8 @@ export const ChatAssistantPage: React.FC<ChatAssistantPageProps> = ({ lang }) =>
       {/* ── Top Header Bar ─────────────────────────────────────────────────── */}
       <div className="bg-gradient-to-r from-[#102A56] via-[#153B75] to-[#0A9F68] px-6 py-4 flex items-center justify-between gap-4 text-white shadow-xs shrink-0">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-white/15 backdrop-blur-md flex items-center justify-center border border-white/20 shadow-sm shrink-0">
-            <MessageCircleHeart className="w-6 h-6 text-white" />
+          <div className="w-10 h-10 rounded-2xl bg-white/15 backdrop-blur-md flex items-center justify-center border border-white/20 shadow-sm shrink-0 p-1 overflow-hidden">
+            <img src="/logo.png" alt="RuralHealth AI" className="w-full h-full object-contain" />
           </div>
           <div>
             <div className="flex items-center gap-2.5 flex-wrap">
@@ -368,6 +388,16 @@ export const ChatAssistantPage: React.FC<ChatAssistantPageProps> = ({ lang }) =>
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-400/20 text-emerald-200 border border-emerald-400/30 text-[11px] font-semibold">
                   <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
                   <span>● {ui.localAiReady} • {displayModelName}</span>
+                </span>
+              ) : ollamaStatus.status === 'connecting' ? (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-sky-400/20 text-sky-200 border border-sky-400/30 text-[11px] font-semibold">
+                  <Loader2 className="w-2.5 h-2.5 animate-spin text-sky-300" />
+                  <span>{ui.connecting}</span>
+                </span>
+              ) : ollamaStatus.status === 'generation_failed' ? (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-200 border border-rose-400/30 text-[11px] font-semibold">
+                  <AlertCircle className="w-3 h-3 text-rose-300" />
+                  <span>{ui.genFailed}</span>
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-slate-800/80 text-amber-300 border border-amber-400/30 text-[11px] font-medium">
@@ -628,13 +658,25 @@ export const ChatAssistantPage: React.FC<ChatAssistantPageProps> = ({ lang }) =>
           </div>
         )}
 
-        {/* Error Notification */}
+        {/* Error Notification with Retry */}
         {error && (
-          <div className="flex items-start gap-2.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl p-4 max-w-2xl mx-auto shadow-xs">
-            <AlertCircle className="w-5 h-5 text-rose-500 shrink-0 mt-0.5" />
-            <div className="text-xs font-semibold">
-              <p>{error}</p>
+          <div className="space-y-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl p-4 max-w-2xl mx-auto shadow-xs animate-in fade-in">
+            <div className="flex items-start gap-2.5">
+              <AlertCircle className="w-5 h-5 text-rose-500 shrink-0 mt-0.5" />
+              <div className="text-xs font-semibold leading-relaxed">
+                <p>{error}</p>
+              </div>
             </div>
+            {lastFailedPrompt && !isLoading && (
+              <button
+                type="button"
+                onClick={() => sendMessage(lastFailedPrompt)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold transition-colors shadow-2xs"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>{ui.retryPrompt}</span>
+              </button>
+            )}
           </div>
         )}
 

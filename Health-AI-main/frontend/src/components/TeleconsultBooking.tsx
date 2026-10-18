@@ -14,6 +14,7 @@ import {
   deleteAppointmentAtomic,
   generateUUID
 } from '../db/offlineDb';
+import { apiFetch } from '../api/apiConfig';
 import { useLiveQuery } from 'dexie-react-hooks';
 import type { Language } from '../i18n/translations';
 
@@ -300,7 +301,10 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
     // 2. Also attempt online delete if connected
     if (isOnline) {
       try {
-        await fetch(`http://127.0.0.1:8000/api/appointments/${apptId}`, { method: 'DELETE' });
+        await apiFetch(`/api/appointments/${encodeURIComponent(apptId)}`, {
+          method: 'DELETE',
+          timeoutMs: 8000,
+        });
       } catch { /* queued in outbox for automatic push */ }
     }
     setDeleteConfirm(null);
@@ -339,9 +343,8 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
     // Sync to backend if online
     if (isOnline) {
       try {
-        await fetch(`http://127.0.0.1:8000/api/appointments/${editModal.appointment.id}`, {
+        await apiFetch(`/api/appointments/${encodeURIComponent(editModal.appointment.id)}`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             patient_name: savedAppt.patient_name,
             patient_phone: savedAppt.patient_phone,
@@ -349,7 +352,8 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
             appointment_time: savedAppt.appointment_time,
             notes: savedAppt.notes,
             status: savedAppt.status
-          })
+          }),
+          timeoutMs: 8000,
         });
         await db.appointments.update(editModal.appointment.id, { sync_state: 'SYNCED', synced: true });
       } catch { /* queued in outbox */ }
@@ -555,7 +559,9 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
       setResolvedLocationName(villageStr);
 
       // Fast backend search
-      const res = await fetch(`http://127.0.0.1:8000/api/hospitals/search?location=${encodeURIComponent(villageStr)}`);
+      const res = await apiFetch(`/api/hospitals/search?location=${encodeURIComponent(villageStr)}`, {
+        timeoutMs: 10000,
+      });
       
       if (!res.ok) {
         throw new Error('Backend error');
@@ -670,9 +676,8 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
 
     if (isOnline) {
       try {
-        await fetch('http://127.0.0.1:8000/api/appointments', {
+        await apiFetch('/api/appointments', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             id: savedAppt.id,
             patient_name: savedAppt.patient_name,

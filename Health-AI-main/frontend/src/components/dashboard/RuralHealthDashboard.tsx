@@ -1,4 +1,13 @@
 import React, { useState, useMemo } from 'react';
+import {
+  Wifi,
+  WifiOff,
+  RefreshCw,
+  AlertCircle,
+  CheckCircle2,
+  Clock,
+  AlertTriangle,
+} from 'lucide-react';
 import { DashboardSidebar, type DashboardNavTab } from './DashboardSidebar';
 import { DashboardHeader } from './DashboardHeader';
 import { WelcomeHeroBanner } from './WelcomeHeroBanner';
@@ -14,6 +23,7 @@ import type { PatientTableRow, TaskItem, UpcomingAppointment, ScreeningTrendItem
 import type { Language } from '../../i18n/translations';
 import { db } from '../../db/offlineDb';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { useAuth } from '../../auth/AuthContext';
 
 interface RuralHealthDashboardProps {
   lang: Language;
@@ -38,6 +48,7 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
   onStartScreeningPatient,
   onLogout,
 }) => {
+  const { user } = useAuth();
   const [activeSidebarTab, setActiveSidebarTab] = useState<DashboardNavTab>('dashboard');
   const [searchQuery, setSearchQuery] = useState('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -48,18 +59,39 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
   const liveAssessments = useLiveQuery(() => db.assessments.toArray()) || [];
   const liveAppointments = useLiveQuery(() => db.appointments.toArray()) || [];
 
-  // Derived KPI metrics strictly from real records
+  // Live queries for synchronization states (Requirement 2.11 & Section 7)
+  const outboxQueuedCount =
+    useLiveQuery(() => db.outbox.where('status').equals('QUEUED').count()) ?? pendingSyncCount;
+  const outboxFailedCount =
+    useLiveQuery(() => db.outbox.where('status').equals('FAILED').count()) ?? 0;
+  const conflictCount =
+    useLiveQuery(() => db.conflicts.where('status').equals('PENDING').count()) ?? 0;
+  const lastSyncMeta = useLiveQuery(() => db.sync_metadata.get('last_synced_at'));
+  const lastSyncTime = lastSyncMeta?.value;
+
+  // 1 & 2. Derived KPI metrics: Separate unique patients from screening encounters
   const kpis = useMemo(() => {
-    const totalPatients = livePatients.length;
-    const highRisk = liveAssessments.filter((a) => a.risk_level === 'HIGH' || a.risk_level === 'EMERGENCY').length;
+    const totalRegisteredPatients = livePatients.length;
+    const totalScreeningEncounters = liveAssessments.length;
+
+    // Distinct patients with at least 1 screening encounter
+    const screenedPatientIds = new Set(
+      liveAssessments.map((a) => a.patient_id).filter(Boolean)
+    );
+    const uniquePatientsScreened = screenedPatientIds.size;
+    const repeatScreenings = Math.max(0, totalScreeningEncounters - uniquePatientsScreened);
+
+    const highRisk = liveAssessments.filter(
+      (a) => a.risk_level === 'HIGH' || a.risk_level === 'EMERGENCY'
+    ).length;
     const referrals = liveAssessments.filter(
       (a) => a.referral_status === 'REFERRED' || a.referral_status === 'APPOINTMENT_REQUESTED'
     ).length;
     const appts = liveAppointments.length;
 
     return {
-      patientsScreened: totalPatients,
-      patientsScreenedTrend: totalPatients > 0 ? `${totalPatients} registered` : 'No records yet',
+      patientsScreened: totalScreeningEncounters,
+      patientsScreenedTrend: `${uniquePatientsScreened} unique (${repeatScreenings} repeat) / ${totalRegisteredPatients} registered`,
       highRiskCases: highRisk,
       highRiskTrend: highRisk > 0 ? `${highRisk} flagged cases` : '0 high-risk cases',
       referralsMade: referrals,
@@ -69,102 +101,186 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
     };
   }, [livePatients, liveAssessments, liveAppointments]);
 
-  // Derived Risk Distribution strictly from real assessments
-  const riskDistribution = useMemo(() => {
-    const high = liveAssessments.filter((a) => a.risk_level === 'HIGH' || a.risk_level === 'EMERGENCY').length;
-    const mod = liveAssessments.filter((a) => a.risk_level === 'MODERATE').length;
-    const low = liveAssessments.filter((a) => a.risk_level === 'LOW').length;
-    const review = liveAssessments.filter((a) => a.risk_level === 'INSUFFICIENT_DATA').length;
-    const total = high + mod + low + review || 1;
-
-    return [
-      {
-        name: 'High Risk',
-        count: high,
-        percentage: liveAssessments.length > 0 ? Math.round((high / total) * 100) : 0,
-        color: '#EF4444',
-      },
-      {
-        name: 'Moderate Risk',
-        count: mod,
-        percentage: liveAssessments.length > 0 ? Math.round((mod / total) * 100) : 0,
-        color: '#F59E0B',
-      },
-      {
-        name: 'Low Risk',
-        count: low,
-        percentage: liveAssessments.length > 0 ? Math.round((low / total) * 100) : 0,
-        color: '#10B981',
-      },
-      {
-        name: 'Needs Review',
-        count: review,
-        percentage: liveAssessments.length > 0 ? Math.round((review / total) * 100) : 0,
-        color: '#94A3B8',
-      },
-    ];
+  // 3. Select latest valid assessment per patient using reliable timestamps and deterministic tie-breaking
+  const latestAssessmentByPatient = useMemo(() => {
+    const map = new Map<string, (typeof liveAssessments)[0]>();
+    for (const ass of liveAssessments) {
+      if (!ass.patient_id) continue;
+      const existing = map.get(ass.patient_id);
+      if (!existing) {
+        map.set(ass.patient_id, ass);
+        continue;
+      }
+      const timeNew = ass.created_at ? new Date(ass.created_at).getTime() : 0;
+      const timeOld = existing.created_at ? new Date(existing.created_at).getTime() : 0;
+      if (timeNew > timeOld) {
+        map.set(ass.patient_id, ass);
+      } else if (timeNew === timeOld) {
+        // Deterministic tie-breaker: string comparison of assessment ID
+        if (String(ass.id) > String(existing.id)) {
+          map.set(ass.patient_id, ass);
+        }
+      }
+    }
+    return map;
   }, [liveAssessments]);
 
-  // Derived Screening Trend strictly from real assessment timestamps
+  // 4 & 5. Reconciled Risk Distribution: Never map unassessed or insufficient data to LOW
+  const riskDistribution = useMemo(() => {
+    let high = 0;
+    let mod = 0;
+    let low = 0;
+    let review = 0;
+    let unassessed = 0;
+
+    livePatients.forEach((p) => {
+      const ass = latestAssessmentByPatient.get(p.id);
+      if (!ass) {
+        unassessed++;
+      } else if (ass.risk_level === 'HIGH' || ass.risk_level === 'EMERGENCY') {
+        high++;
+      } else if (ass.risk_level === 'MODERATE') {
+        mod++;
+      } else if (ass.risk_level === 'LOW') {
+        low++;
+      } else {
+        // INSUFFICIENT_DATA or unclassified enums: NEVER mapped to LOW
+        review++;
+      }
+    });
+
+    const total = livePatients.length || 1;
+    const calcPct = (cnt: number) =>
+      livePatients.length > 0 ? Math.round((cnt / total) * 100) : 0;
+
+    return [
+      { name: 'High Risk', count: high, percentage: calcPct(high), color: '#EF4444' },
+      { name: 'Moderate Risk', count: mod, percentage: calcPct(mod), color: '#F59E0B' },
+      { name: 'Low Risk', count: low, percentage: calcPct(low), color: '#10B981' },
+      { name: 'Needs Review', count: review, percentage: calcPct(review), color: '#8B5CF6' },
+      { name: 'Unassessed', count: unassessed, percentage: calcPct(unassessed), color: '#94A3B8' },
+    ];
+  }, [livePatients, latestAssessmentByPatient]);
+
+  // 6. Stable date keys containing the year for time-series aggregation; no silent current-date defaulting
   const screeningsTrend: ScreeningTrendItem[] = useMemo(() => {
     if (liveAssessments.length === 0) return [];
 
-    const dateMap = new Map<string, { total: number; highRisk: number; moderateRisk: number; lowRisk: number }>();
+    const dateMap = new Map<
+      string,
+      { displayDate: string; total: number; highRisk: number; moderateRisk: number; lowRisk: number }
+    >();
 
     liveAssessments.forEach((ass) => {
-      const d = ass.created_at ? new Date(ass.created_at) : new Date();
-      const dateKey = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      if (!ass.created_at) return;
+      const d = new Date(ass.created_at);
+      if (isNaN(d.getTime())) return;
 
-      if (!dateMap.has(dateKey)) {
-        dateMap.set(dateKey, { total: 0, highRisk: 0, moderateRisk: 0, lowRisk: 0 });
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const sortKey = `${year}-${month}-${day}`;
+
+      const displayDate = d.toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+      });
+
+      if (!dateMap.has(sortKey)) {
+        dateMap.set(sortKey, { displayDate, total: 0, highRisk: 0, moderateRisk: 0, lowRisk: 0 });
       }
-      const entry = dateMap.get(dateKey)!;
+      const entry = dateMap.get(sortKey)!;
       entry.total += 1;
       if (ass.risk_level === 'HIGH' || ass.risk_level === 'EMERGENCY') entry.highRisk += 1;
       else if (ass.risk_level === 'MODERATE') entry.moderateRisk += 1;
       else if (ass.risk_level === 'LOW') entry.lowRisk += 1;
     });
 
-    return Array.from(dateMap.entries()).map(([date, counts]) => ({
-      date,
-      ...counts,
-    }));
+    return Array.from(dateMap.entries())
+      .sort(([keyA], [keyB]) => keyA.localeCompare(keyB))
+      .map(([, entry]) => ({
+        date: entry.displayDate,
+        total: entry.total,
+        highRisk: entry.highRisk,
+        moderateRisk: entry.moderateRisk,
+        lowRisk: entry.lowRisk,
+      }));
   }, [liveAssessments]);
 
-  // Real Patients table list
+  // Patient directory table mapping with explicit UNASSESSED / NEEDS_REVIEW badges
   const patientsList: PatientTableRow[] = useMemo(() => {
     return livePatients.map((p, idx) => {
-      const ass = liveAssessments.find((a) => a.patient_id === p.id);
+      const ass = latestAssessmentByPatient.get(p.id);
+      let riskLevel: PatientTableRow['riskLevel'] = 'UNASSESSED';
+      if (ass) {
+        if (ass.risk_level === 'HIGH' || ass.risk_level === 'EMERGENCY') {
+          riskLevel = 'HIGH';
+        } else if (ass.risk_level === 'MODERATE') {
+          riskLevel = 'MODERATE';
+        } else if (ass.risk_level === 'LOW') {
+          riskLevel = 'LOW';
+        } else {
+          riskLevel = 'NEEDS_REVIEW';
+        }
+      }
+
       return {
         id: p.id,
         customId: p.patient_id || `PT-${String(idx + 1).padStart(3, '0')}`,
         name: p.name,
         age: p.age,
-        gender: (p.gender === 'Female' || p.gender === 'F' ? 'F' : p.gender === 'Male' || p.gender === 'M' ? 'M' : 'Other') as 'M' | 'F' | 'Other',
-        riskLevel: (ass?.risk_level === 'HIGH' || ass?.risk_level === 'EMERGENCY' ? 'HIGH' : ass?.risk_level === 'MODERATE' ? 'MODERATE' : 'LOW') as 'HIGH' | 'MODERATE' | 'LOW',
-        keySymptoms: ass?.symptoms?.join(', ') || 'Routine screening assessment',
-        status: ass?.referral_status === 'REFERRED' ? 'REFERRED' : ass?.referral_status === 'APPOINTMENT_REQUESTED' ? 'APPOINTMENT' : 'COMPLETED',
+        gender: (p.gender === 'Female' || p.gender === 'F'
+          ? 'F'
+          : p.gender === 'Male' || p.gender === 'M'
+          ? 'M'
+          : 'Other') as 'M' | 'F' | 'Other',
+        riskLevel,
+        keySymptoms:
+          ass?.symptoms && ass.symptoms.length > 0
+            ? ass.symptoms.join(', ')
+            : 'No recorded assessment symptoms',
+        status:
+          ass?.referral_status === 'REFERRED'
+            ? 'REFERRED'
+            : ass?.referral_status === 'APPOINTMENT_REQUESTED'
+            ? 'APPOINTMENT'
+            : ass
+            ? 'COMPLETED'
+            : 'PENDING',
         phone: p.phone,
         village: p.village,
       };
     });
-  }, [livePatients, liveAssessments]);
+  }, [livePatients, latestAssessmentByPatient]);
 
   // Real Dynamic Tasks derived from workflow state
   const dynamicTasks: TaskItem[] = useMemo(() => {
     const list: TaskItem[] = [];
 
-    if (pendingSyncCount > 0) {
+    if (outboxQueuedCount > 0) {
       list.push({
         id: 'task-sync',
-        title: `Sync ${pendingSyncCount} offline record(s) to cloud`,
+        title: `Sync ${outboxQueuedCount} offline record(s) to cloud`,
         timeOrSubtext: 'Pending Dexie outbox mutations',
         status: 'High Priority',
         completed: false,
       });
     }
 
-    const highRiskAssessments = liveAssessments.filter((a) => a.risk_level === 'HIGH' || a.risk_level === 'EMERGENCY');
+    if (conflictCount > 0) {
+      list.push({
+        id: 'task-conflicts',
+        title: `Resolve ${conflictCount} synchronization conflict(s)`,
+        timeOrSubtext: 'Optimistic concurrency collision requiring review',
+        status: 'High Priority',
+        completed: false,
+      });
+    }
+
+    const highRiskAssessments = liveAssessments.filter(
+      (a) => a.risk_level === 'HIGH' || a.risk_level === 'EMERGENCY'
+    );
     highRiskAssessments.slice(0, 3).forEach((a) => {
       const p = livePatients.find((pt) => pt.id === a.patient_id);
       list.push({
@@ -177,13 +293,13 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
     });
 
     return list;
-  }, [pendingSyncCount, liveAssessments, livePatients]);
+  }, [outboxQueuedCount, conflictCount, liveAssessments, livePatients]);
 
-  // Real Upcoming Appointments derived from database
+  // Real Upcoming Appointments derived strictly from authorized appointment database
   const dynamicAppointments: UpcomingAppointment[] = useMemo(() => {
     return liveAppointments.map((a) => ({
       id: a.id,
-      time: a.appointment_time || '10:00 AM',
+      time: a.appointment_time || 'Schedule Unset',
       patientName: a.patient_name,
       purpose: a.likely_conditions?.[0] || 'Clinical Consultation',
       facility: a.doctor_name || a.doctor_address || 'Primary Health Centre',
@@ -212,7 +328,9 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
     }
   };
 
-  const handleQuickAction = (action: 'add_patient' | 'screen' | 'refer' | 'appointment' | 'chat') => {
+  const handleQuickAction = (
+    action: 'add_patient' | 'screen' | 'refer' | 'appointment' | 'chat'
+  ) => {
     switch (action) {
       case 'add_patient':
       case 'screen':
@@ -229,6 +347,17 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
         break;
     }
   };
+
+  // Formatted last sync time string
+  const formattedLastSync = useMemo(() => {
+    if (!lastSyncTime) return 'Never synchronized';
+    try {
+      const d = new Date(lastSyncTime);
+      return `Last synced at ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
+    } catch {
+      return 'Last synced recently';
+    }
+  }, [lastSyncTime]);
 
   return (
     <div className="min-h-screen bg-[#F4F9FA] flex font-sans antialiased text-[#102A56]">
@@ -268,7 +397,7 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
           lang={lang}
           onLangChange={onLangChange}
           isOnline={isOnline}
-          pendingSyncCount={pendingSyncCount}
+          pendingSyncCount={outboxQueuedCount}
           onSyncTrigger={onSyncTrigger}
           isSyncing={isSyncing}
           searchQuery={searchQuery}
@@ -279,8 +408,76 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
 
         {/* Dashboard Content Container */}
         <main className="flex-1 p-4 sm:p-6 lg:p-7 max-w-[1440px] w-full mx-auto">
-          {/* Hero Welcome Banner */}
-          <WelcomeHeroBanner userName="Sunita Devi" blockName="Block A" facilityName="Sundarpur PHC" />
+          {/* Hero Welcome Banner (Authenticated Profile Hydration) */}
+          <WelcomeHeroBanner
+            userName={user?.full_name}
+            facilityName={user?.facility_id}
+            blockName={user?.assigned_villages?.[0] ? `${user.assigned_villages[0]} Area` : undefined}
+            lang={lang}
+          />
+
+          {/* Comprehensive Multi-State Synchronization Status Bar (Requirement 2.11) */}
+          <div className="bg-white rounded-2xl border border-[#E5EEF1] p-3.5 sm:p-4 mb-5 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2.5 text-xs">
+              {/* Backend Connectivity State */}
+              <div
+                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-xl font-bold border ${
+                  isOnline
+                    ? 'bg-[#E7F7F0] text-[#0A9F68] border-[#0A9F68]/20'
+                    : 'bg-rose-50 text-rose-700 border-rose-200'
+                }`}
+              >
+                {isOnline ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
+                <span>{isOnline ? 'Connected to PHC Hub' : 'Offline Mode (Local Storage)'}</span>
+              </div>
+
+              {/* Pending Outbox Operations */}
+              <div
+                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-xl font-medium border ${
+                  outboxQueuedCount > 0
+                    ? 'bg-amber-50 text-amber-800 border-amber-200 font-bold'
+                    : 'bg-slate-50 text-slate-600 border-slate-200'
+                }`}
+              >
+                <Clock className="w-3.5 h-3.5" />
+                <span>
+                  {outboxQueuedCount} {outboxQueuedCount === 1 ? 'record' : 'records'} pending sync
+                </span>
+              </div>
+
+              {/* Failed Outbox Records */}
+              {outboxFailedCount > 0 && (
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl font-bold border bg-rose-50 text-rose-700 border-rose-200">
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  <span>{outboxFailedCount} failed attempts</span>
+                </div>
+              )}
+
+              {/* Concurrency Conflicts */}
+              {conflictCount > 0 && (
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl font-bold border bg-purple-50 text-purple-700 border-purple-200">
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  <span>{conflictCount} unresolved conflicts</span>
+                </div>
+              )}
+
+              {/* Last Successful Synchronization Timestamp */}
+              <div className="inline-flex items-center gap-1.5 text-slate-400 font-medium text-[11px] px-1">
+                <CheckCircle2 className="w-3.5 h-3.5 text-slate-400" />
+                <span>{formattedLastSync}</span>
+              </div>
+            </div>
+
+            {/* Manual Sync Trigger Button */}
+            <button
+              onClick={onSyncTrigger}
+              disabled={isSyncing || !isOnline}
+              className="inline-flex items-center gap-2 px-3.5 py-1.5 bg-[#0A9F68] hover:bg-[#088758] disabled:bg-slate-200 disabled:text-slate-400 text-white font-bold text-xs rounded-xl transition shadow-xs shrink-0 cursor-pointer disabled:cursor-not-allowed"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+              <span>{isSyncing ? 'Synchronizing...' : 'Sync Changes'}</span>
+            </button>
+          </div>
 
           {/* 4 KPI Cards Row */}
           <KpiCardsRow
@@ -297,7 +494,7 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
             <div className="h-full">
               <RiskDistributionCard
                 data={riskDistribution}
-                totalPatients={kpis.patientsScreened}
+                totalPatients={livePatients.length}
               />
             </div>
             <div className="h-full">

@@ -1,4 +1,5 @@
 import json
+import uuid
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
@@ -9,7 +10,9 @@ from database import (
     AssessmentModel,
     AppointmentModel,
     SyncJournalModel,
-    IdempotencyModel
+    IdempotencyModel,
+    UserModel,
+    AuditEventModel
 )
 from schemas import (
     SyncOperation,
@@ -52,7 +55,8 @@ def record_journal_entry(
 def apply_patient_operation(
     db: Session,
     op: SyncOperation,
-    device_id: str
+    device_id: str,
+    current_user: Optional[UserModel] = None
 ) -> SyncOperationResult:
     payload = op.payload or {}
     patient = db.query(PatientModel).filter(PatientModel.id == op.entity_id).first()
@@ -68,6 +72,24 @@ def apply_patient_operation(
                 server_version=patient.server_version
             )
 
+        # Enforce server-assigned facility_id for frontline workers and reject cross-facility creation
+        facility = None
+        if current_user and current_user.role != "SYSTEM_ADMIN" and current_user.facility_id:
+            client_fac = payload.get('facility_id')
+            if client_fac and client_fac != current_user.facility_id:
+                return SyncOperationResult(
+                    operation_id=op.operation_id,
+                    entity_type=op.entity_type,
+                    entity_id=op.entity_id,
+                    operation_type=op.operation_type,
+                    status='REJECTED',
+                    server_version=0,
+                    error_message=f"Facility access violation: User from facility '{current_user.facility_id}' cannot create patient for foreign facility '{client_fac}'."
+                )
+            facility = current_user.facility_id
+        else:
+            facility = payload.get('facility_id') or (getattr(current_user, 'facility_id', None) if current_user else None)
+
         new_patient = PatientModel(
             id=op.entity_id,
             national_health_id=payload.get('national_health_id'),
@@ -77,6 +99,7 @@ def apply_patient_operation(
             village=payload.get('village', 'Unknown'),
             phone=payload.get('phone', ''),
             patient_id=payload.get('patient_id') or f"RH-{op.entity_id[:6].upper()}",
+            facility_id=facility,
             server_version=1,
             is_deleted=0,
             created_at=payload.get('created_at') or datetime.utcnow().isoformat(),
@@ -100,7 +123,8 @@ def apply_patient_operation(
                 "village": new_patient.village,
                 "phone": new_patient.phone,
                 "patient_id": new_patient.patient_id,
-                "server_version": new_patient.server_version,
+                "facility_id": new_patient.facility_id,
+                "server_version": 1,
                 "is_deleted": 0,
                 "created_at": new_patient.created_at
             },
@@ -128,6 +152,20 @@ def apply_patient_operation(
                 server_version=0,
                 error_message='Patient not found'
             )
+
+        # Object-level facility isolation check
+        if current_user and current_user.role != "SYSTEM_ADMIN" and current_user.facility_id:
+            if patient.facility_id and patient.facility_id != current_user.facility_id:
+                return SyncOperationResult(
+                    operation_id=op.operation_id,
+                    entity_type=op.entity_type,
+                    entity_id=op.entity_id,
+                    operation_type=op.operation_type,
+                    status='REJECTED',
+                    server_version=patient.server_version,
+                    error_message=f"Facility access violation: User from facility '{current_user.facility_id}' cannot mutate patient belonging to facility '{patient.facility_id}'."
+                )
+
 
         # Optimistic Concurrency Control (OCC)
         if op.base_server_version is not None and op.base_server_version < patient.server_version:
@@ -211,9 +249,23 @@ def apply_patient_operation(
                 server_version=patient.server_version if patient else 0
             )
 
+        if current_user and current_user.role != "SYSTEM_ADMIN" and current_user.facility_id:
+            if patient.facility_id and patient.facility_id != current_user.facility_id:
+                return SyncOperationResult(
+                    operation_id=op.operation_id,
+                    entity_type=op.entity_type,
+                    entity_id=op.entity_id,
+                    operation_type=op.operation_type,
+                    status='REJECTED',
+                    server_version=patient.server_version,
+                    error_message=f"Facility access violation: User from facility '{current_user.facility_id}' cannot delete patient belonging to facility '{patient.facility_id}'."
+                )
+
+
+        now_iso = datetime.utcnow().isoformat()
         patient.is_deleted = 1
         patient.server_version += 1
-        patient.updated_at = datetime.utcnow().isoformat()
+        patient.updated_at = now_iso
         db.flush()
 
         j_entry = record_journal_entry(
@@ -225,6 +277,69 @@ def apply_patient_operation(
             payload={"id": patient.id, "is_deleted": 1, "server_version": patient.server_version},
             server_version=patient.server_version
         )
+
+        for ass in (patient.assessments or []):
+            if not ass.is_deleted:
+                ass.is_deleted = 1
+                ass.server_version += 1
+                ass.updated_at = now_iso
+                record_journal_entry(
+                    db=db,
+                    device_id=device_id,
+                    entity_type='assessment',
+                    entity_id=ass.id,
+                    operation_type='DELETE',
+                    payload={"id": ass.id, "is_deleted": 1, "server_version": ass.server_version},
+                    server_version=ass.server_version
+                )
+
+        if patient.phone:
+            linked_appts = db.query(AppointmentModel).filter(
+                AppointmentModel.patient_phone == patient.phone,
+                AppointmentModel.is_deleted == 0
+            ).all()
+            for appt in linked_appts:
+                appt.is_deleted = 1
+                appt.status = "CANCELLED"
+                appt.server_version += 1
+                appt.updated_at = now_iso
+                record_journal_entry(
+                    db=db,
+                    device_id=device_id,
+                    entity_type='appointment',
+                    entity_id=appt.id,
+                    operation_type='DELETE',
+                    payload={"id": appt.id, "is_deleted": 1, "status": "CANCELLED", "server_version": appt.server_version},
+                    server_version=appt.server_version
+                )
+
+        audit_event = AuditEventModel(
+            event_id=str(uuid.uuid4()),
+            event_type="PATIENT_DELETED",
+            entity_type="patient",
+            entity_id=patient.id,
+            user_id=current_user.id if current_user else "sync_device",
+            user_role=current_user.role if current_user else "DEVICE",
+            device_id=device_id,
+            action="ARCHIVE_AND_DELETE",
+            previous_state_json=json.dumps({
+                "id": patient.id,
+                "patient_id": patient.patient_id,
+                "name": patient.name,
+                "facility_id": patient.facility_id,
+                "is_deleted": 0
+            }),
+            new_state_json=json.dumps({
+                "id": patient.id,
+                "patient_id": patient.patient_id,
+                "is_deleted": 1,
+                "server_version": patient.server_version
+            }),
+            workflow_version="2.0.0",
+            ruleset_version="2.0.0",
+            timestamp=now_iso
+        )
+        db.add(audit_event)
 
         return SyncOperationResult(
             operation_id=op.operation_id,
@@ -250,7 +365,8 @@ def apply_patient_operation(
 def apply_assessment_operation(
     db: Session,
     op: SyncOperation,
-    device_id: str
+    device_id: str,
+    current_user: Optional[UserModel] = None
 ) -> SyncOperationResult:
     payload = op.payload or {}
     assessment = db.query(AssessmentModel).filter(AssessmentModel.id == op.entity_id).first()
@@ -281,6 +397,7 @@ def apply_assessment_operation(
         # Ensure patient exists
         patient = db.query(PatientModel).filter(PatientModel.id == patient_id).first()
         if not patient:
+            patient_facility = current_user.facility_id if (current_user and current_user.role != 'SYSTEM_ADMIN') else payload.get('facility_id')
             patient = PatientModel(
                 id=patient_id,
                 name=payload.get('patient_name', 'Patient'),
@@ -289,16 +406,37 @@ def apply_assessment_operation(
                 village=payload.get('village', 'Unknown'),
                 phone='',
                 patient_id=f"RH-{patient_id[:6].upper()}",
+                facility_id=patient_facility,
                 server_version=1,
                 is_deleted=0
             )
             db.add(patient)
             db.flush()
 
+        # Object-level facility isolation check
+        if patient and current_user and current_user.role != "SYSTEM_ADMIN" and current_user.facility_id:
+            if patient.facility_id and patient.facility_id != current_user.facility_id:
+                return SyncOperationResult(
+                    operation_id=op.operation_id,
+                    entity_type=op.entity_type,
+                    entity_id=op.entity_id,
+                    operation_type=op.operation_type,
+                    status='REJECTED',
+                    server_version=0,
+                    error_message=f"Facility access violation: User from facility '{current_user.facility_id}' cannot create assessment for patient in facility '{patient.facility_id}'."
+                )
+
+        facility = None
+        if current_user and current_user.role != "SYSTEM_ADMIN" and current_user.facility_id:
+            facility = current_user.facility_id
+        else:
+            facility = payload.get('facility_id') or (patient.facility_id if patient else None)
+
         # Run canonical clinical evaluation engine
         assessment_in = AssessmentCreate(
             id=op.entity_id,
             patient_id=patient_id,
+            facility_id=facility,
             symptoms=payload.get('symptoms', []),
             symptom_duration_days=payload.get('symptom_duration_days'),
             temperature_f=payload.get('temperature_f'),
@@ -317,6 +455,7 @@ def apply_assessment_operation(
         )
         eval_result = screening_engine.evaluate(assessment_in.model_dump())
 
+
         # Determine clinician review requirement
         if eval_result.get("is_emergency") or eval_result.get("triage_state") == "EMERGENCY" or len(eval_result.get("red_flags", [])) > 0:
             review_state = "REVIEW_REQUIRED"
@@ -330,6 +469,7 @@ def apply_assessment_operation(
         new_assessment = AssessmentModel(
             id=op.entity_id,
             patient_id=patient_id,
+            facility_id=facility,
             client_operation_id=op.operation_id,
             symptom_duration_days=assessment_in.symptom_duration_days,
             temperature_f=assessment_in.temperature_f,
@@ -376,6 +516,7 @@ def apply_assessment_operation(
             payload={
                 "id": new_assessment.id,
                 "patient_id": new_assessment.patient_id,
+                "facility_id": new_assessment.facility_id,
                 "client_operation_id": op.operation_id,
                 "symptoms": new_assessment.symptoms,
                 "systolic_bp": new_assessment.systolic_bp,
@@ -414,6 +555,19 @@ def apply_assessment_operation(
                 server_version=0,
                 error_message='Assessment not found'
             )
+
+        # Object-level facility isolation check
+        if current_user and current_user.role != "SYSTEM_ADMIN" and current_user.facility_id:
+            if assessment.facility_id and assessment.facility_id != current_user.facility_id:
+                return SyncOperationResult(
+                    operation_id=op.operation_id,
+                    entity_type=op.entity_type,
+                    entity_id=op.entity_id,
+                    operation_type=op.operation_type,
+                    status='REJECTED',
+                    server_version=assessment.server_version,
+                    error_message=f"Facility access violation: User from facility '{current_user.facility_id}' cannot mutate assessment belonging to facility '{assessment.facility_id}'."
+                )
 
         if op.base_server_version is not None and op.base_server_version < assessment.server_version:
             return SyncOperationResult(
@@ -472,6 +626,20 @@ def apply_assessment_operation(
                 server_version=assessment.server_version if assessment else 0
             )
 
+        # Object-level facility isolation check
+        if current_user and current_user.role != "SYSTEM_ADMIN" and current_user.facility_id:
+            if assessment.facility_id and assessment.facility_id != current_user.facility_id:
+                return SyncOperationResult(
+                    operation_id=op.operation_id,
+                    entity_type=op.entity_type,
+                    entity_id=op.entity_id,
+                    operation_type=op.operation_type,
+                    status='REJECTED',
+                    server_version=assessment.server_version,
+                    error_message=f"Facility access violation: User from facility '{current_user.facility_id}' cannot delete assessment belonging to facility '{assessment.facility_id}'."
+                )
+
+
         assessment.is_deleted = 1
         assessment.server_version += 1
         assessment.updated_at = datetime.utcnow().isoformat()
@@ -511,7 +679,8 @@ def apply_assessment_operation(
 def apply_referral_operation(
     db: Session,
     op: SyncOperation,
-    device_id: str
+    device_id: str,
+    current_user: Optional[UserModel] = None
 ) -> SyncOperationResult:
     payload = op.payload or {}
     assessment_id = payload.get('assessment_id') or op.entity_id
@@ -527,6 +696,19 @@ def apply_referral_operation(
             server_version=0,
             error_message=f"Assessment {assessment_id} not found for referral update"
         )
+
+    # Object-level facility isolation check
+    if current_user and current_user.role != "SYSTEM_ADMIN" and current_user.facility_id:
+        if assessment.facility_id and assessment.facility_id != current_user.facility_id:
+            return SyncOperationResult(
+                operation_id=op.operation_id,
+                entity_type=op.entity_type,
+                entity_id=op.entity_id,
+                operation_type=op.operation_type,
+                status='REJECTED',
+                server_version=assessment.server_version,
+                error_message=f"Facility access violation: User from facility '{current_user.facility_id}' cannot mutate referral for assessment in facility '{assessment.facility_id}'."
+            )
 
     if op.base_server_version is not None and op.base_server_version < assessment.server_version:
         return SyncOperationResult(
@@ -578,7 +760,8 @@ def apply_referral_operation(
 def apply_appointment_operation(
     db: Session,
     op: SyncOperation,
-    device_id: str
+    device_id: str,
+    current_user: Optional[UserModel] = None
 ) -> SyncOperationResult:
     payload = op.payload or {}
     appt = db.query(AppointmentModel).filter(AppointmentModel.id == op.entity_id).first()
@@ -594,6 +777,23 @@ def apply_appointment_operation(
                 server_version=appt.server_version
             )
 
+        target_facility = None
+        if current_user and current_user.role != "SYSTEM_ADMIN" and current_user.facility_id:
+            client_fac = payload.get('facility_id')
+            if client_fac and client_fac != current_user.facility_id:
+                return SyncOperationResult(
+                    operation_id=op.operation_id,
+                    entity_type=op.entity_type,
+                    entity_id=op.entity_id,
+                    operation_type=op.operation_type,
+                    status='REJECTED',
+                    server_version=0,
+                    error_message=f"Facility access violation: User from facility '{current_user.facility_id}' cannot create appointment for foreign facility '{client_fac}'."
+                )
+            target_facility = current_user.facility_id
+        else:
+            target_facility = payload.get('facility_id') or (getattr(current_user, 'facility_id', None) if current_user else None) or "PHC-DEFAULT"
+
         new_appt = AppointmentModel(
             id=op.entity_id,
             patient_name=payload.get('patient_name', 'Patient'),
@@ -606,6 +806,7 @@ def apply_appointment_operation(
             notes=payload.get('notes', ''),
             status=payload.get('status', 'PENDING'),
             risk_level=payload.get('risk_level', 'LOW'),
+            facility_id=target_facility,
             server_version=1,
             is_deleted=0,
             created_at=payload.get('created_at') or datetime.utcnow().isoformat(),
@@ -628,6 +829,7 @@ def apply_appointment_operation(
                 "appointment_date": new_appt.appointment_date,
                 "appointment_time": new_appt.appointment_time,
                 "status": new_appt.status,
+                "facility_id": new_appt.facility_id,
                 "server_version": 1,
                 "created_at": new_appt.created_at
             },
@@ -655,6 +857,19 @@ def apply_appointment_operation(
                 server_version=0,
                 error_message='Appointment not found'
             )
+
+        # Object-level facility isolation check
+        if current_user and current_user.role != "SYSTEM_ADMIN" and current_user.facility_id:
+            if appt.facility_id and appt.facility_id != current_user.facility_id:
+                return SyncOperationResult(
+                    operation_id=op.operation_id,
+                    entity_type=op.entity_type,
+                    entity_id=op.entity_id,
+                    operation_type=op.operation_type,
+                    status='REJECTED',
+                    server_version=appt.server_version,
+                    error_message=f"Facility access violation: User from facility '{current_user.facility_id}' cannot mutate appointment in facility '{appt.facility_id}'."
+                )
 
         if op.base_server_version is not None and op.base_server_version < appt.server_version:
             return SyncOperationResult(
@@ -718,6 +933,19 @@ def apply_appointment_operation(
                 server_version=appt.server_version if appt else 0
             )
 
+        # Object-level facility isolation check
+        if current_user and current_user.role != "SYSTEM_ADMIN" and current_user.facility_id:
+            if appt.facility_id and appt.facility_id != current_user.facility_id:
+                return SyncOperationResult(
+                    operation_id=op.operation_id,
+                    entity_type=op.entity_type,
+                    entity_id=op.entity_id,
+                    operation_type=op.operation_type,
+                    status='REJECTED',
+                    server_version=appt.server_version,
+                    error_message=f"Facility access violation: User from facility '{current_user.facility_id}' cannot delete appointment in facility '{appt.facility_id}'."
+                )
+
         appt.is_deleted = 1
         appt.server_version += 1
         appt.updated_at = datetime.utcnow().isoformat()
@@ -754,14 +982,26 @@ def apply_appointment_operation(
     )
 
 
+MAX_PUSH_BATCH_SIZE = 100
+
+
 def process_push_batch(
     db: Session,
-    request: SyncPushRequest
+    request: SyncPushRequest,
+    current_user: Optional[UserModel] = None
 ) -> SyncPushResponse:
     """
     TASK-005: Atomically processes a batch of operations pushed from client outbox.
     Provides strict idempotency, OCC conflict detection, and audit journalling.
+    Enforces maximum batch size and object-level facility tenancy authorization.
     """
+    from fastapi import HTTPException, status
+    if len(request.operations) > MAX_PUSH_BATCH_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Sync batch size ({len(request.operations)}) exceeds maximum allowed limit of {MAX_PUSH_BATCH_SIZE} operations."
+        )
+
     results: List[SyncOperationResult] = []
     sorted_ops = sorted(request.operations, key=lambda o: o.client_sequence)
 
@@ -782,13 +1022,13 @@ def process_push_batch(
         # 2. Dispatch to entity mutation handler inside transaction
         res: SyncOperationResult
         if op.entity_type == 'patient':
-            res = apply_patient_operation(db, op, request.device_id)
+            res = apply_patient_operation(db, op, request.device_id, current_user)
         elif op.entity_type == 'assessment':
-            res = apply_assessment_operation(db, op, request.device_id)
+            res = apply_assessment_operation(db, op, request.device_id, current_user)
         elif op.entity_type == 'referral':
-            res = apply_referral_operation(db, op, request.device_id)
+            res = apply_referral_operation(db, op, request.device_id, current_user)
         elif op.entity_type == 'appointment':
-            res = apply_appointment_operation(db, op, request.device_id)
+            res = apply_appointment_operation(db, op, request.device_id, current_user)
         else:
             res = SyncOperationResult(
                 operation_id=op.operation_id,
@@ -799,6 +1039,7 @@ def process_push_batch(
                 server_version=0,
                 error_message=f"Unknown entity_type '{op.entity_type}'"
             )
+
 
         # 3. Record in Idempotency Log
         if res.status in ('APPLIED', 'DUPLICATE', 'CONFLICT'):
@@ -835,14 +1076,20 @@ def process_push_batch(
     )
 
 
+MAX_PULL_LIMIT = 200
+
+
 def process_pull_request(
     db: Session,
-    request: SyncPullRequest
+    request: SyncPullRequest,
+    current_user: Optional[UserModel] = None
 ) -> SyncPullResponse:
     """
     TASK-006: Cursor-based incremental pull synchronization.
     Streams journal entries created after `last_server_sequence`.
+    Enforces maximum pull page limit.
     """
+    effective_limit = min(request.limit, MAX_PULL_LIMIT)
     max_seq = db.query(func.max(SyncJournalModel.server_sequence)).scalar() or 0
 
     query = db.query(SyncJournalModel).filter(
@@ -855,10 +1102,11 @@ def process_pull_request(
             (SyncJournalModel.device_id != request.device_id) | (SyncJournalModel.device_id == None)
         )
 
-    entries = query.order_by(SyncJournalModel.server_sequence.asc()).limit(request.limit + 1).all()
+    entries = query.order_by(SyncJournalModel.server_sequence.asc()).limit(effective_limit + 1).all()
 
-    has_more = len(entries) > request.limit
-    page_entries = entries[:request.limit]
+    has_more = len(entries) > effective_limit
+    page_entries = entries[:effective_limit]
+
 
     changes: List[SyncJournalEntry] = []
     new_cursor = request.last_server_sequence

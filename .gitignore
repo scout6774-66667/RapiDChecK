@@ -1,111 +1,185 @@
-# ===========================
-# Environment Variables & Secrets
-# ===========================
+# ==============================================================================
+# RuralHealth AI (RapiDChecK) — Root .gitignore
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Environment Variables, Secrets & Credentials
+# ------------------------------------------------------------------------------
 .env
 .env.*
 .env.local
 .env.development
+.env.development.local
 .env.production
+.env.production.local
 .env.test
+.env.test.local
 .env.*.local
+*.env
+
+# Preserve safe templates containing placeholders only
 !.env.example
+!.env.sample
+!**/.env.example
+!**/.env.sample
+
+# Private keys, certificates & credentials
 *.pem
 *.key
 *.p12
 *.pfx
+*.crt
+*.cer
+*.der
 service-account*.json
 credentials*.json
 google-credentials*.json
+*secret*.json
+*.secret
 
-# ===========================
-# Dependencies
-# ===========================
-node_modules/
-.venv/
-venv/
-ENV/
-env/
-env.bak/
-venv.bak/
+# ------------------------------------------------------------------------------
+# 2. Local Databases, Dumps & Sensitive Data
+# ------------------------------------------------------------------------------
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite3-journal
+ruralhealth.db
+health_ai.db
 
-# ===========================
-# Frontend Builds
-# ===========================
-dist/
-build/
-coverage/
-.vite/
-*.local
+# Database dumps, backups & patient exports
+*.dump
+*.sql.gz
+*.sql.bak
+*.bak
+export_*.csv
+patient_export*.csv
+patient_records*.csv
 
-# ===========================
-# Python
-# ===========================
+# Local uploads & temporary ETL output
+uploads/
+**/uploads/
+etl_staging/
+**/etl_staging/
+
+# ------------------------------------------------------------------------------
+# 3. Python Virtual Environments, Caches & Bytecode
+# ------------------------------------------------------------------------------
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
 *.pyc
 *.pyo
 *.pyd
 .Python
-*.egg
-*.egg-info/
+.venv/
+**/.venv/
+venv/
+**/venv/
+ENV/
+**/ENV/
+env/
+**/env/
+env.bak/
+venv.bak/
+build/
+develop-eggs/
+dist/
+downloads/
 eggs/
+.eggs/
+lib/
+lib64/
 parts/
-var/
 sdist/
+var/
 wheels/
-*.so
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Python Testing & Type Checking
 .pytest_cache/
+**/.pytest_cache/
 .mypy_cache/
+**/.mypy_cache/
+.ruff_cache/
+**/.ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
 
-# ===========================
-# Database files
-# ===========================
-*.db
-*.sqlite
-*.sqlite3
+# ------------------------------------------------------------------------------
+# 4. Frontend & Node.js
+# ------------------------------------------------------------------------------
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+dist-ssr/
+**/dist-ssr/
+.vite/
+**/.vite/
+*.local
+.npm
+.yarn/cache
+.yarn/unplugged
+.pnp
+.pnp.js
 
-# ===========================
-# Logs
-# ===========================
+# ------------------------------------------------------------------------------
+# 5. Logs & Temporary Files
+# ------------------------------------------------------------------------------
 *.log
 logs/
+**/logs/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+lerna-debug.log*
 pip-log.txt
 pip-delete-this-directory.txt
+tmp/
+temp/
+.cache/
+*.tmp
+*.sw?
+*~
+gemini_generated_video_*.mp4
+/image.png
 
-# ===========================
-# IDE & OS
-# ===========================
-.vscode/
+# ------------------------------------------------------------------------------
+# 6. Operating System & Local IDE Settings
+# ------------------------------------------------------------------------------
+.DS_Store
+**/.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
 .idea/
+**/.idea/
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
-*.sw?
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# ===========================
-# Temporary Files & Local Uploads
-# ===========================
-tmp/
-temp/
-.cache/
-uploads/
-*.zip
-*.tar.gz
-gemini_generated_video_*.mp4
-
-# ===========================
-# Data files
-# ===========================
-**/data/*.csv
-**/data/*.CSV
+*.sublime-workspace
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/settings.json

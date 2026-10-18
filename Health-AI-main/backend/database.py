@@ -159,6 +159,7 @@ class AppointmentModel(Base):
     notes = Column(Text, default="")
     status = Column(String, default="PENDING")          # PENDING, CONFIRMED, CANCELLED, COMPLETED
     risk_level = Column(String, nullable=True)
+    facility_id = Column(String, nullable=True, default=None, index=True)
     likely_conditions_json = Column(Text, default="[]")
     server_version = Column(Integer, default=1, nullable=False)
     is_deleted = Column(Integer, default=0, nullable=False)
@@ -616,6 +617,67 @@ class FactHealthIndicator(Base):
     source = relationship("DimSource", back_populates="facts")
 
 
+def _migrate_sqlite_columns():
+    """Ensures legacy SQLite files receive newly added table columns."""
+    if not str(DATABASE_URL).startswith("sqlite"):
+        return
+    try:
+        with engine.connect() as conn:
+            # Check patients table
+            patient_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(patients)")).fetchall()]
+            if patient_cols:
+                if "national_health_id" not in patient_cols:
+                    conn.execute(text("ALTER TABLE patients ADD COLUMN national_health_id VARCHAR"))
+                if "facility_id" not in patient_cols:
+                    conn.execute(text("ALTER TABLE patients ADD COLUMN facility_id VARCHAR"))
+                if "server_version" not in patient_cols:
+                    conn.execute(text("ALTER TABLE patients ADD COLUMN server_version INTEGER DEFAULT 1 NOT NULL"))
+                if "is_deleted" not in patient_cols:
+                    conn.execute(text("ALTER TABLE patients ADD COLUMN is_deleted INTEGER DEFAULT 0 NOT NULL"))
+                if "updated_at" not in patient_cols:
+                    conn.execute(text("ALTER TABLE patients ADD COLUMN updated_at VARCHAR"))
+                conn.commit()
+
+            # Check assessments table
+            assessment_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(assessments)")).fetchall()]
+            if assessment_cols:
+                cols_to_add = [
+                    ("facility_id", "VARCHAR"),
+                    ("client_operation_id", "VARCHAR"),
+                    ("triage_state", "VARCHAR DEFAULT 'LOW_RISK'"),
+                    ("is_emergency", "INTEGER DEFAULT 0"),
+                    ("red_flags_json", "TEXT DEFAULT '[]'"),
+                    ("uncertainty_state", "VARCHAR DEFAULT 'COMPLETE'"),
+                    ("ruleset_version", "VARCHAR DEFAULT '2.0.0'"),
+                    ("workflow_version", "VARCHAR DEFAULT '2.0.0'"),
+                    ("review_state", "VARCHAR DEFAULT 'NOT_REQUIRED'"),
+                    ("reviewed_by", "VARCHAR"),
+                    ("reviewed_at", "VARCHAR"),
+                    ("server_version", "INTEGER DEFAULT 1 NOT NULL"),
+                    ("is_deleted", "INTEGER DEFAULT 0 NOT NULL"),
+                    ("updated_at", "VARCHAR"),
+                ]
+                for col_name, col_type in cols_to_add:
+                    if col_name not in assessment_cols:
+                        conn.execute(text(f"ALTER TABLE assessments ADD COLUMN {col_name} {col_type}"))
+                conn.commit()
+
+            # Check appointments table
+            appt_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(appointments)")).fetchall()]
+            if appt_cols:
+                appt_cols_to_add = [
+                    ("facility_id", "VARCHAR"),
+                    ("server_version", "INTEGER DEFAULT 1 NOT NULL"),
+                    ("is_deleted", "INTEGER DEFAULT 0 NOT NULL"),
+                    ("updated_at", "VARCHAR")
+                ]
+                for col_name, col_type in appt_cols_to_add:
+                    if col_name not in appt_cols:
+                        conn.execute(text(f"ALTER TABLE appointments ADD COLUMN {col_name} {col_type}"))
+                conn.commit()
+    except Exception as err:
+        print(f"[database] Note on SQLite column migration: {err}")
+
 def init_db():
     """
     Initializes database schema and validates database connectivity.
@@ -625,12 +687,14 @@ def init_db():
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         Base.metadata.create_all(bind=engine)
+        _migrate_sqlite_columns()
     except Exception as err:
         if ENVIRONMENT == "production":
             raise RuntimeError(f"FATAL: Production PostgreSQL connection failed: {err}")
         else:
             print(f"[database] Warning during init_db: {err}")
             Base.metadata.create_all(bind=engine)
+            _migrate_sqlite_columns()
 
 def get_db():
     db = SessionLocal()

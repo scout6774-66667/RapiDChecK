@@ -22,11 +22,50 @@ from sqlalchemy.orm import Session
 
 from database import get_db, UserModel
 
-JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "rapidcheck-dev-secret-key-2026-secure-jwt-signing")
-JWT_ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "1440")) # 24 hours
+from config import (
+    JWT_SECRET_KEY,
+    JWT_ALGORITHM,
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    JWT_ISSUER,
+    JWT_AUDIENCE,
+    ENVIRONMENT
+)
 
 security_bearer = HTTPBearer(auto_error=False)
+
+# ─── BRUTE-FORCE PROTECTION & RATE LIMITING ──────────────────────────────────
+
+_FAILED_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+MAX_FAILED_ATTEMPTS = 5
+LOCKOUT_WINDOW_SECONDS = 300  # 5 minutes
+
+
+def check_brute_force_lockout(identifier: str):
+    """Enforces temporary account lockout after repeated failed login attempts."""
+    now = datetime.utcnow().timestamp()
+    attempts = _FAILED_LOGIN_ATTEMPTS.get(identifier, [])
+    attempts = [t for t in attempts if now - t < LOCKOUT_WINDOW_SECONDS]
+    _FAILED_LOGIN_ATTEMPTS[identifier] = attempts
+    if len(attempts) >= MAX_FAILED_ATTEMPTS:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed login attempts. Account temporarily locked for 5 minutes for security."
+        )
+
+
+def record_login_failure(identifier: str):
+    """Records a failed login attempt for rate-limiting calculations."""
+    now = datetime.utcnow().timestamp()
+    attempts = _FAILED_LOGIN_ATTEMPTS.get(identifier, [])
+    attempts = [t for t in attempts if now - t < LOCKOUT_WINDOW_SECONDS]
+    attempts.append(now)
+    _FAILED_LOGIN_ATTEMPTS[identifier] = attempts
+
+
+def clear_login_failures(identifier: str):
+    """Clears failed login attempt history upon successful authentication."""
+    _FAILED_LOGIN_ATTEMPTS.pop(identifier, None)
+
 
 # ─── RBAC PERMISSION MATRIX ───────────────────────────────────────────────────
 
@@ -46,6 +85,7 @@ ROLE_PERMISSIONS: dict[str, Set[str]] = {
         "patients:create",
         "patients:read",
         "patients:update",
+        "patients:delete",
         "assessments:create",
         "assessments:read",
         "assessments:update",
@@ -113,7 +153,7 @@ def hash_password(password: str) -> str:
     return f"pbkdf2_sha256${iterations}${salt.hex()}${dk.hex()}"
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verifies a plain password against the stored PBKDF2-HMAC-SHA256 string."""
+    """Verifies a plain password against stored PBKDF2-HMAC-SHA256 string in constant time."""
     try:
         parts = hashed_password.split("$")
         if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
@@ -130,14 +170,29 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire, "iat": datetime.utcnow()})
+    now = datetime.utcnow()
+    expire = now + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({
+        "exp": expire,
+        "iat": now,
+        "iss": JWT_ISSUER,
+        "aud": JWT_AUDIENCE
+    })
     encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
     return encoded_jwt
 
 def decode_access_token(token: str) -> dict:
+    """
+    Decodes and validates JWT token with explicit HS256 algorithm enforcement.
+    Rejects none-alg, expired, malformed, or tampered tokens.
+    """
     try:
-        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(
+            token,
+            JWT_SECRET_KEY,
+            algorithms=[JWT_ALGORITHM],
+            options={"verify_signature": True, "verify_exp": True, "verify_aud": False}
+        )
         return payload
     except jwt.ExpiredSignatureError:
         raise HTTPException(
@@ -159,50 +214,9 @@ def get_current_user(
     db: Session = Depends(get_db)
 ) -> UserModel:
     """
-    Dependency that extracts and validates the Bearer JWT token.
-    Falls back to a default active demo user if no token is passed (for backward dev compatibility).
-    """
-    if not auth_credentials or not auth_credentials.credentials:
-        # Check if default demo doctor exists or fallback
-        demo_user = db.query(UserModel).filter(UserModel.username == "dr.sharma").first()
-        if demo_user:
-            return demo_user
-        # Create or return fallback demo user
-        return UserModel(
-            id="usr_demo_doctor",
-            username="dr.sharma",
-            email="dr.sharma@phc.in",
-            password_hash=hash_password("doctor123"),
-            full_name="Dr. R. Sharma, MBBS",
-            role="PHC_DOCTOR",
-            license_number="MCI-2018-88491",
-            facility_id="PHC_SONPUR",
-            is_active=1
-        )
-
-    token = auth_credentials.credentials
-    payload = decode_access_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials token payload",
-        )
-    user = db.query(UserModel).filter(UserModel.id == user_id).first()
-    if not user or not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User account does not exist or is disabled",
-        )
-    return user
-
-def get_strict_current_user(
-    auth_credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_bearer),
-    db: Session = Depends(get_db)
-) -> UserModel:
-    """
-    Strict dependency that mandates a valid Bearer JWT token (no fallback to demo user).
+    Strict dependency that extracts and validates the Bearer JWT token.
     Raises 401 UNAUTHORIZED if token is missing, expired, or invalid.
+    Strictly forbids fallback to demo user or default doctor.
     """
     if not auth_credentials or not auth_credentials.credentials:
         raise HTTPException(
@@ -210,6 +224,7 @@ def get_strict_current_user(
             detail="Authentication required. Please provide a valid Bearer JWT token in the Authorization header.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
     token = auth_credentials.credentials
     payload = decode_access_token(token)
     user_id = payload.get("sub")
@@ -217,19 +232,24 @@ def get_strict_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials token payload",
+            headers={"WWW-Authenticate": "Bearer"},
         )
     user = db.query(UserModel).filter(UserModel.id == user_id).first()
     if not user or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User account does not exist or is disabled",
+            headers={"WWW-Authenticate": "Bearer"},
         )
     return user
+
+# Alias for backward-compatibility with call sites
+get_strict_current_user = get_current_user
 
 def require_roles(*allowed_roles: str, strict: bool = True):
     """Factory dependency that restricts access to users with specific roles."""
     def role_checker(
-        current_user: UserModel = Depends(get_strict_current_user if strict else get_current_user)
+        current_user: UserModel = Depends(get_current_user)
     ) -> UserModel:
         if current_user.role not in allowed_roles and current_user.role != "SYSTEM_ADMIN":
             raise HTTPException(
@@ -252,10 +272,15 @@ def require_permissions(*required_permissions: str):
         return current_user
     return permission_checker
 
+
 # ─── SEED DEFAULT SYSTEM USERS ───────────────────────────────────────────────
 
 def seed_default_users(db: Session):
     """Populates development/pilot users into the database if not present."""
+    if ENVIRONMENT == "production":
+        print("[auth] Production mode: Development user seeding is disabled.")
+        return
+
     default_users = [
         {
             "id": "usr_asha_anita",

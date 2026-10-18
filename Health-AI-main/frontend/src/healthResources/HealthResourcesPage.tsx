@@ -32,6 +32,7 @@ import {
   type HealthResourceItem,
   type RecommendationBundle
 } from './resourceApi';
+import { apiFetch } from '../api/apiConfig';
 import { db } from '../db/offlineDb';
 import { useLiveQuery } from 'dexie-react-hooks';
 import type { Language } from '../i18n/translations';
@@ -166,17 +167,14 @@ export const HealthResourcesPage: React.FC<HealthResourcesPageProps> = ({
     setIngestLoading(true);
     setIngestSuccess(null);
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/v2/admin/health-resources/ingest', {
+      const res = await apiFetch('/api/v2/admin/health-resources/ingest', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + (localStorage.getItem('token') || '')
-        },
         body: JSON.stringify({
           source_name: ingestSource,
           raw_text: ingestText,
           auto_classify: true
-        })
+        }),
+        timeoutMs: 15000,
       });
 
       if (res.ok) {

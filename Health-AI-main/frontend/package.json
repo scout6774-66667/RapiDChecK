@@ -10,7 +10,10 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "test:outbox": "npx tsx test_task004_outbox.js",
-    "test:golden": "node test_golden_vectors.js"
+    "test:golden": "node test_golden_vectors.js",
+    "test:phase2": "node test_phase2_frontend.js",
+    "test:phase3": "node test_phase3_frontend.js",
+    "test:phase4": "node test_phase4_frontend.js"
   },
   "dependencies": {
     "@types/leaflet": "^1.9.22",

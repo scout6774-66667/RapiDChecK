@@ -17,6 +17,7 @@ import {
   updateReferralAtomic, 
   generateUUID 
 } from '../db/offlineDb';
+import { apiFetch } from '../api/apiConfig';
 
 interface AshaScreeningFlowProps {
   lang: Language;
@@ -210,20 +211,20 @@ export const AshaScreeningFlow: React.FC<AshaScreeningFlowProps> = ({
     if (isOnline) {
       if (symptomsList.length > 0) {
         try {
-          await fetch('http://127.0.0.1:8000/api/ml/predict', {
+          await apiFetch('/api/ml/predict', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ symptoms: symptomsList })
+            body: JSON.stringify({ symptoms: symptomsList }),
+            timeoutMs: 6000,
           });
         } catch (mlErr) {
           console.warn('Informational ML predict failed (non-fatal):', mlErr);
         }
 
         try {
-          const geminiRes = await fetch('http://127.0.0.1:8000/api/ml/gemini-predict', {
+          const geminiRes = await apiFetch('/api/ml/gemini-predict', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ symptoms: symptomsList })
+            body: JSON.stringify({ symptoms: symptomsList }),
+            timeoutMs: 6000,
           });
           if (geminiRes.ok) {
             const geminiData = await geminiRes.json();
@@ -236,9 +237,8 @@ export const AshaScreeningFlow: React.FC<AshaScreeningFlowProps> = ({
 
       // Online register + assess
       try {
-        await fetch('http://127.0.0.1:8000/api/patients', {
+        await apiFetch('/api/patients', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             id: effectivePatientId,
             name,
@@ -247,13 +247,14 @@ export const AshaScreeningFlow: React.FC<AshaScreeningFlowProps> = ({
             village,
             phone,
             patient_id: effectiveCustomId
-          })
+          }),
+          timeoutMs: 10000,
         });
 
-        await fetch('http://127.0.0.1:8000/api/assess', {
+        await apiFetch('/api/assess', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(payload),
+          timeoutMs: 10000,
         });
 
         // Update local sync status to SYNCED
@@ -289,10 +290,10 @@ export const AshaScreeningFlow: React.FC<AshaScreeningFlowProps> = ({
 
     if (isOnline) {
       try {
-        await fetch(`http://127.0.0.1:8000/api/assessments/${activeAssessment.id}/referral`, {
+        await apiFetch(`/api/assessments/${encodeURIComponent(activeAssessment.id)}/referral`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ referral_status: newStatus })
+          body: JSON.stringify({ referral_status: newStatus }),
+          timeoutMs: 8000,
         });
         await db.assessments.update(activeAssessment.id, { sync_state: 'SYNCED', synced: true });
       } catch (err) {

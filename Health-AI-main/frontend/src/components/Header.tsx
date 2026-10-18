@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, RefreshCw, Globe, PlusCircle, Stethoscope, Users, Wifi, WifiOff, AlertTriangle, Video, Sun, Moon, BookOpen } from 'lucide-react';
+import { RefreshCw, Globe, PlusCircle, Stethoscope, Users, Wifi, WifiOff, AlertTriangle, Video, Sun, Moon, BookOpen } from 'lucide-react';
 import { translations, type Language } from '../i18n/translations';
 
 interface HeaderProps {
@@ -36,10 +36,12 @@ export const Header: React.FC<HeaderProps> = ({
           
           {/* Brand Logo & Title */}
           <div className="flex items-center gap-3 w-full lg:w-auto justify-between lg:justify-start">
-            <div className="flex items-center gap-2">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-white shadow-md shadow-emerald-900/40">
-                <Activity className="w-6 h-6 animate-pulse" />
-              </div>
+            <div className="flex items-center gap-2.5">
+              <img
+                src="/logo.png"
+                alt="RuralHealth AI Logo"
+                className="w-10 h-10 object-contain rounded-xl shrink-0 shadow-md shadow-emerald-950/40"
+              />
               <div>
                 <h1 className="font-extrabold text-xl tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 to-teal-200">
                   {t.appTitle}

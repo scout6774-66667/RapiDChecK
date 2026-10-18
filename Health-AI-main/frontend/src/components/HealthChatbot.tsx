@@ -16,9 +16,10 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
-  X, MessageCircleHeart, Send, Loader2, AlertCircle, Bot, User, Sparkles, Database, Copy, Check
+  X, MessageCircleHeart, Send, Loader2, AlertCircle, Bot, User, Sparkles, Database, Copy, Check, RotateCcw
 } from 'lucide-react';
 import { type Language } from '../i18n/translations';
+import { apiFetch } from '../api/apiConfig';
 
 interface Props {
   lang: Language;
@@ -35,8 +36,10 @@ interface Message {
   source?: string;
 }
 
+export type AIConnectionState = 'connected' | 'connecting' | 'unavailable' | 'generation_failed';
+
 interface OllamaStatus {
-  status: 'connected' | 'offline' | 'checking';
+  status: AIConnectionState;
   model: string;
   local: boolean;
   message?: string;
@@ -78,7 +81,10 @@ const UI_STRINGS: Record<Language, {
   emptyHint: string;
   disclaimer: string;
   localAiReady: string;
+  connecting: string;
   localAiOffline: string;
+  genFailed: string;
+  retryPrompt: string;
   dataReady: string;
 }> = {
   en: {
@@ -86,12 +92,15 @@ const UI_STRINGS: Record<Language, {
     subtitle: 'Local Clinical & Kolkata Dataset Assistant',
     placeholder: 'Ask about health concepts, Kolkata dataset, or workflows...',
     send: 'Send',
-    offline: 'Local AI is currently unavailable. You can continue using the other RuralHealth AI features.',
+    offline: 'Local AI is currently unavailable. Ensure Ollama is running on port 11434 with model gemma3:270m.',
     thinking: 'Analyzing dataset & thinking...',
     emptyHint: 'Suggested Questions:',
     disclaimer: 'Assistive information only — not an autonomous diagnosis or prescription. Consult a PHC doctor.',
-    localAiReady: 'Local AI Connected',
-    localAiOffline: 'Local AI Offline',
+    localAiReady: 'Local AI connected',
+    connecting: 'Connecting...',
+    localAiOffline: 'AI unavailable',
+    genFailed: 'Response generation failed',
+    retryPrompt: 'Retry Question',
     dataReady: 'Kolkata Data Ready',
   },
   hi: {
@@ -99,12 +108,15 @@ const UI_STRINGS: Record<Language, {
     subtitle: 'लोकल क्लिनिकल एवं कोलकाता डेटा सहायक',
     placeholder: 'स्वास्थ्य अवधारणाओं, कोलकाता डेटासेट या प्रोटोकॉल के बारे में पूछें...',
     send: 'भेजें',
-    offline: 'लोकल AI वर्तमान में अनुपलब्ध है। आप अन्य सुविधाओं का उपयोग जारी रख सकते हैं।',
+    offline: 'लोकल AI अनुपलब्ध है। सुनिश्चित करें कि Ollama gemma3:270m मॉडल के साथ चल रहा है।',
     thinking: 'सोच रहा है...',
     emptyHint: 'सुझाए गए प्रश्न:',
     disclaimer: 'केवल सहायक जानकारी — कोई चिकित्सीय निदान या पर्चा नहीं। PHC डॉक्टर से परामर्श लें।',
     localAiReady: 'लोकल AI कनेक्टेड',
-    localAiOffline: 'लोकल AI ऑफ़लाइन',
+    connecting: 'कनेक्ट हो रहा है...',
+    localAiOffline: 'AI अनुपलब्ध',
+    genFailed: 'उत्तर निर्माण विफल',
+    retryPrompt: 'पुनः प्रयास करें',
     dataReady: 'कोलकाता डेटा उपलब्ध',
   },
   bn: {
@@ -112,12 +124,15 @@ const UI_STRINGS: Record<Language, {
     subtitle: 'লোকাল ক্লিনিক্যাল ও কলকাতা ডেটা সহকারী',
     placeholder: 'স্বাস্থ্য ধারণা, কলকাতা ডেটাসেট বা নির্দেশিকা সম্পর্কে জানতে চান...',
     send: 'পাঠান',
-    offline: 'লোকাল AI বর্তমানে অনুপলব্ধ। আপনি অন্যান্য বৈশিষ্ট্যগুলি ব্যবহার করতে পারেন।',
+    offline: 'লোকাল AI অনুপলব্ধ। নিশ্চিত করুন Ollama gemma3:270m মডেল সহ চলছে।',
     thinking: 'ভাবছে...',
     emptyHint: 'প্রস্তাবিত প্রশ্নাবলী:',
     disclaimer: 'শুধুমাত্র সহায়ক তথ্য — কোনো ডাক্তারি রোগনির্ণয় বা প্রেসক্রিপশন নয়। চিকিৎসকের পরামর্শ নিন।',
     localAiReady: 'লোকাল AI সংযুক্ত',
-    localAiOffline: 'লোকাল AI অফলাইন',
+    connecting: 'সংযুক্ত হচ্ছে...',
+    localAiOffline: 'AI অনুপলব্ধ',
+    genFailed: 'উত্তর তৈরি ব্যর্থ হয়েছে',
+    retryPrompt: 'আবার চেষ্টা করুন',
     dataReady: 'কলকাতা ডেটা সংযুক্ত',
   },
 };
@@ -167,9 +182,10 @@ export const HealthChatbot: React.FC<Props> = ({ lang }) => {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lastFailedPrompt, setLastFailedPrompt] = useState<string | null>(null);
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus>({
-    status: 'checking',
+    status: 'connecting',
     model: 'gemma3:270m',
     local: true,
   });
@@ -181,33 +197,28 @@ export const HealthChatbot: React.FC<Props> = ({ lang }) => {
 
   // Fetch Ollama health status from FastAPI backend
   const checkOllamaHealth = useCallback(async () => {
+    setOllamaStatus((prev) => ({ ...prev, status: 'connecting' }));
     try {
-      let res: Response | null = null;
-      try {
-        res = await fetch('/api/ai/ollama/health', { signal: AbortSignal.timeout(3000) });
-      } catch {
-        res = await fetch('http://127.0.0.1:8000/api/ai/ollama/health', { signal: AbortSignal.timeout(3000) });
-      }
-
+      const res = await apiFetch('/api/ai/ollama/health', { timeoutMs: 4000 });
       if (res && res.ok) {
         const data = await res.json();
         const isConn = data.status === 'connected' || data.available === true;
         setOllamaStatus({
-          status: isConn ? 'connected' : 'offline',
+          status: isConn ? 'connected' : 'unavailable',
           model: data.model || 'gemma3:270m',
           local: true,
           message: data.message,
         });
       } else {
         setOllamaStatus({
-          status: 'offline',
+          status: 'unavailable',
           model: 'gemma3:270m',
           local: true,
         });
       }
     } catch {
       setOllamaStatus({
-        status: 'offline',
+        status: 'unavailable',
         model: 'gemma3:270m',
         local: true,
       });
@@ -231,6 +242,7 @@ export const HealthChatbot: React.FC<Props> = ({ lang }) => {
 
     setInput('');
     setError(null);
+    setLastFailedPrompt(null);
 
     const newMessages: Message[] = [...messages, { role: 'user', content }];
     setMessages(newMessages);
@@ -238,32 +250,37 @@ export const HealthChatbot: React.FC<Props> = ({ lang }) => {
 
     try {
       const payload = {
-        messages: newMessages.slice(-15).map(m => ({ role: m.role, content: m.content })),
+        messages: newMessages.slice(-10).map((m) => ({ role: m.role, content: m.content })),
         message: content,
         language: lang,
       };
 
-      let res: Response | null = null;
-      try {
-        res = await fetch('/api/ai/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-      } catch {
-        res = await fetch('http://127.0.0.1:8000/api/ai/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-      }
+      const res = await apiFetch('/api/ai/chat', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        timeoutMs: 45000,
+      });
 
       if (!res.ok) {
-        throw new Error(ui.offline);
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.detail || errJson.error || ui.offline);
       }
 
       const data = await res.json();
-      const replyContent = data.response || data.reply || 'No response generated.';
+      if (data.success === false) {
+        setLastFailedPrompt(content);
+        setOllamaStatus((prev) => ({ ...prev, status: 'generation_failed' }));
+        setError(data.error || ui.genFailed);
+        return;
+      }
+
+      const replyContent = data.response || data.reply;
+      if (!replyContent) {
+        setLastFailedPrompt(content);
+        setOllamaStatus((prev) => ({ ...prev, status: 'generation_failed' }));
+        setError(ui.genFailed);
+        return;
+      }
 
       setMessages([
         ...newMessages,
@@ -277,9 +294,12 @@ export const HealthChatbot: React.FC<Props> = ({ lang }) => {
           source: data.source,
         },
       ]);
-    } catch (err: unknown) {
+      setOllamaStatus((prev) => ({ ...prev, status: 'connected' }));
+    } catch (err: any) {
       console.error('AI chat error:', err);
-      setError(ui.offline);
+      setLastFailedPrompt(content);
+      setOllamaStatus((prev) => ({ ...prev, status: 'generation_failed' }));
+      setError(err?.message || ui.offline);
     } finally {
       setIsLoading(false);
     }
@@ -496,8 +516,8 @@ export const HealthChatbot: React.FC<Props> = ({ lang }) => {
           {/* Header */}
           <div className="bg-gradient-to-r from-[#102A56] via-[#1E293B] to-[#0A9F68] px-4 py-3.5 flex items-center justify-between border-b border-slate-700/60 shrink-0">
             <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-xl bg-white/10 flex items-center justify-center border border-white/15 shadow-inner shrink-0">
-                <MessageCircleHeart className="w-4 h-4 text-emerald-300" />
+              <div className="w-8 h-8 rounded-xl bg-white/10 flex items-center justify-center border border-white/15 shadow-inner shrink-0 p-0.5 overflow-hidden">
+                <img src="/logo.png" alt="RuralHealth AI" className="w-full h-full object-contain" />
               </div>
               <div>
                 <div className="flex items-center gap-1.5 flex-wrap">
@@ -506,6 +526,16 @@ export const HealthChatbot: React.FC<Props> = ({ lang }) => {
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-semibold border border-emerald-500/30">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
                       <span>● {ui.localAiReady}</span>
+                    </span>
+                  ) : ollamaStatus.status === 'connecting' ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-300 text-[10px] font-medium border border-sky-500/30">
+                      <Loader2 className="w-2.5 h-2.5 animate-spin text-sky-300" />
+                      <span>{ui.connecting}</span>
+                    </span>
+                  ) : ollamaStatus.status === 'generation_failed' ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 text-[10px] font-medium border border-rose-500/30">
+                      <AlertCircle className="w-2.5 h-2.5 text-rose-400" />
+                      <span>{ui.genFailed}</span>
                     </span>
                   ) : (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-medium border border-amber-500/30">
@@ -636,11 +666,23 @@ export const HealthChatbot: React.FC<Props> = ({ lang }) => {
               </div>
             )}
 
-            {/* Error banner */}
+            {/* Error banner with retry */}
             {error && (
-              <div className="flex items-start gap-2 bg-rose-950/40 border border-rose-800/50 text-rose-300 rounded-xl p-2.5 text-xs">
-                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-                <span>{error}</span>
+              <div className="space-y-2 bg-rose-950/40 border border-rose-800/50 text-rose-300 rounded-xl p-2.5 text-xs animate-in fade-in">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <span className="flex-1 leading-relaxed">{error}</span>
+                </div>
+                {lastFailedPrompt && !isLoading && (
+                  <button
+                    type="button"
+                    onClick={() => sendMessage(lastFailedPrompt)}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-900/60 hover:bg-rose-900 text-rose-200 border border-rose-700/60 text-[11px] font-medium transition-colors"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>{ui.retryPrompt}</span>
+                  </button>
+                )}
               </div>
             )}
 

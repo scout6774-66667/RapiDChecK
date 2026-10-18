@@ -1,20 +1,45 @@
 import React from 'react';
-import { Calendar, Sun } from 'lucide-react';
+import { Calendar, Sun, Moon } from 'lucide-react';
 import heroBannerBg from '../../assets/hero_banner.jpg';
+import type { Language } from '../../i18n/translations';
 
 interface WelcomeHeroBannerProps {
-  userName?: string;
-  facilityName?: string;
-  blockName?: string;
+  userName?: string | null;
+  facilityName?: string | null;
+  blockName?: string | null;
+  lang?: Language;
 }
 
 export const WelcomeHeroBanner: React.FC<WelcomeHeroBannerProps> = ({
-  userName = 'Sunita Devi',
-  facilityName = 'Sundarpur PHC',
-  blockName = 'Block A',
+  userName,
+  facilityName,
+  blockName,
+  lang = 'en',
 }) => {
-  // Format current or fallback date
-  const todayDateStr = 'Thursday, 14 Nov 2024';
+  // Locale-sensitive real-time date formatting from system clock (Requirement 2.9)
+  const localeMap: Record<Language, string> = {
+    en: 'en-US',
+    hi: 'hi-IN',
+    bn: 'bn-IN',
+  };
+  const locale = localeMap[lang] || 'en-US';
+  const now = new Date();
+  const todayDateStr = new Intl.DateTimeFormat(locale, {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  }).format(now);
+
+  // Time-of-day greeting
+  const currentHour = now.getHours();
+  const greeting =
+    currentHour < 12 ? 'Good Morning' : currentHour < 17 ? 'Good Afternoon' : 'Good Evening';
+
+  // Explicit unavailable fallback states (Requirement 2.8)
+  const displayUser = userName?.trim() ? userName : 'Healthcare Worker (Identity Unavailable)';
+  const displayFacility = facilityName?.trim() ? facilityName : 'Facility Unassigned';
+  const displayBlock = blockName?.trim() ? blockName : 'Jurisdiction Unspecified';
 
   return (
     <div className="relative rounded-2xl overflow-hidden shadow-xs border border-[#E5EEF1] bg-[#EAF5F0] mb-5">
@@ -33,7 +58,9 @@ export const WelcomeHeroBanner: React.FC<WelcomeHeroBannerProps> = ({
       <div className="relative z-10 px-5 sm:px-7 py-5 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl sm:text-2xl font-black text-[#102A56] tracking-tight flex items-center gap-2">
-            <span>Good Morning, {userName}!</span>
+            <span>
+              {greeting}, {displayUser}!
+            </span>
             <span className="inline-block animate-wave origin-[70%_70%]">👋</span>
           </h2>
           <p className="text-xs sm:text-sm font-medium text-slate-600 mt-1">
@@ -49,11 +76,15 @@ export const WelcomeHeroBanner: React.FC<WelcomeHeroBannerProps> = ({
           <div>
             <div className="text-xs font-bold text-[#102A56] leading-tight">{todayDateStr}</div>
             <div className="text-[11px] text-slate-500 font-medium">
-              {blockName} • {facilityName}
+              {displayBlock} • {displayFacility}
             </div>
           </div>
           <div className="text-amber-500 pl-1">
-            <Sun className="w-4.5 h-4.5" />
+            {currentHour >= 6 && currentHour < 18 ? (
+              <Sun className="w-4.5 h-4.5" />
+            ) : (
+              <Moon className="w-4.5 h-4.5 text-indigo-400" />
+            )}
           </div>
         </div>
       </div>

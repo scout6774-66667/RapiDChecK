@@ -7,6 +7,7 @@ Please refer to the comprehensive project documentation in the root directory:
 - [**Database Architecture & Schema (`docs/DATABASE.md`)**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/DATABASE.md)
 - [**Authentication, RBAC & Attestation (`docs/AUTH.md`)**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/AUTH.md)
 - [**Feature & Clinical Engine Specification (`docs/FEATURE.md`)**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/FEATURE.md)
+- [**Snowflake Data Warehouse Integration (`docs/SNOWFLAKE_INTEGRATION.md`)**](file:///Users/sohamghosh/RapiDChecK/docs/SNOWFLAKE_INTEGRATION.md)
 - [**System Validation Records (`docs/validation/`)**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/validation/)
 
 ---

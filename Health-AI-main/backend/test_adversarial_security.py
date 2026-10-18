@@ -529,3 +529,253 @@ def test_db_006_journal_ordering_and_continuity():
     assert seq_ids == sorted(seq_ids)
     assert len(seq_ids) >= 3
     db.close()
+
+
+# ==============================================================================
+# AUTH-010 to AUTH-013: Token Enforcement, Tampering & Backdoor Elimination
+# ==============================================================================
+
+def test_auth_010_missing_bearer_token_rejected(client):
+    """Verify all sensitive endpoints reject unauthenticated requests with HTTP 401."""
+    assert client.get("/api/patients").status_code == 401
+    assert client.post("/api/patients", json={"name": "Anon"}).status_code == 401
+    assert client.get("/api/assessments").status_code == 401
+    assert client.post("/api/assess", json={"patient_id": "p1"}).status_code == 401
+    assert client.get("/api/appointments").status_code == 401
+    assert client.post("/api/v2/sync/push", json={"device_id": "d1", "operations": []}).status_code == 401
+    assert client.post("/api/v2/sync/pull", json={"device_id": "d1"}).status_code == 401
+    assert client.get("/api/dashboard/stats").status_code == 401
+    assert client.get("/api/v2/dashboard/phc").status_code == 401
+
+def test_auth_011_malformed_bearer_token_rejected(client):
+    """Verify malformed bearer tokens return HTTP 401."""
+    bad_headers = {"Authorization": "Bearer not-a-valid-jwt-token"}
+    res = client.get("/api/patients", headers=bad_headers)
+    assert res.status_code == 401
+
+def test_auth_012_demo_user_backdoor_eliminated(client):
+    """Ensure calling without a token does not fall back to dr.sharma."""
+    res = client.get("/api/v2/auth/me")
+    assert res.status_code == 401
+
+def test_config_001_insecure_production_configuration_fails():
+    """Verify validate_security_configuration raises RuntimeError in production mode with default/weak secrets."""
+    from config import validate_security_configuration
+    import os
+    orig_env = os.environ.get("ENVIRONMENT")
+    orig_jwt = os.environ.get("JWT_SECRET_KEY")
+    try:
+        os.environ["ENVIRONMENT"] = "production"
+        os.environ["JWT_SECRET_KEY"] = "ruralhealth-ai-insecure-dev-jwt-secret-do-not-use-in-production-2026"
+        with pytest.raises(RuntimeError) as exc_info:
+            validate_security_configuration("production")
+        assert "development default" in str(exc_info.value).lower()
+    finally:
+        if orig_env is not None:
+            os.environ["ENVIRONMENT"] = orig_env
+        else:
+            os.environ.pop("ENVIRONMENT", None)
+        if orig_jwt is not None:
+            os.environ["JWT_SECRET_KEY"] = orig_jwt
+        else:
+            os.environ.pop("JWT_SECRET_KEY", None)
+
+def test_brute_001_brute_force_lockout(client):
+    """Verify 5 failed login attempts triggers account lockout and returns 429."""
+    from auth_service import clear_login_failures
+    username = "dr_sharma"
+    clear_login_failures(username)
+    try:
+        for _ in range(5):
+            res = client.post("/api/v2/auth/login", json={"username": username, "password": "WrongPassword!"})
+            assert res.status_code == 401
+        # 6th attempt should be locked out
+        res_locked = client.post("/api/v2/auth/login", json={"username": username, "password": "WrongPassword!"})
+        assert res_locked.status_code == 429
+        assert "locked" in res_locked.json().get("detail", "").lower()
+    finally:
+        clear_login_failures(username)
+
+# ==============================================================================
+# RBAC-006 to RBAC-008: Role Separation & Least Privilege
+# ==============================================================================
+
+def test_rbac_006_doctor_cannot_administer_users(client):
+    """Verify PHC Doctor cannot access user administration endpoints."""
+    token = make_token("doc_a_uuid", "dr_sharma", "PHC_DOCTOR", "PHC_NORTH")
+    res_users = client.get("/api/v2/auth/users", headers={"Authorization": f"Bearer {token}"})
+    assert res_users.status_code == 403
+
+    res_reg = client.post("/api/v2/auth/register", json={
+        "username": "new_doc", "email": "new@phc.org", "password": "Pass@1234", "full_name": "New Doc", "role": "PHC_DOCTOR"
+    }, headers={"Authorization": f"Bearer {token}"})
+    assert res_reg.status_code == 403
+
+def test_rbac_007_asha_cannot_access_dashboard_analytics(client):
+    """Verify ASHA worker cannot access aggregated dashboard analytics."""
+    token = make_token("asha_uuid", "anita_asha", "ASHA_WORKER", "PHC_NORTH")
+    res_stats = client.get("/api/dashboard/stats", headers={"Authorization": f"Bearer {token}"})
+    assert res_stats.status_code == 403
+
+    res_phc = client.get("/api/v2/dashboard/phc", headers={"Authorization": f"Bearer {token}"})
+    assert res_phc.status_code == 403
+
+# ==============================================================================
+# FAC-001 to FAC-006: Object-Level Authorization & Facility Isolation
+# ==============================================================================
+
+def test_fac_001_cross_facility_patient_read_rejected(client):
+    """User from PHC_NORTH cannot read patient belonging to PHC_SOUTH."""
+    db = TestingSessionLocal()
+    p = PatientModel(id="pat_south_01", name="South Patient 01", age=35, gender="FEMALE", phone="9988112233", village="South Village", facility_id="PHC_SOUTH")
+    db.add(p)
+    db.commit()
+    db.close()
+
+    token_north = make_token("doc_a_uuid", "dr_sharma", "PHC_DOCTOR", "PHC_NORTH")
+    res = client.get("/api/patients/pat_south_01", headers={"Authorization": f"Bearer {token_north}"})
+    assert res.status_code == 403
+    assert "facility" in res.json().get("detail", "").lower()
+
+def test_fac_002_cross_facility_patient_update_rejected(client):
+    """User from PHC_NORTH cannot update patient belonging to PHC_SOUTH."""
+    db = TestingSessionLocal()
+    p = PatientModel(id="pat_south_02", name="South Patient 02", age=42, gender="MALE", phone="9988112244", village="South Village", facility_id="PHC_SOUTH")
+    db.add(p)
+    db.commit()
+    db.close()
+
+    token_north = make_token("doc_a_uuid", "dr_sharma", "PHC_DOCTOR", "PHC_NORTH")
+    res = client.put("/api/patients/pat_south_02", json={
+        "name": "Tampered Name", "age": 43, "gender": "MALE", "village": "South Village", "phone": "9988112244"
+    }, headers={"Authorization": f"Bearer {token_north}"})
+    assert res.status_code == 403
+
+def test_fac_003_cross_facility_assessment_creation_rejected(client):
+    """User from PHC_NORTH cannot create assessment for patient in PHC_SOUTH."""
+    db = TestingSessionLocal()
+    p = PatientModel(id="pat_south_03", name="South Patient 03", age=29, gender="FEMALE", phone="9988112255", village="South Village", facility_id="PHC_SOUTH")
+    db.add(p)
+    db.commit()
+    db.close()
+
+    token_north = make_token("doc_a_uuid", "dr_sharma", "PHC_DOCTOR", "PHC_NORTH")
+    res = client.post("/api/assess", json={
+        "patient_id": "pat_south_03",
+        "symptoms": ["Fever"],
+        "temperature_f": 100.5
+    }, headers={"Authorization": f"Bearer {token_north}"})
+    assert res.status_code == 403
+
+def test_fac_004_cross_facility_review_assignment_rejected(client):
+    """Doctor from PHC_NORTH cannot assign review of assessment belonging to PHC_SOUTH."""
+    db = TestingSessionLocal()
+    p = PatientModel(id="pat_south_04", name="South Patient 04", age=50, gender="MALE", phone="9988112266", village="South Village", facility_id="PHC_SOUTH")
+    a = AssessmentModel(id="asm_south_04", patient_id="pat_south_04", facility_id="PHC_SOUTH", risk_level="HIGH", triage_state="ROUTINE", review_state="REVIEW_REQUIRED")
+    db.add_all([p, a])
+    db.commit()
+    db.close()
+
+    token_north = make_token("doc_a_uuid", "dr_sharma", "PHC_DOCTOR", "PHC_NORTH")
+    res = client.post("/api/v2/reviews/asm_south_04/assign", headers={"Authorization": f"Bearer {token_north}"})
+    assert res.status_code == 403
+
+def test_fac_005_cross_facility_dashboard_stats_rejected(client):
+    """Doctor from PHC_NORTH cannot query stats for PHC_SOUTH."""
+    token_north = make_token("doc_a_uuid", "dr_sharma", "PHC_DOCTOR", "PHC_NORTH")
+    res = client.get("/api/dashboard/stats?facility_id=PHC_SOUTH", headers={"Authorization": f"Bearer {token_north}"})
+    assert res.status_code == 403
+
+def test_fac_006_patient_listing_query_isolation(client):
+    """Doctor from PHC_NORTH calling GET /api/patients only receives PHC_NORTH patients."""
+    db = TestingSessionLocal()
+    p_north = PatientModel(id="pat_iso_north", name="North Pat", age=30, gender="MALE", phone="111111", village="North", facility_id="PHC_NORTH")
+    p_south = PatientModel(id="pat_iso_south", name="South Pat", age=30, gender="FEMALE", phone="222222", village="South", facility_id="PHC_SOUTH")
+    db.add_all([p_north, p_south])
+    db.commit()
+    db.close()
+
+    token_north = make_token("doc_a_uuid", "dr_sharma", "PHC_DOCTOR", "PHC_NORTH")
+    res = client.get("/api/patients", headers={"Authorization": f"Bearer {token_north}"})
+    assert res.status_code == 200
+    pat_ids = [p["id"] for p in res.json()]
+    assert "pat_iso_north" in pat_ids
+    assert "pat_iso_south" not in pat_ids
+
+# ==============================================================================
+# SYNC-001 to SYNC-003: Offline Sync Authorization & Validation
+# ==============================================================================
+
+def test_sync_001_unauthenticated_sync_rejected(client):
+    """Unauthenticated sync push and pull requests return 401."""
+    assert client.post("/api/v2/sync/push", json={"device_id": "d1", "operations": []}).status_code == 401
+    assert client.post("/api/v2/sync/pull", json={"device_id": "d1"}).status_code == 401
+    assert client.get("/api/v2/sync/pull").status_code == 401
+
+def test_sync_002_cross_facility_mutation_rejected(client):
+    """Worker from PHC_NORTH attempting to push record for PHC_SOUTH gets REJECTED."""
+    token_north = make_token("asha_uuid", "anita_asha", "ASHA_WORKER", "PHC_NORTH")
+    payload = {
+        "device_id": "tablet_asha_1",
+        "operations": [{
+            "operation_id": str(uuid.uuid4()),
+            "client_sequence": 1,
+            "entity_type": "patient",
+            "entity_id": str(uuid.uuid4()),
+            "operation_type": "CREATE",
+            "base_server_version": None,
+            "client_timestamp": datetime.utcnow().isoformat(),
+            "payload": {
+                "name": "Foreign Patient",
+                "age": 30,
+                "gender": "Female",
+                "village": "South Village",
+                "phone": "9988776655",
+                "facility_id": "PHC_SOUTH"
+            }
+        }]
+    }
+    res = client.post("/api/v2/sync/push", json=payload, headers={"Authorization": f"Bearer {token_north}"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["rejected_count"] == 1
+    assert data["results"][0]["status"] == "REJECTED"
+    assert "facility" in data["results"][0]["error_message"].lower()
+
+def test_sync_003_oversized_batch_rejected(client):
+    """Sync batch exceeding MAX_PUSH_BATCH_SIZE (100) returns 413."""
+    token = make_token("asha_uuid", "anita_asha", "ASHA_WORKER", "PHC_NORTH")
+    ops = [{
+        "operation_id": str(uuid.uuid4()),
+        "client_sequence": i,
+        "entity_type": "patient",
+        "entity_id": str(uuid.uuid4()),
+        "operation_type": "CREATE",
+        "base_server_version": None,
+        "client_timestamp": datetime.utcnow().isoformat(),
+        "payload": {"name": f"P{i}", "age": 20, "gender": "Other", "village": "V"}
+    } for i in range(101)]
+
+    res = client.post("/api/v2/sync/push", json={"device_id": "d1", "operations": ops}, headers={"Authorization": f"Bearer {token}"})
+    assert res.status_code in [400, 413]
+
+# ==============================================================================
+# CORS-001 to CORS-002: Safe CORS Configuration
+# ==============================================================================
+
+def test_cors_001_allowed_origin(client):
+    """Request from trusted frontend origin receives correct CORS response headers."""
+    res = client.options("/api/health", headers={
+        "Origin": "http://localhost:5173",
+        "Access-Control-Request-Method": "GET"
+    })
+    assert res.headers.get("access-control-allow-origin") == "http://localhost:5173"
+    assert res.headers.get("access-control-allow-credentials") == "true"
+
+def test_cors_002_rejected_origin(client):
+    """Request from untrusted origin does NOT receive CORS access headers."""
+    res = client.options("/api/health", headers={
+        "Origin": "http://untrusted-attacker.com",
+        "Access-Control-Request-Method": "GET"
+    })
+    assert res.headers.get("access-control-allow-origin") != "http://untrusted-attacker.com"

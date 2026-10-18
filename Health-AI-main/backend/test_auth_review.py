@@ -123,6 +123,9 @@ def test_rbac_doctor_can_access_review_queue(client):
 # ─── 3. CLINICIAN REVIEW & ATTESTATION (TASK-012) TESTS ───────────────────────
 
 def test_assessment_creates_review_required_for_red_flags(client, setup_test_db):
+    login_res = client.post("/api/v2/auth/login", json={"username": "dr.sharma", "password": "doctor123"})
+    headers = {"Authorization": f"Bearer {login_res.json()['access_token']}"}
+
     # Create patient
     p_res = client.post("/api/patients", json={
         "name": "Ramesh Kumar",
@@ -130,7 +133,7 @@ def test_assessment_creates_review_required_for_red_flags(client, setup_test_db)
         "gender": "Male",
         "village": "Sonpur",
         "phone": "9876543210"
-    })
+    }, headers=headers)
     p_id = p_res.json()["id"]
 
     # Create emergency assessment (Chest Pain + Dyspnea -> Red Flag)
@@ -139,7 +142,7 @@ def test_assessment_creates_review_required_for_red_flags(client, setup_test_db)
         "symptoms": ["Chest Pain", "Shortness of Breath"],
         "systolic_bp": 185,
         "diastolic_bp": 115
-    })
+    }, headers=headers)
     assert ass_res.status_code == 200
     ass_data = ass_res.json()
     assert ass_data["is_emergency"] == 1
@@ -161,7 +164,7 @@ def test_clinician_review_flow_approve_and_attestation(client, setup_test_db):
         "gender": "Male",
         "village": "Sonpur",
         "phone": "9876543211"
-    })
+    }, headers=headers)
     p_id = p_res.json()["id"]
 
     ass_res = client.post("/api/assess", json={
@@ -169,7 +172,7 @@ def test_clinician_review_flow_approve_and_attestation(client, setup_test_db):
         "symptoms": ["Chest Pain"],
         "systolic_bp": 190,
         "diastolic_bp": 120
-    })
+    }, headers=headers)
     ass_id = ass_res.json()["id"]
 
     # 3. Check pending queue
@@ -212,8 +215,8 @@ def test_clinician_override_mandatory_reason_validation(client, setup_test_db):
     headers = {"Authorization": f"Bearer {login_res.json()['access_token']}"}
 
     # Create patient & assessment
-    p_id = client.post("/api/patients", json={"name": "Kavita Sen", "age": 32, "gender": "Female", "village": "Sonpur", "phone": "9876543212"}).json()["id"]
-    ass_id = client.post("/api/assess", json={"patient_id": p_id, "symptoms": ["Fever"], "temperature_f": 101.5}).json()["id"]
+    p_id = client.post("/api/patients", json={"name": "Kavita Sen", "age": 32, "gender": "Female", "village": "Sonpur", "phone": "9876543212"}, headers=headers).json()["id"]
+    ass_id = client.post("/api/assess", json={"patient_id": p_id, "symptoms": ["Fever"], "temperature_f": 101.5}, headers=headers).json()["id"]
 
     # Modifying without override reason should fail (422 Unprocessable Entity)
     fail_res = client.post(f"/api/v2/reviews/{ass_id}/submit", headers=headers, json={

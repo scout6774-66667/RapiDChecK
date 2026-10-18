@@ -10,9 +10,11 @@ import { translations, type Language } from '../i18n/translations';
 import {
   type LocalAssessment,
   getActiveAssessments,
+  updateReferralAtomic,
   db
 } from '../db/offlineDb';
 import { useAuth, type UserRole } from '../auth/AuthContext';
+import { apiFetch } from '../api/apiConfig';
 
 interface PhcDashboardProps {
   lang: Language;
@@ -64,9 +66,8 @@ export const PhcDashboard: React.FC<PhcDashboardProps> = ({ lang, isOnline, defa
     try {
       if (isOnline) {
         try {
-          const token = localStorage.getItem('rapidcheck_token');
-          const res = await fetch('http://127.0.0.1:8000/api/assessments', {
-            headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+          const res = await apiFetch('/api/assessments', {
+            timeoutMs: 8000,
           });
           if (res.ok) {
             const data = await res.json();
@@ -126,9 +127,8 @@ export const PhcDashboard: React.FC<PhcDashboardProps> = ({ lang, isOnline, defa
     setIsLoadingHistory(true);
     try {
       if (isOnline) {
-        const token = localStorage.getItem('rapidcheck_token');
-        const res = await fetch(`http://127.0.0.1:8000/api/v2/reviews/${assessment.id}/history`, {
-          headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+        const res = await apiFetch(`/api/v2/reviews/${encodeURIComponent(assessment.id)}/history`, {
+          timeoutMs: 8000,
         });
         if (res.ok) {
           const historyData = await res.json();
@@ -158,21 +158,18 @@ export const PhcDashboard: React.FC<PhcDashboardProps> = ({ lang, isOnline, defa
   const updateReferralStatus = async (assessmentId: string, newStatus: string) => {
     try {
       if (isOnline) {
-        const token = localStorage.getItem('rapidcheck_token');
-        await fetch(`http://127.0.0.1:8000/api/assessments/${assessmentId}/referral`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-          },
-          body: JSON.stringify({ referral_status: newStatus })
-        });
+        try {
+          await apiFetch(`/api/assessments/${encodeURIComponent(assessmentId)}/referral`, {
+            method: 'PUT',
+            body: JSON.stringify({ referral_status: newStatus }),
+            timeoutMs: 8000,
+          });
+        } catch (apiErr) {
+          console.warn('Backend referral update failed, queuing atomic offline outbox mutation:', apiErr);
+        }
       }
-      // Update local Dexie record
-      await db.assessments.update(assessmentId, {
-        referral_status: newStatus as any,
-        updated_at: new Date().toISOString()
-      });
+      // Update local Dexie record atomically with outbox mutation
+      await updateReferralAtomic(assessmentId, newStatus as any);
       await loadData();
     } catch (err) {
       console.error('Failed to update referral status:', err);
@@ -197,8 +194,6 @@ export const PhcDashboard: React.FC<PhcDashboardProps> = ({ lang, isOnline, defa
 
     setIsSubmittingReview(true);
     setReviewErrorMessage(null);
-
-    const token = localStorage.getItem('rapidcheck_token');
     const reviewerName = user?.full_name || 'Medical Officer';
     const payload: any = {
       decision: reviewDecision,
@@ -212,13 +207,10 @@ export const PhcDashboard: React.FC<PhcDashboardProps> = ({ lang, isOnline, defa
 
     try {
       if (isOnline) {
-        const res = await fetch(`http://127.0.0.1:8000/api/v2/reviews/${selectedReviewAssessment.id}/submit`, {
+        const res = await apiFetch(`/api/v2/reviews/${encodeURIComponent(selectedReviewAssessment.id)}/submit`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-          },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(payload),
+          timeoutMs: 12000,
         });
 
         if (res.ok) {
@@ -289,13 +281,14 @@ export const PhcDashboard: React.FC<PhcDashboardProps> = ({ lang, isOnline, defa
 
   // Real Metrics derived dynamically from filtered data
   const totalPatientsCount = new Set(filteredByScope.map((a) => a.patient_id)).size;
-  const highRiskCount = filteredByScope.filter((a) => a.risk_level === 'HIGH').length;
+  const highRiskCount = filteredByScope.filter((a) => a.risk_level === 'HIGH' || a.risk_level === 'EMERGENCY' || a.is_emergency).length;
   const modRiskCount = filteredByScope.filter((a) => a.risk_level === 'MODERATE').length;
   const lowRiskCount = filteredByScope.filter((a) => a.risk_level === 'LOW').length;
+  const reviewCount = filteredByScope.filter((a) => a.risk_level === 'INSUFFICIENT_DATA').length;
 
   const pendingReviewAssessments = filteredByScope.filter((a) =>
     a.review_state === 'REVIEW_REQUIRED' || a.review_state === 'ASSIGNED' || a.review_state === 'IN_REVIEW' ||
-    ((a.is_emergency || a.risk_level === 'HIGH' || (a.red_flags && a.red_flags.length > 0)) &&
+    ((a.is_emergency || a.risk_level === 'HIGH' || a.risk_level === 'EMERGENCY' || (a.red_flags && a.red_flags.length > 0)) &&
      a.review_state !== 'APPROVED' && a.review_state !== 'MODIFIED' && a.review_state !== 'REJECTED')
   );
 
@@ -304,11 +297,12 @@ export const PhcDashboard: React.FC<PhcDashboardProps> = ({ lang, isOnline, defa
   );
 
   // Chart Data (strictly real counts)
-  const totalRiskAssessments = highRiskCount + modRiskCount + lowRiskCount;
+  const totalRiskAssessments = highRiskCount + modRiskCount + lowRiskCount + reviewCount;
   const pieData = totalRiskAssessments > 0 ? [
-    ...(highRiskCount > 0 ? [{ name: 'High Risk', value: highRiskCount, color: '#f43f5e' }] : []),
+    ...(highRiskCount > 0 ? [{ name: 'High / Emergency', value: highRiskCount, color: '#f43f5e' }] : []),
     ...(modRiskCount > 0 ? [{ name: 'Moderate Risk', value: modRiskCount, color: '#f59e0b' }] : []),
-    ...(lowRiskCount > 0 ? [{ name: 'Low Risk', value: lowRiskCount, color: '#10b981' }] : [])
+    ...(lowRiskCount > 0 ? [{ name: 'Low Risk', value: lowRiskCount, color: '#10b981' }] : []),
+    ...(reviewCount > 0 ? [{ name: 'Needs Review', value: reviewCount, color: '#8b5cf6' }] : [])
   ] : [];
 
   const villageCountsMap: { [v: string]: number } = {};
@@ -335,7 +329,11 @@ export const PhcDashboard: React.FC<PhcDashboardProps> = ({ lang, isOnline, defa
       (a.patient_id || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
       (a.village || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
       (a.symptoms || []).some(s => s.toLowerCase().includes(searchTerm.toLowerCase()));
-    const matchesRisk = riskFilter === 'ALL' || a.risk_level === riskFilter;
+    const matchesRisk =
+      riskFilter === 'ALL' ||
+      (riskFilter === 'HIGH' ? (a.risk_level === 'HIGH' || a.risk_level === 'EMERGENCY' || a.is_emergency) :
+       riskFilter === 'EMERGENCY' ? (a.risk_level === 'EMERGENCY' || a.is_emergency) :
+       a.risk_level === riskFilter);
     return matchesSearch && matchesRisk;
   });
 
@@ -505,7 +503,8 @@ export const PhcDashboard: React.FC<PhcDashboardProps> = ({ lang, isOnline, defa
           </div>
           <div>
             <div className="text-2xl font-black text-slate-900 dark:text-slate-100">{totalPatientsCount}</div>
-            <div className="text-[11px] text-slate-500 font-bold">Total Patients</div>
+            <div className="text-[11px] text-slate-500 font-bold">Patients Screened</div>
+            <div className="text-[10px] text-slate-400 font-medium">({filteredByScope.length} Encounters)</div>
           </div>
         </button>
 
@@ -707,9 +706,10 @@ export const PhcDashboard: React.FC<PhcDashboardProps> = ({ lang, isOnline, defa
               className="text-xs font-semibold px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 outline-none"
             >
               <option value="ALL">All Risk Tiers</option>
-              <option value="HIGH">High Risk</option>
+              <option value="HIGH">High / Emergency</option>
               <option value="MODERATE">Moderate Risk</option>
               <option value="LOW">Low Risk</option>
+              <option value="INSUFFICIENT_DATA">Needs Review</option>
             </select>
           </div>
         </div>
@@ -765,10 +765,12 @@ export const PhcDashboard: React.FC<PhcDashboardProps> = ({ lang, isOnline, defa
                               ? 'bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300'
                               : ass.risk_level === 'MODERATE'
                               ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
+                              : ass.risk_level === 'INSUFFICIENT_DATA'
+                              ? 'bg-purple-100 text-purple-800 dark:bg-purple-950/60 dark:text-purple-300'
                               : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
                           }`}
                         >
-                          {isEmergency ? 'EMERGENCY' : ass.risk_level}
+                          {isEmergency ? 'EMERGENCY' : ass.risk_level === 'INSUFFICIENT_DATA' ? 'NEEDS REVIEW' : ass.risk_level}
                         </span>
                       </td>
 

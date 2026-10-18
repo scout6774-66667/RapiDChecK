@@ -97,69 +97,202 @@ docker-compose up -d --build
 # 4. Access the application
 # Frontend UI:   http://localhost
 # Backend API:   http://localhost:8000
-# API Docs:      http://localhost:8000/docs
 ```
 
-### Option B: Local Development Setup
+---
 
-#### 1. Backend Setup (FastAPI & Python 3.11)
-```powershell
+## ⚙️ Environment Variables Specification
+
+### Frontend (`Health-AI-main/frontend/.env`)
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `VITE_API_BASE_URL` | No | `""` (Empty) | Base URL for backend API requests. If empty, the frontend uses relative same-origin paths (`/api/...`) via Vite dev proxy or production reverse proxy. Never place private backend credentials or secrets in `VITE_` variables. |
+
+### Backend (`Health-AI-main/backend/.env`)
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `OLLAMA_BASE_URL` | No | `http://localhost:11434` | Base URL of the local Ollama LLM runtime. |
+| `OLLAMA_MODEL` | No | `gemma3:270m` | Target local model name (Gemma 3 270M). |
+| `DATABASE_URL` | No | `sqlite:///./ruralhealth.db` | Database connection string (PostgreSQL for production). |
+| `JWT_SECRET_KEY` | Yes (Prod) | Auto-generated/Dev default | HMAC key for signing JWT tokens. |
+| `JWT_ALGORITHM` | No | `HS256` | JWT signing algorithm. |
+| `ATTESTATION_SECRET`| Yes (Prod) | Dev default | Secret key used for cryptographic attestation of clinical reviews. |
+
+---
+
+## ⚡ Quick Start & Development Setup
+
+### 1. Local AI Runtime Setup (Ollama + Gemma 3 270M)
+The AI Assistant runs locally without sending sensitive data to external third-party cloud APIs.
+```bash
+# 1. Install Ollama
+# macOS: brew install ollama
+# Linux: curl -fsSL https://ollama.com/install.sh | sh
+# Windows: Download from https://ollama.com/download
+
+# 2. Pull the Gemma 3 270M model
+ollama pull gemma3:270m
+
+# 3. Start the Ollama server (runs on port 11434)
+ollama serve
+
+# 4. Verify connectivity
+curl http://localhost:11434/api/tags
+```
+
+### 2. Backend Setup (FastAPI & Python)
+```bash
 cd Health-AI-main/backend
 
 # Create and activate virtual environment
-python -m venv venv
-.\venv\Scripts\activate
+python3 -m venv venv
+source venv/bin/activate  # Windows: .\venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Run backend development server
+# Start backend server on port 8000
 uvicorn main:app --reload --port 8000
 ```
 
-#### 2. Frontend Setup (React & Vite)
-```powershell
+### 3. Frontend Setup (React & Vite)
+```bash
 cd Health-AI-main/frontend
 
 # Install dependencies
 npm install
 
-# Start Vite dev server
+# Start Vite dev server (proxies /api to http://127.0.0.1:8000)
 npm run dev
 ```
 
 ---
 
-## 🧪 Comprehensive Automated Test Execution
+## 🌐 Production Reverse Proxy Configuration (NGINX)
+For production deployments, the frontend does not require the browser to access developer localhost. Use an NGINX reverse proxy to serve frontend static assets and route `/api/` calls:
 
-Run the complete 58-test production verification suite:
-```powershell
-cd Health-AI-main/backend
+```nginx
+server {
+    listen 80;
+    server_name ruralhealth.example.com;
 
-# Execute all backend tests
-pytest test_clinical_safety.py test_golden_vectors.py test_sync_v2.py test_auth_review.py test_adversarial_security.py -v
+    # Serve compiled React PWA assets
+    location / {
+        root /var/www/rapidcheck/dist;
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Proxy API calls to FastAPI backend
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
 ```
-
-### Verified Test Results:
-- **`test_clinical_safety.py`:** 11/11 Passed (Red flags, uncertainty, vital defaults)
-- **`test_golden_vectors.py`:** 10/10 Passed (Cross-platform canonical vector equivalence)
-- **`test_sync_v2.py`:** 5/5 Passed (Idempotency, OCC conflict detection, tombstones, pull pagination)
-- **`test_auth_review.py`:** 9/9 Passed (PBKDF2 hashing, JWT login, review queue, attestation)
-- **`test_adversarial_security.py`:** 23/23 Passed (AUTH-001–009, RBAC-001–005, REV-001–009, ATT-001–009, DB-001–007)
-- **Grand Total:** **58 / 58 Tests Passed (100% Pass Rate)**
 
 ---
 
-## 📊 Default Development & Pilot Credentials
+## 🤖 AI Health Architecture & Clinical Governance
 
-> *Note: These credentials are seeded automatically for development and pilot testing environments. In production, rotate all passwords immediately.*
+### Unified Pipeline
+$$\text{React Frontend} \xrightarrow{\text{apiFetch()}} \text{FastAPI Backend (/api/ai/chat)} \xrightarrow{\text{httpx (Async)}} \text{Ollama Runtime} \longrightarrow \text{Gemma 3 270M}$$
 
-| Role | Username | Default Password | Assigned Facility | Permissions Summary |
-|---|---|---|---|---|
-| **System Admin** | `admin` | `admin123` | `FAC_MAIN` | Full administrative control, user management, system config. |
-| **PHC Doctor** | `dr.sharma` | `doctor123` | `PHC_RAMPUR` | Review pending triage queue, perform clinical reviews, clinical overrides. |
-| **ASHA Worker** | `anita.asha` | `asha123` | `PHC_RAMPUR` | Patient registration, vital intake, offline screening, sync push/pull. |
-| **District Officer**| `officer.verma` | `officer123` | `DISTRICT_HQ` | High-level disease analytics, referral monitoring, audit log inspection. |
+- **Authoritative Endpoint:** `POST /api/ai/chat` (and streaming `POST /api/ai/chat/stream`). Legacy `/api/chat` routes through the same local Ollama service.
+- **Connection States Handled:**
+  - `Local AI connected` (Healthy local runtime with model ready)
+  - `Connecting...` (Verifying backend & model connectivity)
+  - `AI unavailable` (Ollama offline or model not loaded; triggers user-friendly explanation and retry)
+  - `Response generation failed` (Inference timeout or malformed reply with retry action)
+- **Data Privacy & Sanitization:** Frontline queries undergo automated PII scrubbing (masking names, phone numbers, ABHA IDs, and email addresses) before reaching the LLM prompt. Full prompts and patient IDs are never logged.
+- **Clinical Governance Boundaries:** Gemma 3 is purely assistive for health education and workflow hints. It cannot calculate, override, or downgrade authoritative clinical risk scores, emergency red-flag rules, or referral criteria.
+
+---
+
+## 📴 Offline Data Protection & PWA Cache Architecture
+
+1. **Elimination of Generic Service Worker API Caching:**
+   - Generic `/api/` caching in Workbox `runtimeCaching` has been completely disabled in `vite.config.ts`.
+   - Browser Cache Storage persists ONLY public static assets (application JS/CSS bundles, CDN scripts, Google fonts, geocoding maps).
+2. **Security Headers Middleware:**
+   - All backend `/api/` endpoints return `Cache-Control: no-store, no-cache, must-revalidate, private` and `Pragma: no-cache` to ensure browser and proxy caches never persist sensitive records.
+3. **Isolated Dexie / IndexedDB Storage:**
+   - Supported offline patients, screenings, and appointments reside exclusively in IndexedDB (`db.patients`, `db.assessments`, `db.outbox`), completely isolated from static asset caches.
+4. **Device-Level Protection Note:**
+   - While browser storage isolation protects against generic cache leakage, multi-user shared frontline mobile tablets must also enforce OS-level screen locks, user session logout, and device storage encryption (e.g., Android FBE or iOS Data Protection).
+
+---
+
+## 🧪 Comprehensive Automated Test Execution
+
+### Backend Tests (92 Tests Total)
+```bash
+cd Health-AI-main/backend
+./venv/bin/pytest -v
+```
+**Verified Backend Test Coverage:**
+- `test_phase2_reliability.py`: 7/7 Passed (PII sanitization, Ollama offline resiliency, timeout recovery, health status, security headers, endpoint delegation)
+- `test_clinical_safety.py`: 11/11 Passed (Red flags, uncertainty states, vital defaults)
+- `test_golden_vectors.py`: 10/10 Passed (Canonical vector equivalence)
+- `test_sync_v2.py`: 5/5 Passed (Idempotency, OCC conflict detection, tombstones, pagination)
+- `test_auth_review.py`: 9/9 Passed (PBKDF2 hashing, JWT login, review queue, attestation)
+- `test_adversarial_security.py`: 23/23 Passed (Adversarial attack mitigations)
+- `test_health_resources.py`: 7/7 Passed (Resource search, categories, listings)
+- `test_resource_recommendation.py`: 7/7 Passed (Emergency safety gates, clinical condition matching)
+- `test_resource_security.py`: 5/5 Passed (RBAC enforcement on health resources)
+- `test_resource_versioning.py`: 3/3 Passed (Resource attestation and lifecycle)
+- `ml/test_predictor.py`: 5/5 Passed (Scikit-learn multi-class model classification)
+- **Total Backend:** **92 / 92 Passed (100% Pass Rate)**
+
+### Frontend Tests & Build
+```bash
+cd Health-AI-main/frontend
+
+# 1. TypeScript compilation check
+npm run typecheck
+
+# 2. Production build & service worker generation
+npm run build
+
+# 3. Phase 2 frontend integration & privacy test
+npm run test:phase2
+
+# 4. Outbox & persistence test suite (51 checks)
+npm run test:outbox
+
+# 5. Golden vectors suite (10 vectors)
+npm run test:golden
+
+# 6. Client sync engine unit tests (36 checks)
+npx tsx test_task005_task006_sync.js
+```
+
+---
+
+## ⚠️ Known Limitations & Outstanding Phase 1 Dependencies
+
+- **Phase 1 Security Remediation Pending:**
+  - Default development credentials (`admin`, `dr.sharma`, `anita.asha`) exist for local testing and must be rotated prior to real patient deployment.
+  - Production database migration from SQLite fixture to secured, hardened PostgreSQL with automated backup and SSL connection strings is scheduled for Phase 1 remediation.
+  - Multi-user device-level session isolation and biometric tablet unlock depend on native device policies outside the PWA sandbox.
+- **Local AI Hardware Requirements:**
+  - Gemma 3 270M requires ~1.5 GB RAM and standard CPU execution via Ollama. If Ollama is stopped, the application degrades gracefully: screening, offline sync, patient directories, and clinician reviews continue operating normally without interruption.
+
+---
+
+## 📊 Default Development Credentials
+
+> *Note: Seeded for development and staging verification only. Rotate before production.*
+
+| Role | Username | Default Password | Assigned Facility |
+|---|---|---|---|
+| **System Admin** | `admin` | `admin123` | `FAC_MAIN` |
+| **PHC Doctor** | `dr.sharma` | `doctor123` | `PHC_RAMPUR` |
+| **ASHA Worker** | `anita.asha` | `asha123` | `PHC_RAMPUR` |
+| **District Officer** | `officer.verma` | `officer123` | `DISTRICT_HQ` |
 
 ---
 

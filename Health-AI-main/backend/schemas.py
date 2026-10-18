@@ -12,6 +12,7 @@ class PatientBase(BaseModel):
     village: str = Field(..., min_length=1, max_length=100)
     phone: Optional[str] = Field(default="", max_length=20)
     patient_id: Optional[str] = None
+    facility_id: Optional[str] = None
 
 class PatientCreate(PatientBase):
     pass
@@ -31,6 +32,7 @@ class AssessmentCreate(BaseModel):
     patient_id: str
     patient_name: Optional[str] = None
     village: Optional[str] = None
+    facility_id: Optional[str] = None
     symptoms: List[str] = Field(default_factory=list)
     symptom_duration_days: Optional[int] = Field(default=None, ge=0, le=365, description="Duration in days")
     
@@ -57,6 +59,7 @@ class AssessmentResponse(BaseModel):
     patient_id: str
     patient_name: Optional[str] = None
     village: Optional[str] = None
+    facility_id: Optional[str] = None
     client_operation_id: Optional[str] = None
     symptoms: List[str] = Field(default_factory=list)
     symptom_duration_days: Optional[int] = None
@@ -120,6 +123,7 @@ class AppointmentCreate(BaseModel):
     notes: Optional[str] = ""
     status: Optional[str] = "PENDING"
     risk_level: Optional[str] = None
+    facility_id: Optional[str] = None
     likely_conditions: Optional[List[str]] = []
 
 
@@ -135,6 +139,7 @@ class AppointmentResponse(BaseModel):
     notes: Optional[str]
     status: str
     risk_level: Optional[str]
+    facility_id: Optional[str] = None
     likely_conditions: List[str]
     server_version: int = 1
     is_deleted: int = 0
@@ -142,6 +147,56 @@ class AppointmentResponse(BaseModel):
     updated_at: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ─── HOSPITAL RECOMMENDATION SCHEMAS ──────────────────────────────────────────
+
+class HospitalRecommendationItem(BaseModel):
+    id: str
+    name: str
+    category: str
+    specialty: str
+    all_specialties: List[str] = []
+    distance_km: float
+    distance: str
+    travel_time_min: int
+    travel_time: str
+    specialty_match: str
+    capability_match: List[str] = []
+    all_capabilities: List[str] = []
+    recommendation_priority: str
+    suitability_score: float
+    reason: str
+    icu_beds_available: int = 0
+    general_beds_available: int = 0
+    is_emergency_24x7: bool = False
+    address: str = ""
+    phone: str = ""
+    rating: float = 4.0
+    lat: float
+    lng: float
+
+
+class HospitalRecommendationRequest(BaseModel):
+    item_id: Optional[str] = None
+    condition: str
+    risk_score: float
+    risk_level: Optional[str] = None
+    specialty: Optional[str] = None
+    lat: Optional[float] = 22.723
+    lng: Optional[float] = 88.483
+    max_results: Optional[int] = 5
+
+
+class HospitalRecommendationResponse(BaseModel):
+    item_id: Optional[str] = None
+    condition: str
+    patient_risk_score: float
+    patient_risk_level: str
+    required_specialty: str
+    is_critical: bool
+    recommendation_banner: str
+    hospitals: List[HospitalRecommendationItem]
 
 
 # ─── LEGACY SYNC SCHEMAS (BACKWARD COMPATIBILITY) ──────────────────────────────

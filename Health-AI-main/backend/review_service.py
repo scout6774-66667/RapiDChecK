@@ -22,8 +22,7 @@ from fastapi import HTTPException, status
 from database import AssessmentModel, ClinicalReviewModel, AuditEventModel, UserModel
 from sync_service import record_journal_entry
 
-HMAC_SECRET_KEY = os.environ.get("HMAC_SECRET_KEY", "rapidcheck-clinical-attestation-signing-key-2026")
-REVIEW_SECRET_KEY = HMAC_SECRET_KEY
+from config import HMAC_SECRET_KEY, REVIEW_SECRET_KEY
 
 def generate_canonical_review_payload(
     review_id: str,
@@ -178,6 +177,7 @@ def assign_review_to_doctor(
 ) -> AssessmentModel:
     """
     Assigns an assessment to a reviewing medical officer.
+    Enforces facility boundary isolation: doctor cannot assign cross-facility assessments.
     """
     assessment = db.query(AssessmentModel).filter(
         AssessmentModel.id == assessment_id,
@@ -186,11 +186,26 @@ def assign_review_to_doctor(
     if not assessment:
         raise HTTPException(status_code=404, detail="Assessment not found")
 
+    # Facility Access Isolation Check (RBAC & Multi-tenancy)
+    if doctor_user.role != "SYSTEM_ADMIN" and doctor_user.facility_id:
+        assessment_facility = None
+        if hasattr(assessment, "facility_id") and assessment.facility_id:
+            assessment_facility = assessment.facility_id
+        elif assessment.patient and hasattr(assessment.patient, "facility_id") and assessment.patient.facility_id:
+            assessment_facility = assessment.patient.facility_id
+
+        if assessment_facility and assessment_facility != doctor_user.facility_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Facility access violation: Doctor from facility '{doctor_user.facility_id}' cannot assign assessments from facility '{assessment_facility}'."
+            )
+
     assessment.review_state = "IN_REVIEW"
     assessment.reviewed_by = doctor_user.full_name
     db.commit()
     db.refresh(assessment)
     return assessment
+
 
 def submit_clinician_review(
     db: Session,
@@ -389,16 +404,47 @@ def submit_clinician_review(
         "created_at": review_record.created_at
     }
 
-def get_review_history(db: Session, assessment_id: str) -> List[Dict[str, Any]]:
+def get_review_history(
+    db: Session,
+    assessment_id: str,
+    current_user: Optional[UserModel] = None
+) -> List[Dict[str, Any]]:
     """
     Returns complete chronological review history and digital attestations for an assessment.
+    Validates facility isolation and verifies server-side cryptographic signature integrity.
     """
+    assessment = db.query(AssessmentModel).filter(
+        AssessmentModel.id == assessment_id,
+        AssessmentModel.is_deleted == 0
+    ).first()
+    if not assessment:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+
+    if current_user and current_user.role not in ["SYSTEM_ADMIN", "DISTRICT_OFFICER"] and current_user.facility_id:
+        assessment_facility = getattr(assessment, "facility_id", None) or (
+            assessment.patient.facility_id if assessment.patient else None
+        )
+        if assessment_facility and assessment_facility != current_user.facility_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Facility access violation: User from facility '{current_user.facility_id}' cannot view review history for facility '{assessment_facility}'."
+            )
+
     reviews = db.query(ClinicalReviewModel).filter(
         ClinicalReviewModel.assessment_id == assessment_id
     ).order_by(ClinicalReviewModel.created_at.asc()).all()
 
     results = []
     for r in reviews:
+        is_valid = verify_server_attestation(
+            signature=r.signature_hash,
+            review_id=r.id,
+            assessment_id=r.assessment_id,
+            reviewer_id=r.reviewer_user_id,
+            decision=r.decision,
+            timestamp=r.created_at,
+            override_reason=r.override_reason
+        )
         results.append({
             "review_id": r.id,
             "assessment_id": r.assessment_id,
@@ -412,6 +458,7 @@ def get_review_history(db: Session, assessment_id: str) -> List[Dict[str, Any]]:
             "new_result": json.loads(r.new_result_json or "{}"),
             "attestation_statement": r.attestation_statement,
             "signature_hash": r.signature_hash,
+            "integrity_verified": is_valid,
             "created_at": r.created_at
         })
     return results

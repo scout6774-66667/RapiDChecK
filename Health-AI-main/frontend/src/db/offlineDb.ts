@@ -40,6 +40,7 @@ export interface LocalPatient {
   village: string;
   phone: string;
   patient_id?: string;
+  facility_id?: string | null;
   server_version: number;
   local_version: number;
   is_deleted: boolean;
@@ -54,6 +55,7 @@ export interface LocalAssessment {
   patient_id: string;
   patient_name?: string;
   village?: string;
+  facility_id?: string | null;
   client_operation_id?: string;
   symptoms: string[];
   symptom_duration_days?: number | null;
@@ -694,11 +696,11 @@ export async function deletePatientAtomic(patientId: string): Promise<boolean> {
   const now = new Date().toISOString();
   const opId = generateUUID();
 
-  return await db.transaction('rw', [db.patients, db.tombstones, db.outbox, db.sync_metadata], async () => {
+  return await db.transaction('rw', [db.patients, db.assessments, db.appointments, db.tombstones, db.outbox, db.sync_metadata], async () => {
     const existing = await db.patients.get(patientId);
     if (!existing) return false;
 
-    const serverVersion = existing.server_version;
+    const serverVersion = existing.server_version || 0;
     const seq = await getNextClientSequence();
 
     // 1. Soft-delete patient
@@ -719,20 +721,102 @@ export async function deletePatientAtomic(patientId: string): Promise<boolean> {
       sync_state: 'QUEUED'
     });
 
-    // 3. Queue Outbox DELETE op
-    await db.outbox.put({
-      operation_id: opId,
-      entity_type: 'patient',
-      entity_id: patientId,
-      operation_type: 'DELETE',
-      payload: { id: patientId },
-      base_server_version: serverVersion,
-      client_sequence: seq,
-      status: 'QUEUED',
-      retry_count: 0,
-      created_at: now,
-      updated_at: now
-    });
+    // 3. Prevent pending sync operations from recreating a deleted patient or silently overwriting deletion
+    const pendingOps = await db.outbox
+      .where('entity_id')
+      .equals(patientId)
+      .and(op => op.status === 'QUEUED')
+      .toArray();
+
+    let wasUnsyncedCreate = false;
+    for (const op of pendingOps) {
+      if (op.operation_type === 'CREATE') {
+        wasUnsyncedCreate = true;
+        // The patient was created offline and never synced to the server.
+        // Mark CREATE as CANCELLED so it is never pushed to recreate the patient on server.
+        await db.outbox.update(op.operation_id, { status: 'CANCELLED' as any });
+      } else if (op.operation_type === 'UPDATE') {
+        // Mark UPDATE as SUPERSEDED so an older update doesn't overwrite the deletion
+        await db.outbox.update(op.operation_id, { status: 'SUPERSEDED' as any });
+      }
+    }
+
+    // 4. Cascade soft-delete associated assessments in Dexie and cancel their pending outbox ops
+    const assList = await db.assessments.where('patient_id').equals(patientId).toArray();
+    for (const ass of assList) {
+      await db.assessments.update(ass.id, {
+        is_deleted: true,
+        sync_state: 'QUEUED',
+        synced: false,
+        updated_at: now
+      });
+      await db.tombstones.put({
+        id: generateUUID(),
+        entity_type: 'assessment',
+        entity_id: ass.id,
+        deleted_at: now,
+        server_version: ass.server_version || 0,
+        sync_state: 'QUEUED'
+      });
+      const pendingAssOps = await db.outbox
+        .where('entity_id')
+        .equals(ass.id)
+        .and(op => op.status === 'QUEUED')
+        .toArray();
+      for (const aop of pendingAssOps) {
+        await db.outbox.update(aop.operation_id, { status: 'CANCELLED' as any });
+      }
+    }
+
+    // 4b. Cascade cancel/soft-delete associated appointments in Dexie
+    if (existing.phone) {
+      const appts = await db.appointments.where('patient_phone').equals(existing.phone).toArray();
+      for (const appt of appts) {
+        if (!appt.is_deleted) {
+          await db.appointments.update(appt.id, {
+            is_deleted: true,
+            status: 'CANCELLED',
+            sync_state: 'QUEUED',
+            synced: false,
+            updated_at: now
+          });
+          await db.tombstones.put({
+            id: generateUUID(),
+            entity_type: 'appointment',
+            entity_id: appt.id,
+            deleted_at: now,
+            server_version: appt.server_version || 0,
+            sync_state: 'QUEUED'
+          });
+          const pendingApptOps = await db.outbox
+            .where('entity_id')
+            .equals(appt.id)
+            .and(op => op.status === 'QUEUED')
+            .toArray();
+          for (const aop of pendingApptOps) {
+            await db.outbox.update(aop.operation_id, { status: 'CANCELLED' as any });
+          }
+        }
+      }
+    }
+
+    // 5. If this patient was already on the server (serverVersion > 0) or was not an unsynced create,
+    // queue the Outbox DELETE op so the server soft-deletes it during sync.
+    if (!wasUnsyncedCreate || serverVersion > 0) {
+      await db.outbox.put({
+        operation_id: opId,
+        entity_type: 'patient',
+        entity_id: patientId,
+        operation_type: 'DELETE',
+        payload: { id: patientId },
+        base_server_version: serverVersion,
+        client_sequence: seq,
+        status: 'QUEUED',
+        retry_count: 0,
+        created_at: now,
+        updated_at: now
+      });
+    }
 
     return true;
   });

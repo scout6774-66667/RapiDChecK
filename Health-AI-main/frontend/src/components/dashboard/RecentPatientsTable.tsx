@@ -39,10 +39,17 @@ export const RecentPatientsTable: React.FC<RecentPatientsTableProps> = ({
             Low
           </span>
         );
+      case 'UNASSESSED':
+        return (
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-600 border border-slate-300">
+            Unassessed
+          </span>
+        );
+      case 'NEEDS_REVIEW':
       default:
         return (
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-600 border border-slate-200">
-            Review
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
+            Needs Review
           </span>
         );
     }

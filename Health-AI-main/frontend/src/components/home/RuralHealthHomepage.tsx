@@ -677,18 +677,18 @@ export const RuralHealthHomepage: React.FC<RuralHealthHomepageProps> = ({
               </h2>
             </div>
 
-            {/* 4 Impact Cards */}
+            {/* 4 Capability Cards */}
             <div className="lg:col-span-8 grid grid-cols-2 sm:grid-cols-4 gap-3.5">
               {/* Card 1 */}
               <div className="p-4 rounded-2xl bg-[#F8FCFA] border border-[#DCEBE5] shadow-2xs hover:shadow-md transition-all flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-[#E8F8F2] text-[#0FA36B] flex items-center justify-center shrink-0">
                   <Users className="w-5 h-5" />
                 </div>
-                <div>
-                  <div className="text-lg sm:text-xl font-black text-[#12345B] leading-tight">
+                <div className="min-w-0">
+                  <div className="text-sm sm:text-base font-extrabold text-[#12345B] leading-snug">
                     {strings.impact.stat1Value}
                   </div>
-                  <div className="text-[11px] font-medium text-[#52677F]">
+                  <div className="text-[11px] font-medium text-[#52677F] leading-tight mt-0.5">
                     {strings.impact.stat1Label}
                   </div>
                 </div>
@@ -699,11 +699,11 @@ export const RuralHealthHomepage: React.FC<RuralHealthHomepageProps> = ({
                 <div className="w-10 h-10 rounded-full bg-[#EAF4FF] text-[#2563EB] flex items-center justify-center shrink-0">
                   <ShieldCheck className="w-5 h-5" />
                 </div>
-                <div>
-                  <div className="text-lg sm:text-xl font-black text-[#12345B] leading-tight">
+                <div className="min-w-0">
+                  <div className="text-sm sm:text-base font-extrabold text-[#12345B] leading-snug">
                     {strings.impact.stat2Value}
                   </div>
-                  <div className="text-[11px] font-medium text-[#52677F]">
+                  <div className="text-[11px] font-medium text-[#52677F] leading-tight mt-0.5">
                     {strings.impact.stat2Label}
                   </div>
                 </div>
@@ -714,11 +714,11 @@ export const RuralHealthHomepage: React.FC<RuralHealthHomepageProps> = ({
                 <div className="w-10 h-10 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
                   <MapPin className="w-5 h-5" />
                 </div>
-                <div>
-                  <div className="text-lg sm:text-xl font-black text-[#12345B] leading-tight">
+                <div className="min-w-0">
+                  <div className="text-sm sm:text-base font-extrabold text-[#12345B] leading-snug">
                     {strings.impact.stat3Value}
                   </div>
-                  <div className="text-[11px] font-medium text-[#52677F]">
+                  <div className="text-[11px] font-medium text-[#52677F] leading-tight mt-0.5">
                     {strings.impact.stat3Label}
                   </div>
                 </div>
@@ -729,11 +729,11 @@ export const RuralHealthHomepage: React.FC<RuralHealthHomepageProps> = ({
                 <div className="w-10 h-10 rounded-full bg-purple-50 text-purple-600 flex items-center justify-center shrink-0">
                   <CheckCircle2 className="w-5 h-5" />
                 </div>
-                <div>
-                  <div className="text-lg sm:text-xl font-black text-[#12345B] leading-tight">
+                <div className="min-w-0">
+                  <div className="text-sm sm:text-base font-extrabold text-[#12345B] leading-snug">
                     {strings.impact.stat4Value}
                   </div>
-                  <div className="text-[11px] font-medium text-[#52677F]">
+                  <div className="text-[11px] font-medium text-[#52677F] leading-tight mt-0.5">
                     {strings.impact.stat4Label}
                   </div>
                 </div>

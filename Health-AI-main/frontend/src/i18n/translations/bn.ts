@@ -158,16 +158,16 @@ export const bn = {
   },
 
   impact: {
-    eyebrow: 'প্রধান প্রভাব',
+    eyebrow: 'প্রধান সক্ষমতা',
     title: 'শক্তিশালী, স্বাস্থ্যবান সম্প্রদায়ের ক্ষমতায়ন',
-    stat1Value: '100+',
-    stat1Label: 'গ্রাম সমর্থিত',
-    stat2Value: '5,000+',
-    stat2Label: 'রোগী স্ক্রিনিং',
-    stat3Value: '800+',
-    stat3Label: 'রেফারেল সমন্বিত',
-    stat4Value: '1,200+',
-    stat4Label: 'ফলো-আপ পরিচালিত',
+    stat1Value: 'দোরগোড়ায় সেবা',
+    stat1Label: 'অফলাইন ফ্রন্টলাইন স্ক্রিনিং',
+    stat2Value: 'ক্লিনিক্যাল ট্রায়াজ',
+    stat2Label: 'নিয়ম-ভিত্তিক ঝুঁকি মূল্যায়ন',
+    stat3Value: 'নিরবচ্ছিন্ন যত্ন',
+    stat3Label: 'PHC রেফারেল সমন্বয়',
+    stat4Value: 'কেয়ার ট্র্যাকিং',
+    stat4Label: 'কমিউনিটি ফলো-আপ সহায়তা',
   },
 
   footer: {

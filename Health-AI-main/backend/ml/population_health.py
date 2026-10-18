@@ -200,11 +200,18 @@ class SnowflakeSchemaProvider(BaseHealthDataProvider):
 
     def get_metadata(self) -> Dict[str, Any]:
         if not self.session_factory:
-            return {"status": "db_not_available"}
+            return {
+                "status": "db_not_available",
+                "is_cloud_snowflake_connection": False,
+                "schema_architecture": "Dimensional Snowflake Schema (Local Relational Pattern)"
+            }
         session = self.session_factory()
         try:
             return {
-                "source": "Snowflake Dimensional Schema (SQLite)",
+                "source": "Snowflake Dimensional Schema (Relational Star/Snowflake Pattern)",
+                "schema_architecture": "Dimensional Snowflake Schema (Relational Data Warehouse Pattern in SQLite/PostgreSQL)",
+                "is_cloud_snowflake_connection": False,
+                "database_engine": "Local Relational Storage (SQLite/PostgreSQL)",
                 "tables": [
                     "dim_state", "dim_district", "dim_time", "dim_source",
                     "dim_unit", "dim_facility", "dim_category",

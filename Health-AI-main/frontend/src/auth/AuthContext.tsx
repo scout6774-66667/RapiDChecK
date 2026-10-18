@@ -37,7 +37,7 @@ interface AuthContextType {
   hasRole: (...roles: UserRole[]) => boolean;
 }
 
-const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8000';
+import { apiFetch } from '../api/apiConfig';
 
 const DEFAULT_DOCTOR: UserProfile = {
   id: 'usr_dr_sharma',
@@ -106,7 +106,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [permissions, setPermissions] = useState<string[]>(() => {
     const saved = localStorage.getItem('rapidcheck_permissions');
     return saved ? JSON.parse(saved) : [
-      'patients:create', 'patients:read', 'patients:update',
+      'patients:create', 'patients:read', 'patients:update', 'patients:delete',
       'assessments:create', 'assessments:read', 'assessments:update',
       'reviews:view_queue', 'reviews:perform', 'reviews:override',
       'referrals:update', 'appointments:manage', 'sync:push', 'sync:pull'
@@ -118,10 +118,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const login = async (username: string, password: string): Promise<boolean> => {
     setIsLoading(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/api/v2/auth/login`, {
+      const res = await apiFetch('/api/v2/auth/login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
+        body: JSON.stringify({ username, password }),
+        skipAuth: true,
+        timeoutMs: 10000,
       });
 
       if (res.ok) {
@@ -135,9 +136,23 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         localStorage.setItem('rapidcheck_permissions', JSON.stringify(data.permissions || []));
         return true;
       }
+
+      // Explicit authentication failure or lockout by server — MUST NOT bypass with demo fallback
+      if (res.status === 401 || res.status === 403 || res.status === 429 || res.status === 400) {
+        console.warn(`[Auth] Backend rejected credentials with HTTP ${res.status}`);
+        return false;
+      }
+
       throw new Error('Backend login responded with status ' + res.status);
-    } catch (err) {
-      console.warn('[Auth] Backend login unavailable/failed, checking local credentials fallback:', err);
+    } catch (err: any) {
+      console.warn('[Auth] Backend login unavailable/network error:', err);
+
+      // Demo login shortcuts are strictly development-only and only when completely offline
+      const isProduction = (import.meta as any).env?.MODE === 'production' || (import.meta as any).env?.PROD === true;
+      if (isProduction) {
+        console.error('[Auth] Offline demo account bypass is disabled in production.');
+        return false;
+      }
 
       const normalizedUser = username.toLowerCase().trim();
       let matchedUser: UserProfile | null = null;
@@ -146,7 +161,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       if (normalizedUser === 'dr.sharma' || normalizedUser === 'dr_sharma' || normalizedUser === 'doctor') {
         matchedUser = DEFAULT_DOCTOR;
         matchedPerms = [
-          'patients:create', 'patients:read', 'patients:update',
+          'patients:create', 'patients:read', 'patients:update', 'patients:delete',
           'assessments:create', 'assessments:read', 'assessments:update',
           'reviews:view_queue', 'reviews:perform', 'reviews:override',
           'referrals:update', 'appointments:manage', 'sync:push', 'sync:pull'
@@ -244,7 +259,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       if (!success) {
         setUser(DEFAULT_DOCTOR);
         setPermissions([
-          'patients:create', 'patients:read', 'patients:update',
+          'patients:create', 'patients:read', 'patients:update', 'patients:delete',
           'assessments:create', 'assessments:read', 'assessments:update',
           'reviews:view_queue', 'reviews:perform', 'reviews:override',
           'referrals:update', 'appointments:manage', 'sync:push', 'sync:pull'

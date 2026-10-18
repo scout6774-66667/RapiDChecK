@@ -14,6 +14,10 @@ sqlalchemy>=2.0.28
 psycopg2-binary>=2.9.9
 alembic>=1.13.1
 
+# --- Snowflake Cloud Data Warehouse ---
+snowflake-connector-python>=3.8.0
+snowflake-sqlalchemy>=1.5.0
+
 # --- Authentication, Cryptography & Security ---
 PyJWT>=2.8.0
 passlib[bcrypt]>=1.7.4

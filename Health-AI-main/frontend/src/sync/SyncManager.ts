@@ -22,8 +22,7 @@ import {
   type LocalAssessment,
   type LocalAppointment
 } from '../db/offlineDb.ts';
-
-const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8000';
+import { apiFetch } from '../api/apiConfig';
 
 export interface SyncPushResultSummary {
   applied: number;
@@ -160,10 +159,10 @@ export class SyncManager {
     };
 
     try {
-      const res = await fetch(`${API_BASE_URL}/api/v2/sync/push`, {
+      const res = await apiFetch('/api/v2/sync/push', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        timeoutMs: 20000,
       });
 
       if (!res.ok) {
@@ -226,8 +225,8 @@ export class SyncManager {
     let hasMore = false;
 
     try {
-      const url = `${API_BASE_URL}/api/v2/sync/pull?since_seq=${lastSeq}&limit=${limit}&device_id=${encodeURIComponent(deviceId)}`;
-      const res = await fetch(url);
+      const endpoint = `/api/v2/sync/pull?since_seq=${lastSeq}&limit=${limit}&device_id=${encodeURIComponent(deviceId)}`;
+      const res = await apiFetch(endpoint, { timeoutMs: 20000 });
       if (!res.ok) {
         throw new Error(`Sync pull HTTP error: ${res.status} ${res.statusText}`);
       }

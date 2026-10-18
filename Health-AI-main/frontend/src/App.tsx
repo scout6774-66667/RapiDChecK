@@ -17,6 +17,7 @@ import { db } from './db/offlineDb';
 import { useLiveQuery } from 'dexie-react-hooks';
 import WaterDropClick from './components/WaterDropClick';
 import { ArrowLeft } from 'lucide-react';
+import { apiFetch } from './api/apiConfig';
 
 export type AppView = 'home' | 'login' | 'app';
 
@@ -59,8 +60,8 @@ export function App() {
     // Check if the backend is actually reachable
     const checkBackend = async () => {
       try {
-        const res = await fetch('http://127.0.0.1:8000/api/health', {
-          signal: AbortSignal.timeout(3000),
+        const res = await apiFetch('/api/health', {
+          timeoutMs: 3000,
         });
         setIsOnline(res.ok);
       } catch {
@@ -149,10 +150,10 @@ export function App() {
       }
 
       if (pList.length > 0 || aList.length > 0) {
-        const response = await fetch('http://127.0.0.1:8000/api/sync', {
+        const response = await apiFetch('/api/sync', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ patients: pList, assessments: aList })
+          body: JSON.stringify({ patients: pList, assessments: aList }),
+          timeoutMs: 15000,
         });
         if (response.ok) {
           for (const p of pList) await db.patients.update(p.id, { synced: true });
@@ -163,10 +164,10 @@ export function App() {
       let syncedAppts = 0;
       for (const appt of apptList) {
         try {
-          await fetch(`http://127.0.0.1:8000/api/appointments`, {
+          await apiFetch('/api/appointments', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...appt, likely_conditions: appt.likely_conditions || [] })
+            body: JSON.stringify({ ...appt, likely_conditions: appt.likely_conditions || [] }),
+            timeoutMs: 10000,
           });
           await db.appointments.update(appt.id, { synced: true });
           syncedAppts++;
@@ -298,7 +299,8 @@ export function App() {
             <span>Back to Dashboard</span>
           </button>
 
-          <div className="flex items-center gap-1.5 text-xs font-semibold">
+          <div className="flex items-center gap-2 text-xs font-semibold">
+            <img src="/logo.png" alt="RuralHealth AI" className="w-4 h-4 object-contain rounded shrink-0" />
             <span className="text-slate-400">RuralHealth AI</span>
             <span className="text-slate-300">/</span>
             <span className="text-[#102A56] capitalize font-bold">

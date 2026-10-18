@@ -14,6 +14,8 @@ import {
 } from 'lucide-react';
 import ashaIllustration from '../../assets/asha_sidebar.jpg';
 
+import { RuralHealthLogo } from '../brand/RuralHealthLogo';
+
 export type DashboardNavTab =
   | 'dashboard'
   | 'screen'
@@ -37,7 +39,7 @@ export const DashboardSidebar: React.FC<DashboardSidebarProps> = ({
   currentTab,
   onSelectTab,
   isOnline,
-  appointmentCount = 3,
+  appointmentCount = 0,
   onCloseMobileMenu,
 }) => {
   const navItems: { id: DashboardNavTab; label: string; icon: React.ElementType; badge?: number | string }[] = [
@@ -57,22 +59,12 @@ export const DashboardSidebar: React.FC<DashboardSidebarProps> = ({
       {/* Top Branding */}
       <div>
         <div className="p-4 sm:p-5 flex items-center justify-between border-b border-slate-100">
-          <div className="flex items-center gap-2.5">
-            {/* Custom RuralHealth AI Logo Icon */}
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#0A9F68] to-[#10B981] flex items-center justify-center text-white shadow-md shadow-[#0A9F68]/20 shrink-0">
-              <svg viewBox="0 0 24 24" fill="none" className="w-6 h-6 stroke-current stroke-[2.2]">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19 5c0 4-3 7-7 7s-7-3-7-7" className="opacity-80" />
-              </svg>
-            </div>
-            <div>
-              <div className="font-extrabold text-[17px] tracking-tight text-[#102A56] leading-tight flex items-center">
-                RuralHealth <span className="text-[#0A9F68] ml-1">AI</span>
-              </div>
-              <div className="text-[10px] text-slate-500 font-medium tracking-tight whitespace-nowrap">
-                Healthy Villages • Stronger Communities
-              </div>
-            </div>
+          <div
+            className="cursor-pointer"
+            onClick={() => onSelectTab('dashboard')}
+            title="RuralHealth AI Dashboard"
+          >
+            <RuralHealthLogo size="sm" showTagline={true} />
           </div>
 
           {/* Close button on mobile */}

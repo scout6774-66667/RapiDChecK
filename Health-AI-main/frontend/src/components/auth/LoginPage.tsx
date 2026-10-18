@@ -191,6 +191,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({
             <div className="absolute bottom-0 left-0 w-48 h-48 bg-blue-400/15 rounded-full blur-3xl pointer-events-none"></div>
 
             <div className="relative z-10">
+              <div className="w-14 h-14 rounded-2xl bg-white/10 backdrop-blur-md p-1 border border-white/20 mb-4 shadow-lg flex items-center justify-center">
+                <img src="/logo.png" alt="RuralHealth AI Logo" className="w-full h-full object-contain" />
+              </div>
               <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/10 backdrop-blur-md text-[11px] font-bold text-emerald-300 border border-white/15 mb-4">
                 <Sparkles className="w-3.5 h-3.5" />
                 Community Health Portal
@@ -219,7 +222,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
             </div>
 
             <div className="relative z-10 pt-4 border-t border-white/15 text-[11px] text-slate-300">
-              Healthy Villages • Stronger Communities
+              Healthy Communities • Brighter Futures
             </div>
           </div>
 

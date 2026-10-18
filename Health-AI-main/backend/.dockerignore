@@ -1,0 +1,21 @@
+# Backend Docker Ignore
+.env
+.env.*
+!.env.example
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+*.db
+*.sqlite
+*.sqlite3
+ruralhealth.db
+*.log
+logs/
+.DS_Store
+.git
+.gitignore

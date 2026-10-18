@@ -1,16 +1,22 @@
 import uuid
+import json
 import os
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 from sqlalchemy.orm import Session
+from sqlalchemy import func, or_
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
 # Load .env from the same directory as this file
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
 
+from config import CORS_ORIGINS, ENVIRONMENT, validate_security_configuration
 from database import init_db, get_db, PatientModel, AssessmentModel, AppointmentModel, SyncJournalModel, IdempotencyModel, UserModel, ClinicalReviewModel, AuditEventModel
 from schemas import (
     PatientCreate, PatientResponse,
@@ -25,7 +31,8 @@ from schemas import (
 from sync_service import process_push_batch, process_pull_request, record_journal_entry
 from auth_service import (
     hash_password, verify_password, create_access_token, decode_access_token,
-    get_current_user, require_roles, require_permissions, seed_default_users, ROLE_PERMISSIONS
+    get_current_user, require_roles, require_permissions, seed_default_users, ROLE_PERMISSIONS,
+    check_brute_force_lockout, record_login_failure, clear_login_failures
 )
 from review_service import (
     evaluate_review_requirement, list_pending_reviews, assign_review_to_doctor,
@@ -55,8 +62,24 @@ except Exception as _gemini_err:
     _GEMINI = None
     print(f"[main] Gemini client not loaded: {_gemini_err}")
 
+from hospital_recommender import recommend_hospitals
+from risk_scoring import classify_risk_level, get_condition_profile
+from schemas import (
+    HospitalRecommendationItem,
+    HospitalRecommendationRequest,
+    HospitalRecommendationResponse
+)
+try:
+    from ml.population_health import population_health_engine as _pop_health, SAFETY_DISCLAIMER as _POP_DISCLAIMER
+    _POPULATION_HEALTH = _pop_health
+except Exception as _pop_err:
+    _POPULATION_HEALTH = None
+    _POP_DISCLAIMER = "Population health intelligence layer"
+    print(f"[main] Population health engine not loaded: {_pop_err}")
+
 from health_resources_service import seed_default_health_resources
 from health_resource_routes import router as health_resource_router
+from snowflake_client import get_snowflake_health_summary, verify_snowflake_connection
 
 app = FastAPI(
     title="RuralHealth AI Backend",
@@ -67,17 +90,47 @@ app = FastAPI(
 # Mount Health Resources Router (v2)
 app.include_router(health_resource_router)
 
-# Enable CORS for local Vite dev server and mobile devices
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/api/"):
+            # Prevent caching of sensitive healthcare data, reviews, and tokens
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+            response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+# Enable CORS with explicit allowlist to prevent arbitrary origin token exfiltration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    if isinstance(exc, HTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=getattr(exc, "headers", None)
+        )
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "An internal server error occurred. Please contact system administrator."}
+    )
+
 @app.on_event("startup")
 def startup_event():
+    validate_security_configuration()
     init_db()
     # Seed default frontline & clinician accounts
     from database import SessionLocal
@@ -90,26 +143,90 @@ def startup_event():
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "online", "system": "RuralHealth AI Backend", "version": "1.0.0"}
+    return {
+        "status": "online",
+        "system": "RuralHealth AI Backend",
+        "version": "2.0.0",
+        "database": "online",
+        "snowflake": get_snowflake_health_summary()
+    }
+
+
+@app.get("/api/admin/snowflake/test-connection")
+def admin_snowflake_test_connection(
+    current_user: UserModel = Depends(require_roles("SYSTEM_ADMIN"))
+):
+    """
+    Diagnostic endpoint to test Snowflake cloud data warehouse connectivity.
+    Restricted exclusively to SYSTEM_ADMIN accounts.
+    Executes a read-only query on the synthetic verification table
+    (RURALHEALTH_DB.ANALYTICS.CONNECTION_TEST).
+    """
+    return verify_snowflake_connection()
 
 # --- PATIENTS ENDPOINTS ---
 
 @app.post("/api/patients", response_model=PatientResponse)
-def create_patient(patient: PatientCreate, db: Session = Depends(get_db)):
+def create_patient(
+    patient: PatientCreate,
+    current_user: UserModel = Depends(require_permissions("patients:create")),
+    db: Session = Depends(get_db)
+):
     p_id = patient.id or str(uuid.uuid4())
     existing = db.query(PatientModel).filter(PatientModel.id == p_id).first()
     if existing:
         return existing
 
+    # Enforce facility isolation: non-admin clinicians/workers can only register for their assigned facility
+    target_facility = current_user.facility_id
+    if current_user.role != "SYSTEM_ADMIN" and current_user.facility_id:
+        if patient.facility_id and patient.facility_id != current_user.facility_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied: cannot register patient for facility '{patient.facility_id}'. Assigned to '{current_user.facility_id}'."
+            )
+        target_facility = current_user.facility_id
+    else:
+        target_facility = patient.facility_id or current_user.facility_id or "PHC-DEFAULT"
+
+    # Transparent duplicate detection: National Health ID
+    if patient.national_health_id and patient.national_health_id.strip():
+        nhid_match = db.query(PatientModel).filter(
+            PatientModel.national_health_id == patient.national_health_id.strip(),
+            PatientModel.is_deleted == 0
+        ).first()
+        if nhid_match:
+            if current_user.role != "SYSTEM_ADMIN" and current_user.facility_id and nhid_match.facility_id != current_user.facility_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied: patient with this National Health ID belongs to another facility."
+                )
+            return nhid_match
+
+    # Transparent duplicate detection: Demographics (matching name, phone, facility)
+    norm_name = patient.name.strip()
+    norm_phone = (patient.phone or "").strip()
+    norm_village = patient.village.strip()
+    if norm_name and norm_phone:
+        demo_match = db.query(PatientModel).filter(
+            func.lower(PatientModel.name) == norm_name.lower(),
+            PatientModel.phone == norm_phone,
+            PatientModel.facility_id == target_facility,
+            PatientModel.is_deleted == 0
+        ).first()
+        if demo_match:
+            return demo_match
+
     db_patient = PatientModel(
         id=p_id,
-        national_health_id=patient.national_health_id,
-        name=patient.name,
+        national_health_id=patient.national_health_id.strip() if patient.national_health_id else None,
+        name=norm_name,
         age=patient.age,
-        gender=patient.gender,
-        village=patient.village,
-        phone=patient.phone,
+        gender=patient.gender.strip(),
+        village=norm_village,
+        phone=norm_phone,
         patient_id=patient.patient_id or f"RH-{p_id[:6].upper()}",
+        facility_id=target_facility,
         server_version=1,
         is_deleted=0,
         created_at=datetime.utcnow().isoformat(),
@@ -133,6 +250,7 @@ def create_patient(patient: PatientCreate, db: Session = Depends(get_db)):
             "village": db_patient.village,
             "phone": db_patient.phone,
             "patient_id": db_patient.patient_id,
+            "facility_id": db_patient.facility_id,
             "server_version": 1,
             "is_deleted": 0,
             "created_at": db_patient.created_at
@@ -145,16 +263,57 @@ def create_patient(patient: PatientCreate, db: Session = Depends(get_db)):
     return db_patient
 
 @app.get("/api/patients", response_model=List[PatientResponse])
-def get_patients(db: Session = Depends(get_db)):
-    return db.query(PatientModel).filter(PatientModel.is_deleted == 0).order_by(PatientModel.created_at.desc()).all()
+def get_patients(
+    current_user: UserModel = Depends(require_permissions("patients:read")),
+    db: Session = Depends(get_db)
+):
+    query = db.query(PatientModel).filter(PatientModel.is_deleted == 0)
+    # Facility boundary check: non-admin clinicians/workers only see their assigned facility
+    if current_user.role not in ["SYSTEM_ADMIN", "DISTRICT_OFFICER"] and current_user.facility_id:
+        query = query.filter(
+            (PatientModel.facility_id == current_user.facility_id) | (PatientModel.facility_id == None)
+        )
+    return query.order_by(PatientModel.created_at.desc()).all()
+
+
+@app.get("/api/patients/{patient_id}", response_model=PatientResponse)
+def get_patient_by_id(
+    patient_id: str,
+    current_user: UserModel = Depends(require_permissions("patients:read")),
+    db: Session = Depends(get_db)
+):
+    existing = db.query(PatientModel).filter(PatientModel.id == patient_id).first()
+    if not existing or existing.is_deleted:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    if current_user.role not in ["SYSTEM_ADMIN", "DISTRICT_OFFICER"] and current_user.facility_id:
+        if existing.facility_id and existing.facility_id != current_user.facility_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: patient belongs to another healthcare facility."
+            )
+    return existing
 
 
 @app.put("/api/patients/{patient_id}", response_model=PatientResponse)
-def update_patient(patient_id: str, patient: PatientCreate, db: Session = Depends(get_db)):
+def update_patient(
+    patient_id: str,
+    patient: PatientCreate,
+    current_user: UserModel = Depends(require_permissions("patients:update")),
+    db: Session = Depends(get_db)
+):
     """Edit patient demographic details (name, age, gender, village, phone)."""
     existing = db.query(PatientModel).filter(PatientModel.id == patient_id).first()
     if not existing or existing.is_deleted:
         raise HTTPException(status_code=404, detail="Patient not found")
+
+    if current_user.role != "SYSTEM_ADMIN" and current_user.facility_id:
+        if existing.facility_id and existing.facility_id != current_user.facility_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: cannot modify patient belonging to another facility."
+            )
+
     existing.name    = patient.name
     existing.age     = patient.age
     existing.gender  = patient.gender
@@ -178,6 +337,7 @@ def update_patient(patient_id: str, patient: PatientCreate, db: Session = Depend
             "gender": existing.gender,
             "village": existing.village,
             "phone": existing.phone,
+            "facility_id": existing.facility_id,
             "server_version": existing.server_version
         },
         server_version=existing.server_version
@@ -189,15 +349,29 @@ def update_patient(patient_id: str, patient: PatientCreate, db: Session = Depend
 
 
 @app.delete("/api/patients/{patient_id}")
-def delete_patient(patient_id: str, db: Session = Depends(get_db)):
-    """Soft delete a patient and record tombstone in sync journal."""
-    existing = db.query(PatientModel).filter(PatientModel.id == patient_id).first()
+def delete_patient(
+    patient_id: str,
+    current_user: UserModel = Depends(require_permissions("patients:delete")),
+    db: Session = Depends(get_db)
+):
+    """Soft delete a patient, cascade soft-delete assessments, and record tombstones in sync journal."""
+    existing = db.query(PatientModel).filter(
+        or_(PatientModel.id == patient_id, PatientModel.patient_id == patient_id)
+    ).first()
     if not existing or existing.is_deleted:
         raise HTTPException(status_code=404, detail="Patient not found")
 
+    if current_user.role != "SYSTEM_ADMIN" and current_user.facility_id:
+        if existing.facility_id and existing.facility_id != current_user.facility_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied: patient belongs to facility '{existing.facility_id}', but user is authorized only for '{current_user.facility_id}'."
+            )
+
+    now_iso = datetime.utcnow().isoformat()
     existing.is_deleted = 1
     existing.server_version += 1
-    existing.updated_at = datetime.utcnow().isoformat()
+    existing.updated_at = now_iso
 
     record_journal_entry(
         db=db,
@@ -209,17 +383,95 @@ def delete_patient(patient_id: str, db: Session = Depends(get_db)):
         server_version=existing.server_version
     )
 
+    # Cascade soft-delete associated assessments and record tombstones
+    for ass in (existing.assessments or []):
+        if not ass.is_deleted:
+            ass.is_deleted = 1
+            ass.server_version += 1
+            ass.updated_at = now_iso
+            record_journal_entry(
+                db=db,
+                device_id=None,
+                entity_type='assessment',
+                entity_id=ass.id,
+                operation_type='DELETE',
+                payload={"id": ass.id, "is_deleted": 1, "server_version": ass.server_version},
+                server_version=ass.server_version
+            )
+
+    # Cascade cancel/soft-delete associated appointments
+    if existing.phone:
+        linked_appts = db.query(AppointmentModel).filter(
+            AppointmentModel.patient_phone == existing.phone,
+            AppointmentModel.is_deleted == 0
+        ).all()
+        for appt in linked_appts:
+            appt.is_deleted = 1
+            appt.status = "CANCELLED"
+            appt.server_version += 1
+            appt.updated_at = now_iso
+            record_journal_entry(
+                db=db,
+                device_id=None,
+                entity_type='appointment',
+                entity_id=appt.id,
+                operation_type='DELETE',
+                payload={"id": appt.id, "is_deleted": 1, "status": "CANCELLED", "server_version": appt.server_version},
+                server_version=appt.server_version
+            )
+
+    # Record immutable audit event for patient deletion
+    audit_event = AuditEventModel(
+        event_id=str(uuid.uuid4()),
+        event_type="PATIENT_DELETED",
+        entity_type="patient",
+        entity_id=existing.id,
+        user_id=current_user.id if current_user else "system",
+        user_role=current_user.role if current_user else "SYSTEM",
+        device_id=None,
+        action="ARCHIVE_AND_DELETE",
+        previous_state_json=json.dumps({
+            "id": existing.id,
+            "patient_id": existing.patient_id,
+            "name": existing.name,
+            "facility_id": existing.facility_id,
+            "is_deleted": 0
+        }),
+        new_state_json=json.dumps({
+            "id": existing.id,
+            "patient_id": existing.patient_id,
+            "is_deleted": 1,
+            "server_version": existing.server_version
+        }),
+        workflow_version="2.0.0",
+        ruleset_version="2.0.0",
+        timestamp=now_iso
+    )
+    db.add(audit_event)
+
     db.commit()
-    return {"message": "Patient soft deleted and tombstone recorded", "id": patient_id}
+    return {"status": "success", "message": "Patient and associated clinical records soft deleted and archived", "id": existing.id, "server_version": existing.server_version}
 
 # --- ASSESSMENTS & AI RISK ENDPOINTS ---
 
 @app.post("/api/assess", response_model=AssessmentResponse)
-def create_assessment(assessment: AssessmentCreate, db: Session = Depends(get_db)):
-    # 1. Fetch or verify patient
+def create_assessment(
+    assessment: AssessmentCreate,
+    current_user: UserModel = Depends(require_permissions("assessments:create")),
+    db: Session = Depends(get_db)
+):
+    # 1. Fetch or verify patient & enforce facility tenancy
     patient = db.query(PatientModel).filter(PatientModel.id == assessment.patient_id).first()
+    if patient and current_user.role != "SYSTEM_ADMIN" and current_user.facility_id:
+        if patient.facility_id and patient.facility_id != current_user.facility_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied: cannot perform assessment on patient from foreign facility '{patient.facility_id}'."
+            )
+
     patient_name = patient.name if patient else "Unknown Patient"
     village = patient.village if patient else "Unknown Village"
+    target_facility = current_user.facility_id or (patient.facility_id if patient else None) or "PHC-DEFAULT"
 
     # 2. Run Governed Clinical Screening Engine (TASK-001 & TASK-002)
     eval_result = screening_engine.evaluate(assessment.model_dump())
@@ -232,6 +484,7 @@ def create_assessment(assessment: AssessmentCreate, db: Session = Depends(get_db
         db_ass = AssessmentModel(
             id=ass_id,
             patient_id=assessment.patient_id,
+            facility_id=target_facility,
             symptom_duration_days=assessment.symptom_duration_days,
             temperature_f=assessment.temperature_f,
             systolic_bp=assessment.systolic_bp,
@@ -283,6 +536,7 @@ def create_assessment(assessment: AssessmentCreate, db: Session = Depends(get_db
             payload={
                 "id": db_ass.id,
                 "patient_id": db_ass.patient_id,
+                "facility_id": db_ass.facility_id,
                 "risk_level": db_ass.risk_level,
                 "triage_state": db_ass.triage_state,
                 "is_emergency": db_ass.is_emergency,
@@ -345,8 +599,17 @@ def create_assessment(assessment: AssessmentCreate, db: Session = Depends(get_db
     )
 
 @app.get("/api/assessments", response_model=List[AssessmentResponse])
-def list_assessments(db: Session = Depends(get_db)):
-    assessments = db.query(AssessmentModel).filter(AssessmentModel.is_deleted == 0).order_by(AssessmentModel.created_at.desc()).all()
+def list_assessments(
+    current_user: UserModel = Depends(require_permissions("assessments:read")),
+    db: Session = Depends(get_db)
+):
+    query = db.query(AssessmentModel).filter(AssessmentModel.is_deleted == 0)
+    # Facility boundary check: non-admin clinicians/workers only see their assigned facility
+    if current_user.role not in ["SYSTEM_ADMIN", "DISTRICT_OFFICER"] and current_user.facility_id:
+        query = query.filter(
+            (AssessmentModel.facility_id == current_user.facility_id) | (AssessmentModel.facility_id == None)
+        )
+    assessments = query.order_by(AssessmentModel.created_at.desc()).all()
     results = []
     for ass in assessments:
         patient = db.query(PatientModel).filter(PatientModel.id == ass.patient_id).first()
@@ -394,11 +657,82 @@ def list_assessments(db: Session = Depends(get_db)):
         )
     return results
 
-@app.put("/api/assessments/{assessment_id}/referral")
-def update_referral_status(assessment_id: str, body: ReferralUpdate, db: Session = Depends(get_db)):
+@app.get("/api/assessments/{assessment_id}", response_model=AssessmentResponse)
+def get_assessment_by_id(
+    assessment_id: str,
+    current_user: UserModel = Depends(require_permissions("assessments:read")),
+    db: Session = Depends(get_db)
+):
     ass = db.query(AssessmentModel).filter(AssessmentModel.id == assessment_id).first()
     if not ass or ass.is_deleted:
         raise HTTPException(status_code=404, detail="Assessment not found")
+
+    if current_user.role not in ["SYSTEM_ADMIN", "DISTRICT_OFFICER"] and current_user.facility_id:
+        if ass.facility_id and ass.facility_id != current_user.facility_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: assessment belongs to another facility."
+            )
+
+    patient = db.query(PatientModel).filter(PatientModel.id == ass.patient_id).first()
+    p_name = patient.name if patient else "Unknown Patient"
+    p_village = patient.village if patient else "Unknown Village"
+    return AssessmentResponse(
+        id=ass.id,
+        patient_id=ass.patient_id,
+        patient_name=p_name,
+        village=p_village,
+        symptoms=ass.symptoms,
+        symptom_duration_days=ass.symptom_duration_days,
+        temperature_f=ass.temperature_f,
+        systolic_bp=ass.systolic_bp,
+        diastolic_bp=ass.diastolic_bp,
+        glucose_mg_dl=ass.glucose_mg_dl,
+        heart_rate_bpm=ass.heart_rate_bpm,
+        height_cm=ass.height_cm,
+        weight_kg=ass.weight_kg,
+        bmi=ass.bmi,
+        smoking_status=ass.smoking_status,
+        alcohol_status=ass.alcohol_status,
+        physical_activity=ass.physical_activity or "Moderate",
+        family_history=ass.family_history,
+        risk_level=ass.risk_level,
+        triage_state=getattr(ass, 'triage_state', 'LOW_RISK') or 'LOW_RISK',
+        is_emergency=bool(getattr(ass, 'is_emergency', 0)),
+        short_circuit=bool(getattr(ass, 'is_emergency', 0)),
+        red_flags=getattr(ass, 'red_flags', []) or [],
+        uncertainty_state=getattr(ass, 'uncertainty_state', 'COMPLETE') or 'COMPLETE',
+        risk_score=ass.risk_score,
+        likely_conditions=ass.likely_conditions,
+        contributing_factors=ass.contributing_factors,
+        recommended_action=ass.recommended_action,
+        referral_status=ass.referral_status,
+        workflow_version=getattr(ass, 'workflow_version', '2.0.0') or '2.0.0',
+        ruleset_version=getattr(ass, 'ruleset_version', '2.0.0') or '2.0.0',
+        review_state=getattr(ass, 'review_state', 'NOT_REQUIRED') or 'NOT_REQUIRED',
+        reviewed_by=ass.reviewed_by,
+        reviewed_at=ass.reviewed_at,
+        created_at=ass.created_at,
+        disclaimer=MEDICAL_DISCLAIMER
+    )
+
+@app.put("/api/assessments/{assessment_id}/referral")
+def update_referral_status(
+    assessment_id: str,
+    body: ReferralUpdate,
+    current_user: UserModel = Depends(require_permissions("referrals:update")),
+    db: Session = Depends(get_db)
+):
+    ass = db.query(AssessmentModel).filter(AssessmentModel.id == assessment_id).first()
+    if not ass or ass.is_deleted:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+
+    if current_user.role != "SYSTEM_ADMIN" and current_user.facility_id:
+        if ass.facility_id and ass.facility_id != current_user.facility_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: assessment belongs to another facility."
+            )
 
     valid_statuses = ["NOT_REFERRED", "REFERRED", "APPOINTMENT_REQUESTED", "CONSULTATION_COMPLETED"]
     if body.referral_status not in valid_statuses:
@@ -417,6 +751,7 @@ def update_referral_status(assessment_id: str, body: ReferralUpdate, db: Session
         payload={
             "id": ass.id,
             "referral_status": ass.referral_status,
+            "facility_id": ass.facility_id,
             "server_version": ass.server_version,
             "updated_at": ass.updated_at
         },
@@ -429,9 +764,20 @@ def update_referral_status(assessment_id: str, body: ReferralUpdate, db: Session
 # --- OFFLINE SYNC ENDPOINT ---
 
 @app.post("/api/sync", response_model=SyncResponse)
-def batch_sync(payload: SyncPayload, db: Session = Depends(get_db)):
+def batch_sync(
+    payload: SyncPayload,
+    current_user: UserModel = Depends(require_permissions("sync:push")),
+    db: Session = Depends(get_db)
+):
+    if len(payload.patients) + len(payload.assessments) > 100:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Batch size exceeds maximum limit of 100 operations."
+        )
+
     p_synced = 0
     a_synced = 0
+    target_facility = current_user.facility_id or "PHC-DEFAULT"
 
     # 1. Sync Patients
     for p in payload.patients:
@@ -445,6 +791,7 @@ def batch_sync(payload: SyncPayload, db: Session = Depends(get_db)):
                 gender=p.gender,
                 village=p.village,
                 phone=p.phone,
+                facility_id=target_facility,
                 patient_id=p.patient_id or f"RH-{p_id[:6].upper()}",
                 created_at=datetime.utcnow().isoformat()
             )
@@ -462,6 +809,7 @@ def batch_sync(payload: SyncPayload, db: Session = Depends(get_db)):
             new_a = AssessmentModel(
                 id=ass_id,
                 patient_id=a.patient_id,
+                facility_id=target_facility,
                 symptom_duration_days=a.symptom_duration_days,
                 temperature_f=a.temperature_f,
                 systolic_bp=a.systolic_bp,
@@ -508,8 +856,25 @@ def get_dashboard_stats(
     facility_id: Optional[str] = None,
     village: Optional[str] = None,
     date_range: Optional[str] = "all",
+    current_user: UserModel = Depends(require_roles("PHC_DOCTOR", "DISTRICT_OFFICER", "SYSTEM_ADMIN")),
     db: Session = Depends(get_db)
 ):
+    # ASHA workers are explicitly not authorized to view aggregated population health analytics
+    if current_user.role == "ASHA_WORKER":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="ASHA workers are not authorized to view aggregated dashboard statistics."
+        )
+
+    # Scoping: Clinicians are restricted to their assigned facility
+    if current_user.role == "PHC_DOCTOR":
+        if facility_id and facility_id != "ALL" and facility_id != current_user.facility_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied: clinician cannot access analytics for foreign facility '{facility_id}'."
+            )
+        facility_id = current_user.facility_id
+
     # Base query for non-deleted assessments
     query = db.query(AssessmentModel).filter(AssessmentModel.is_deleted == 0)
 
@@ -582,9 +947,15 @@ def get_dashboard_stats(
     village_data = [{"village": k, "count": v} for k, v in sorted(village_counts.items(), key=lambda x: x[1], reverse=True)]
 
     # Available distinct facilities & villages
-    all_patients = db.query(PatientModel).filter(PatientModel.is_deleted == 0).all()
+    patient_query = db.query(PatientModel).filter(PatientModel.is_deleted == 0)
+    if current_user.role == "PHC_DOCTOR" and current_user.facility_id:
+        patient_query = patient_query.filter(PatientModel.facility_id == current_user.facility_id)
+    all_patients = patient_query.all()
     available_villages = sorted(list(set(p.village for p in all_patients if p.village and p.village.strip())))
-    available_facilities = sorted(list(set(p.facility_id for p in all_patients if p.facility_id and p.facility_id.strip())))
+    if current_user.role == "PHC_DOCTOR" and current_user.facility_id:
+        available_facilities = [current_user.facility_id]
+    else:
+        available_facilities = sorted(list(set(p.facility_id for p in all_patients if p.facility_id and p.facility_id.strip())))
 
     return {
         "total_patients": total_patients,
@@ -609,13 +980,14 @@ def get_phc_dashboard_data(
     facility_id: Optional[str] = None,
     village: Optional[str] = None,
     date_range: Optional[str] = "all",
+    current_user: UserModel = Depends(require_roles("PHC_DOCTOR", "DISTRICT_OFFICER", "SYSTEM_ADMIN")),
     db: Session = Depends(get_db)
 ):
     """
     Dedicated endpoint for PHC Doctor & District Health Dashboard.
     Returns complete real analytics, KPI metrics, and clinical review status.
     """
-    return get_dashboard_stats(facility_id=facility_id, village=village, date_range=date_range, db=db)
+    return get_dashboard_stats(facility_id=facility_id, village=village, date_range=date_range, current_user=current_user, db=db)
 
 
 # ─── HEALTH CHATBOT ENDPOINT ─────────────────────────────────────────────────
@@ -661,80 +1033,20 @@ class ChatResponse(BaseModel):
 @app.post("/api/chat", response_model=ChatResponse)
 async def health_chat(request: ChatRequest):
     """
-    Health chatbot endpoint powered by OpenAI GPT.
-    The API key is read server-side from .env — never exposed to the browser.
+    Consolidated health chatbot endpoint powered by local Ollama (Gemma 3 270M).
+    Replaces legacy OpenAI endpoint to unify all AI workflows on local Ollama runtime.
     """
-    api_key = os.getenv("OPENAI_API_KEY", "")
-
-    if not api_key or api_key == "your_openai_api_key_here":
-        raise HTTPException(
-            status_code=503,
-            detail="OpenAI API key not configured. Please add OPENAI_API_KEY to backend/.env"
-        )
-
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
-
-        # Build message list: system prompt + conversation history
-        lang_hint = {
-            "hi": "Please respond in Hindi (हिंदी).",
-            "bn": "Please respond in Bengali (বাংলা).",
-            "en": "Please respond in English."
-        }.get(request.language or "en", "Please respond in English.")
-
-        openai_messages = [
-            {"role": "system", "content": CHAT_SYSTEM_PROMPT + f"\n\nLanguage instruction: {lang_hint}"}
-        ]
-
-        # Add conversation history (last 20 messages max to stay within token limits)
-        for msg in request.messages[-20:]:
-            openai_messages.append({"role": msg.role, "content": msg.content})
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",   # Fast and cost-effective
-            messages=openai_messages,
-            max_tokens=600,
-            temperature=0.4,        # More deterministic for medical guidance
-        )
-
-        reply = response.choices[0].message.content or "I could not generate a response. Please try again."
-        return ChatResponse(reply=reply)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        err_str = str(e)
-        if "insufficient_quota" in err_str or "credit_balance_exhausted" in err_str or "429" in err_str:
-            # Fallback response for offline / credit-exhausted state
-            user_msg = (request.messages[-1].content if request.messages else "").lower()
-
-            # Simple rule-based guidance for hackathon demo resilience
-            advice = []
-            if "fever" in user_msg or "बुखार" in user_msg or "জ্বর" in user_msg:
-                advice.append("• **Fever Management:** Stay hydrated with clean water/ORS, take adequate rest, and use a cool damp cloth on forehead to reduce temp.")
-                advice.append("• **Red Flags:** If fever >102°F lasts more than 2 days or is accompanied by severe headache, rash, or vomiting, visit the nearest PHC immediately.")
-            elif "cough" in user_msg or "cold" in user_msg or "खांसी" in user_msg:
-                advice.append("• **Cough & Cold Care:** Drink warm water or herbal tea (tulsi/ginger), practice steam inhalation, and rest.")
-                advice.append("• **Warning:** If cough persists >2 weeks or produces blood/chest pain, get tested for TB/respiratory infection at PHC.")
-            elif "sugar" in user_msg or "diabetes" in user_msg or "शुगर" in user_msg:
-                advice.append("• **Blood Sugar Management:** Avoid direct sweets, sugary tea, and refined flour. Eat whole grains, green leafy vegetables, and stay active.")
-                advice.append("• **Screening:** Regular glucose monitoring at PHC is recommended.")
-            elif "bp" in user_msg or "blood pressure" in user_msg or "बीपी" in user_msg:
-                advice.append("• **Blood Pressure Guidance:** Reduce daily salt intake, manage stress, avoid tobacco/alcohol, and exercise daily.")
-                advice.append("• **Critical:** If BP >160/100 or experiencing severe dizziness/blurred vision, seek emergency care.")
-            else:
-                advice.append("• **General Health Care:** Ensure clean drinking water, proper nutrition, adequate sleep, and hygiene.")
-                advice.append("• **Consultation:** Please visit your local ASHA worker or Primary Health Centre (PHC) for a clinical evaluation.")
-
-            fallback_reply = (
-                "⚠️ *Note: OpenAI API quota exhausted. Operating in Rule-Based Medical Decision Support Mode.*\n\n"
-                + "\n".join(advice)
-                + "\n\n⚕️ *This is AI guidance only — not a medical diagnosis. Please consult a doctor for proper evaluation.*"
-            )
-            return ChatResponse(reply=fallback_reply)
-
-        raise HTTPException(status_code=500, detail=f"Chat error: {err_str}")
+    from services.ollama_service import ollama_service
+    history = [{"role": m.role, "content": m.content} for m in request.messages]
+    result = await ollama_service.chat(
+        messages=history,
+        language=request.language or "en",
+        temperature=0.2
+    )
+    if not result.get("success", False):
+        err_msg = result.get("error", "Local AI response generation failed.")
+        return ChatResponse(reply="", error=err_msg)
+    return ChatResponse(reply=result.get("response", ""))
 
 
 # ─── ML DISEASE PREDICTION ENDPOINT ───────────────────────────────────────────
@@ -744,9 +1056,13 @@ class MLPredictRequest(BaseModel):
 
 class MLPredictionItem(BaseModel):
     rank: int
+    item_id: Optional[str] = None
     condition: str
     score: float
-    contributingSymptoms: List[str]
+    risk_score: float = 0.0
+    risk_level: str = "LOW"
+    required_specialty: Optional[str] = None
+    contributingSymptoms: List[str] = []
 
 class MLPredictResponse(BaseModel):
     predictions: List[MLPredictionItem]
@@ -1067,8 +1383,14 @@ def unified_predict(request: UnifiedPredictRequest):
 
 # ─── TELECONSULTATION APPOINTMENTS ENDPOINTS ───────────────────────────────────────
 
+# ─── TELECONSULTATION APPOINTMENTS ENDPOINTS ───────────────────────────────────────
+
 @app.post("/api/appointments", response_model=AppointmentResponse)
-def create_appointment(appt: AppointmentCreate, db: Session = Depends(get_db)):
+def create_appointment(
+    appt: AppointmentCreate,
+    current_user: UserModel = Depends(require_permissions("appointments:create")),
+    db: Session = Depends(get_db)
+):
     """
     Save a teleconsultation / doctor appointment booking.
     """
@@ -1087,9 +1409,12 @@ def create_appointment(appt: AppointmentCreate, db: Session = Depends(get_db)):
             notes=existing.notes,
             status=existing.status,
             risk_level=existing.risk_level,
+            facility_id=existing.facility_id,
             likely_conditions=existing.likely_conditions,
             created_at=existing.created_at
         )
+
+    target_facility = current_user.facility_id or "PHC-DEFAULT"
 
     db_appt = AppointmentModel(
         id=appt_id,
@@ -1103,6 +1428,7 @@ def create_appointment(appt: AppointmentCreate, db: Session = Depends(get_db)):
         notes=appt.notes or "",
         status=appt.status or "PENDING",
         risk_level=appt.risk_level,
+        facility_id=target_facility,
         server_version=1,
         is_deleted=0,
         created_at=datetime.utcnow().isoformat(),
@@ -1130,6 +1456,7 @@ def create_appointment(appt: AppointmentCreate, db: Session = Depends(get_db)):
             "notes": db_appt.notes,
             "status": db_appt.status,
             "risk_level": db_appt.risk_level,
+            "facility_id": db_appt.facility_id,
             "likely_conditions": db_appt.likely_conditions,
             "server_version": 1,
             "is_deleted": 0,
@@ -1153,17 +1480,26 @@ def create_appointment(appt: AppointmentCreate, db: Session = Depends(get_db)):
         notes=db_appt.notes,
         status=db_appt.status,
         risk_level=db_appt.risk_level,
+        facility_id=db_appt.facility_id,
         likely_conditions=db_appt.likely_conditions,
         created_at=db_appt.created_at
     )
 
 
 @app.get("/api/appointments", response_model=List[AppointmentResponse])
-def list_appointments(db: Session = Depends(get_db)):
+def list_appointments(
+    current_user: UserModel = Depends(require_permissions("appointments:read")),
+    db: Session = Depends(get_db)
+):
     """
     Retrieve all teleconsultation appointments ordered by date desc.
     """
-    appts = db.query(AppointmentModel).filter(AppointmentModel.is_deleted == 0).order_by(AppointmentModel.created_at.desc()).all()
+    query = db.query(AppointmentModel).filter(AppointmentModel.is_deleted == 0)
+    if current_user.role not in ["SYSTEM_ADMIN", "DISTRICT_OFFICER"] and current_user.facility_id:
+        query = query.filter(
+            (AppointmentModel.facility_id == current_user.facility_id) | (AppointmentModel.facility_id == None)
+        )
+    appts = query.order_by(AppointmentModel.created_at.desc()).all()
     return [
         AppointmentResponse(
             id=a.id,
@@ -1177,6 +1513,7 @@ def list_appointments(db: Session = Depends(get_db)):
             notes=a.notes,
             status=a.status,
             risk_level=a.risk_level,
+            facility_id=a.facility_id,
             likely_conditions=a.likely_conditions,
             created_at=a.created_at
         )
@@ -1188,6 +1525,7 @@ def list_appointments(db: Session = Depends(get_db)):
 def update_appointment_status(
     appointment_id: str,
     body: dict,
+    current_user: UserModel = Depends(require_permissions("appointments:manage")),
     db: Session = Depends(get_db)
 ):
     """
@@ -1196,6 +1534,14 @@ def update_appointment_status(
     appt = db.query(AppointmentModel).filter(AppointmentModel.id == appointment_id).first()
     if not appt or appt.is_deleted:
         raise HTTPException(status_code=404, detail="Appointment not found")
+
+    if current_user.role != "SYSTEM_ADMIN" and current_user.facility_id:
+        if appt.facility_id and appt.facility_id != current_user.facility_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: appointment belongs to another facility."
+            )
+
     valid = ["PENDING", "CONFIRMED", "CANCELLED", "COMPLETED"]
     new_status = body.get("status", "")
     if new_status not in valid:
@@ -1213,6 +1559,7 @@ def update_appointment_status(
         payload={
             "id": appt.id,
             "status": appt.status,
+            "facility_id": appt.facility_id,
             "server_version": appt.server_version,
             "updated_at": appt.updated_at
         },
@@ -1227,6 +1574,7 @@ def update_appointment_status(
 def update_appointment(
     appointment_id: str,
     body: dict,
+    current_user: UserModel = Depends(require_permissions("appointments:manage")),
     db: Session = Depends(get_db)
 ):
     """
@@ -1235,6 +1583,14 @@ def update_appointment(
     appt = db.query(AppointmentModel).filter(AppointmentModel.id == appointment_id).first()
     if not appt or appt.is_deleted:
         raise HTTPException(status_code=404, detail="Appointment not found")
+
+    if current_user.role != "SYSTEM_ADMIN" and current_user.facility_id:
+        if appt.facility_id and appt.facility_id != current_user.facility_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: appointment belongs to another facility."
+            )
+
     if "patient_name" in body:
         appt.patient_name = body["patient_name"]
     if "patient_phone" in body:
@@ -1265,6 +1621,7 @@ def update_appointment(
             "appointment_date": appt.appointment_date,
             "appointment_time": appt.appointment_time,
             "status": appt.status,
+            "facility_id": appt.facility_id,
             "server_version": appt.server_version,
             "updated_at": appt.updated_at
         },
@@ -1278,6 +1635,7 @@ def update_appointment(
 @app.delete("/api/appointments/{appointment_id}")
 def delete_appointment(
     appointment_id: str,
+    current_user: UserModel = Depends(require_permissions("appointments:manage")),
     db: Session = Depends(get_db)
 ):
     """
@@ -1286,6 +1644,13 @@ def delete_appointment(
     appt = db.query(AppointmentModel).filter(AppointmentModel.id == appointment_id).first()
     if not appt or appt.is_deleted:
         raise HTTPException(status_code=404, detail="Appointment not found")
+
+    if current_user.role != "SYSTEM_ADMIN" and current_user.facility_id:
+        if appt.facility_id and appt.facility_id != current_user.facility_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: appointment belongs to another facility."
+            )
 
     appt.is_deleted = 1
     appt.server_version += 1
@@ -1308,20 +1673,28 @@ def delete_appointment(
 # ─── V2 RELIABLE OFFLINE SYNC ENDPOINTS (TASK-005 & TASK-006) ──────────────────────
 
 @app.post("/api/v2/sync/push", response_model=SyncPushResponse)
-def sync_push(request: SyncPushRequest, db: Session = Depends(get_db)):
+def sync_push(
+    request: SyncPushRequest,
+    current_user: UserModel = Depends(require_permissions("sync:push")),
+    db: Session = Depends(get_db)
+):
     """
     Idempotent batch push API for frontline workers.
     Processes queued mutations with OCC conflict detection and records sync journal entries.
     """
-    return process_push_batch(db, request)
+    return process_push_batch(db, request, current_user=current_user)
 
 
 @app.post("/api/v2/sync/pull", response_model=SyncPullResponse)
-def sync_pull_post(request: SyncPullRequest, db: Session = Depends(get_db)):
+def sync_pull_post(
+    request: SyncPullRequest,
+    current_user: UserModel = Depends(require_permissions("sync:pull")),
+    db: Session = Depends(get_db)
+):
     """
     Cursor-based pull API. Returns changes after last_server_sequence.
     """
-    return process_pull_request(db, request)
+    return process_pull_request(db, request, current_user=current_user)
 
 
 @app.get("/api/v2/sync/pull", response_model=SyncPullResponse)
@@ -1329,6 +1702,7 @@ def sync_pull_get(
     since_seq: int = 0,
     limit: int = 100,
     device_id: Optional[str] = None,
+    current_user: UserModel = Depends(require_permissions("sync:pull")),
     db: Session = Depends(get_db)
 ):
     """
@@ -1339,7 +1713,7 @@ def sync_pull_get(
         last_server_sequence=since_seq,
         limit=limit
     )
-    return process_pull_request(db, request)
+    return process_pull_request(db, request, current_user=current_user)
 
 
 import math
@@ -1356,53 +1730,308 @@ def haversine_km(lat1, lon1, lat2, lon2):
     return R * c
 
 @app.get("/api/hospitals/search")
-def search_hospitals(location: str):
+def search_hospitals(
+    location: str = "Barasat",
+    condition: str = "General Health",
+    risk_score: float = 25.0
+):
     """
-    Searches for real hospitals using open-source OpenStreetMap / Nominatim mapping data.
+    Unified hospital search endpoint. Returns capability-rich hospital records
+    ranked by multi-factor suitability, maintaining backward compatibility.
     """
-    geocode_url = f"https://nominatim.openstreetmap.org/search?format=json&q={urllib.parse.quote(location)}&limit=1"
-    req = urllib.request.Request(geocode_url, headers={'User-Agent': 'RuralHealthAI/2.0'})
+    recs = recommend_hospitals(
+        condition=condition,
+        risk_score=risk_score,
+        user_lat=22.723,
+        user_lng=88.483,
+        max_results=8
+    )
 
-    base_lat = 22.723
-    base_lng = 88.483
+    formatted_hospitals = []
+    for h in recs:
+        formatted_hospitals.append({
+            "id": h["id"],
+            "name": h["name"],
+            "specialty": h["specialty"],
+            "category": h["category"],
+            "address": h["address"],
+            "phone": h["phone"],
+            "rating": h["rating"],
+            "distance": h["distance"],
+            "distance_km": h["distance_km"],
+            "travel_time": h["travel_time"],
+            "travel_time_min": h["travel_time_min"],
+            "isOpen": True,
+            "lat": h["lat"],
+            "lng": h["lng"],
+            "amenity": "hospital" if "Hospital" in h["category"] else "clinic",
+            "is_emergency_24x7": h["is_emergency_24x7"],
+            "icu_beds_available": h["icu_beds_available"],
+            "recommendation_priority": h["recommendation_priority"],
+            "suitability_score": h["suitability_score"],
+            "specialty_match": h["specialty_match"],
+            "capability_match": h["capability_match"],
+            "reason": h["reason"]
+        })
 
-    try:
-        with urllib.request.urlopen(req, timeout=3) as response:
-            geo_data = json.loads(response.read().decode())
-            if geo_data:
-                base_lat = float(geo_data[0]['lat'])
-                base_lng = float(geo_data[0]['lon'])
-    except Exception as e:
-        pass
+    return {
+        "center": {"lat": 22.723, "lng": 88.483},
+        "hospitals": formatted_hospitals
+    }
 
-    search_url = f"https://nominatim.openstreetmap.org/search?format=json&q=hospital+in+{urllib.parse.quote(location)}&limit=15"
-    req_hosp = urllib.request.Request(search_url, headers={'User-Agent': 'RuralHealthAI/2.0'})
 
-    try:
-        with urllib.request.urlopen(req_hosp, timeout=3) as response:
-            hosp_data = json.loads(response.read().decode())
-            results = []
-            for idx, item in enumerate(hosp_data):
-                hlat = float(item['lat'])
-                hlng = float(item['lon'])
-                dist = haversine_km(base_lat, base_lng, hlat, hlng)
-                results.append({
-                    "id": str(item.get('place_id', f"h_{idx}")),
-                    "name": item.get('name', 'Hospital / Clinic'),
-                    "specialty": "General Hospital",
-                    "address": item.get('display_name', ''),
-                    "lat": hlat,
-                    "lng": hlng,
-                    "distance": f"{dist:.1f} km",
-                    "isOpen": True
-                })
-            if results:
-                results.sort(key=lambda x: float(x['distance'].split()[0]))
-                return {"hospitals": results, "center": {"lat": base_lat, "lng": base_lng}}
-    except Exception as e:
-        pass
+# ─── IDRC CAPABILITY-AWARE HOSPITAL RECOMMENDATION ENDPOINTS ─────────────────
 
-    return {'center': {'lat': base_lat, 'lng': base_lng}, 'hospitals': []}
+@app.post("/api/hospitals/recommend", response_model=HospitalRecommendationResponse)
+def get_hospital_recommendations_post(req: HospitalRecommendationRequest):
+    """
+    IDRC Hospital Recommendation Service (POST).
+    Multi-factor ranking considering patient risk score, clinical condition,
+    required specialty, hospital emergency & ICU capabilities, travel time, and capacity.
+    """
+    r_level = req.risk_level or classify_risk_level(req.risk_score)
+    is_crit = req.risk_score > 70.0
+    prof = get_condition_profile(req.condition)
+    spec = req.specialty or prof.get("specialty", "General Medicine")
+
+    recs = recommend_hospitals(
+        condition=req.condition,
+        risk_score=req.risk_score,
+        user_lat=req.lat or 22.723,
+        user_lng=req.lng or 88.483,
+        custom_specialty=spec,
+        max_results=req.max_results or 5
+    )
+
+    banner_text = (
+        f"Risk Score: {int(req.risk_score)}/100 — Critical"
+        if is_crit else
+        f"Risk Score: {int(req.risk_score)}/100 — {r_level.title()}"
+    )
+
+    return HospitalRecommendationResponse(
+        item_id=req.item_id,
+        condition=req.condition,
+        patient_risk_score=req.risk_score,
+        patient_risk_level=r_level,
+        required_specialty=spec,
+        is_critical=is_crit,
+        recommendation_banner=banner_text,
+        hospitals=[HospitalRecommendationItem(**h) for h in recs]
+    )
+
+
+@app.get("/api/hospitals/recommend", response_model=HospitalRecommendationResponse)
+def get_hospital_recommendations_get(
+    condition: str = "General",
+    risk_score: float = 20.0,
+    risk_level: Optional[str] = None,
+    specialty: Optional[str] = None,
+    item_id: Optional[str] = None,
+    lat: float = 22.723,
+    lng: float = 88.483,
+    max_results: int = 5
+):
+    """
+    IDRC Hospital Recommendation Service (GET).
+    Allows easy query string usage from browser clients and frontends.
+    """
+    r_level = risk_level or classify_risk_level(risk_score)
+    is_crit = risk_score > 70.0
+    prof = get_condition_profile(condition)
+    spec = specialty or prof.get("specialty", "General Medicine")
+
+    recs = recommend_hospitals(
+        condition=condition,
+        risk_score=risk_score,
+        user_lat=lat,
+        user_lng=lng,
+        custom_specialty=spec,
+        max_results=max_results
+    )
+
+    banner_text = (
+        f"Risk Score: {int(risk_score)}/100 — Critical"
+        if is_crit else
+        f"Risk Score: {int(risk_score)}/100 — {r_level.title()}"
+    )
+
+    return HospitalRecommendationResponse(
+        item_id=item_id,
+        condition=condition,
+        patient_risk_score=risk_score,
+        patient_risk_level=r_level,
+        required_specialty=spec,
+        is_critical=is_crit,
+        recommendation_banner=banner_text,
+        hospitals=[HospitalRecommendationItem(**h) for h in recs]
+    )
+
+
+# ─── POPULATION HEALTH INTELLIGENCE ENDPOINTS (HMIS + NFHS-5) ─────────────────
+
+class ScreeningEnrichmentPayload(BaseModel):
+    vitals: Optional[Dict[str, Any]] = None
+    symptoms: Optional[List[str]] = None
+    risk_factors: Optional[List[str]] = None
+    risk_level: Optional[str] = "Low"
+    has_emergency_red_flags: Optional[bool] = False
+    district: Optional[str] = "Kolkata"
+
+
+@app.get("/api/ml/population-health")
+def get_population_health(
+    district: str = "Kolkata",
+    year: Optional[int] = None
+):
+    """
+    Returns population health domain summaries and context indicators for a district and year.
+    Supported domains: maternal_health, child_health, nutrition, ncd, communicable, healthcare_access.
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    summary = _POPULATION_HEALTH.get_domain_summary(district=district, year=year)
+    if "error" in summary:
+        raise HTTPException(status_code=404, detail=summary["error"])
+    return summary
+
+
+@app.get("/api/ml/population-health/trends")
+def get_population_health_trends(
+    district: str = "Kolkata",
+    indicators: Optional[str] = None
+):
+    """
+    Returns Recharts-ready annual time series of population health indicators.
+    Indicators param can be comma-separated list of indicator names.
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    ind_list = [i.strip() for i in indicators.split(",") if i.strip()] if indicators else None
+    trends = _POPULATION_HEALTH.get_population_health_trends(district=district, indicator_keys=ind_list)
+    if "error" in trends:
+        raise HTTPException(status_code=404, detail=trends["error"])
+    return trends
+
+
+@app.get("/api/ml/population-health/indicator-trend")
+def get_indicator_trend(
+    indicator: str,
+    district: str = "Kolkata"
+):
+    """
+    Returns detailed trend, direction, and CAGR for a specific HMIS/NFHS indicator.
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    trend = _POPULATION_HEALTH.get_indicator_trend(indicator_name=indicator, district=district)
+    if "error" in trend and trend.get("status") != "not_available":
+        raise HTTPException(status_code=404, detail=trend["error"])
+    return trend
+
+
+@app.get("/api/ml/population-health/ncd-context")
+def get_ncd_context(
+    district: str = "Kolkata",
+    year: Optional[int] = 2021
+):
+    """
+    Provides structured NCD population risk context response.
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    ctx = _POPULATION_HEALTH.get_ncd_context(district=district, year=year)
+    if "error" in ctx:
+        raise HTTPException(status_code=404, detail=ctx["error"])
+    return ctx
+
+
+@app.get("/api/ml/population-health/data-quality")
+def get_population_data_quality():
+    """
+    Returns the latest population health data quality monitoring report.
+    """
+    report_file = os.path.join(os.path.dirname(__file__), "data", "processed", "population_data_quality_report.json")
+    if not os.path.exists(report_file):
+        try:
+            from ml.population_data_quality import run_data_quality_audit
+            return run_data_quality_audit()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to generate quality report: {e}")
+    with open(report_file, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+@app.get("/api/ml/population-health/dictionary")
+def get_feature_dictionary():
+    """
+    Returns the curated population feature dictionary with full data provenance.
+    """
+    dict_file = os.path.join(os.path.dirname(__file__), "data", "processed", "feature_dictionary.csv")
+    if not os.path.exists(dict_file):
+        raise HTTPException(status_code=404, detail="Feature dictionary not found")
+    import pandas as pd
+    df_dict = pd.read_csv(dict_file)
+    return {
+        "total_curated_features": len(df_dict),
+        "features": df_dict.to_dict(orient="records"),
+        "disclaimer": _POP_DISCLAIMER
+    }
+
+
+@app.get("/api/ml/population-health/snowflake/metadata")
+def get_snowflake_metadata():
+    """Returns Snowflake Schema architecture, table dimensions, and fact statistics."""
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    return _POPULATION_HEALTH.query_snowflake_metadata()
+
+
+@app.get("/api/ml/population-health/snowflake/query")
+def query_snowflake_schema(
+    district: str = "Kolkata",
+    year: Optional[int] = None,
+    fiscal_year: Optional[str] = None,
+    source: Optional[str] = None,
+    domain: Optional[str] = None,
+    facility_category: Optional[str] = None,
+    limit: int = 100
+):
+    """
+    Direct multidimensional query against the Snowflake Schema fact_health_indicator table.
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    return _POPULATION_HEALTH.query_snowflake_facts(
+        district=district,
+        year=year,
+        fiscal_year=fiscal_year,
+        source=source,
+        domain=domain,
+        facility_category=facility_category,
+        limit=limit
+    )
+
+
+@app.post("/api/ml/population-health/enrich-screening")
+def enrich_screening(payload: ScreeningEnrichmentPayload):
+    """
+    Enriches individual patient screening with population risk context.
+    CLINICAL BOUNDARY: Population dataset never overrides patient vitals or reported symptoms.
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    patient_data = {
+        "vitals": payload.vitals or {},
+        "symptoms": payload.symptoms or [],
+        "risk_factors": payload.risk_factors or [],
+        "risk_level": payload.risk_level or "Low",
+        "has_emergency_red_flags": payload.has_emergency_red_flags or False
+    }
+    return _POPULATION_HEALTH.enrich_screening_context(
+        patient_assessment=patient_data,
+        district=payload.district or "Kolkata"
+    )
 
 
 # ─── AUTHENTICATION & RBAC ENDPOINTS (TASK-010 & TASK-011) ─────────────────────
@@ -1411,9 +2040,13 @@ def search_hospitals(location: str):
 def login_user(login_data: UserLoginRequest, db: Session = Depends(get_db)):
     """
     Authenticates a user (ASHA worker, doctor, officer, admin) and issues a JWT token.
+    Enforces brute-force lockout protection (5 failed attempts locks for 15 minutes).
     """
+    check_brute_force_lockout(login_data.username)
+
     user = db.query(UserModel).filter(UserModel.username == login_data.username).first()
     if not user or not verify_password(login_data.password, user.password_hash):
+        record_login_failure(login_data.username)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password credentials",
@@ -1424,6 +2057,8 @@ def login_user(login_data: UserLoginRequest, db: Session = Depends(get_db)):
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is deactivated. Contact system administrator."
         )
+
+    clear_login_failures(login_data.username)
 
     user.last_login_at = datetime.utcnow().isoformat()
     db.commit()
@@ -1464,11 +2099,11 @@ def login_user(login_data: UserLoginRequest, db: Session = Depends(get_db)):
 @app.post("/api/v2/auth/register", response_model=UserResponse)
 def register_user(
     reg_data: UserRegisterRequest,
-    current_user: UserModel = Depends(require_roles("SYSTEM_ADMIN", "PHC_DOCTOR")),
+    current_user: UserModel = Depends(require_roles("SYSTEM_ADMIN")),
     db: Session = Depends(get_db)
 ):
     """
-    Registers a new user account (Requires SYSTEM_ADMIN or PHC_DOCTOR role).
+    Registers a new user account (Restricted exclusively to SYSTEM_ADMIN role).
     """
     existing = db.query(UserModel).filter(
         (UserModel.username == reg_data.username) | (UserModel.email == reg_data.email)
@@ -1522,11 +2157,11 @@ def get_current_user_profile(current_user: UserModel = Depends(get_current_user)
 
 @app.get("/api/v2/auth/users", response_model=List[UserResponse])
 def get_all_users(
-    current_user: UserModel = Depends(get_current_user),
+    current_user: UserModel = Depends(require_roles("SYSTEM_ADMIN")),
     db: Session = Depends(get_db)
 ):
     """
-    Returns all active system accounts (available for quick switching during field & clinic pilot).
+    Returns all active system accounts (Restricted exclusively to SYSTEM_ADMIN).
     """
     users = db.query(UserModel).filter(UserModel.is_active == 1).all()
     results = []
@@ -1616,7 +2251,7 @@ def get_assessment_review_history(
     """
     Retrieves the complete immutable audit trail of clinical reviews and attestations for an assessment.
     """
-    return get_review_history(db=db, assessment_id=assessment_id)
+    return get_review_history(db=db, assessment_id=assessment_id, current_user=current_user)
 
 
 # ─── LOCAL AI ASSISTANT & KOLKATA HEALTH DATA INTELLIGENCE ROUTES ──────────────
