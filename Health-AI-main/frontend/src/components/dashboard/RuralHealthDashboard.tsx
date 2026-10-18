@@ -53,15 +53,16 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [selectedPatient, setSelectedPatient] = useState<PatientTableRow | null>(null);
+  const [trendPeriod, setTrendPeriod] = useState('Last 7 Days');
 
   // Live queries from Dexie offline database (Single Source of Truth)
-  const livePatients = useLiveQuery(() => db.patients.toArray()) || [];
-  const liveAssessments = useLiveQuery(() => db.assessments.toArray()) || [];
-  const liveAppointments = useLiveQuery(() => db.appointments.toArray()) || [];
+  const livePatients = useLiveQuery(() => db.patients.filter((p) => !p.is_deleted).toArray()) || [];
+  const liveAssessments = useLiveQuery(() => db.assessments.filter((a) => !a.is_deleted).toArray()) || [];
+  const liveAppointments = useLiveQuery(() => db.appointments.filter((a) => !a.is_deleted && a.status !== 'CANCELLED').toArray()) || [];
 
   // Live queries for synchronization states (Requirement 2.11 & Section 7)
   const outboxQueuedCount =
-    useLiveQuery(() => db.outbox.where('status').equals('QUEUED').count()) ?? pendingSyncCount;
+    useLiveQuery(() => db.outbox.where('status').equals('QUEUED').count()) ?? 0;
   const outboxFailedCount =
     useLiveQuery(() => db.outbox.where('status').equals('FAILED').count()) ?? 0;
   const conflictCount =
@@ -197,7 +198,17 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
       else if (ass.risk_level === 'LOW') entry.lowRisk += 1;
     });
 
+    const days = trendPeriod === 'Last 14 Days' ? 14 : trendPeriod === 'Last 30 Days' ? 30 : 7;
+    const today = new Date();
+    today.setHours(23, 59, 59, 999);
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - (days - 1));
+    const startKey = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
+    const endKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
     return Array.from(dateMap.entries())
+      .filter(([key]) => key >= startKey && key <= endKey)
       .sort(([keyA], [keyB]) => keyA.localeCompare(keyB))
       .map(([, entry]) => ({
         date: entry.displayDate,
@@ -206,7 +217,7 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
         moderateRisk: entry.moderateRisk,
         lowRisk: entry.lowRisk,
       }));
-  }, [liveAssessments]);
+  }, [liveAssessments, trendPeriod]);
 
   // Patient directory table mapping with explicit UNASSESSED / NEEDS_REVIEW badges
   const patientsList: PatientTableRow[] = useMemo(() => {
@@ -498,7 +509,7 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
               />
             </div>
             <div className="h-full">
-              <ScreeningsTrendCard data={screeningsTrend} />
+              <ScreeningsTrendCard data={screeningsTrend} onPeriodChange={setTrendPeriod} />
             </div>
           </div>
 
