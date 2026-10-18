@@ -19,7 +19,7 @@ import os
 import re
 import logging
 import threading
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 from contextlib import contextmanager
 from dataclasses import dataclass
 
@@ -30,8 +30,18 @@ import snowflake.connector
 
 from dotenv import load_dotenv
 
-# Ensure local .env is loaded if present
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
+# Ensure root .env and backend .env are loaded if present
+_backend_dir = os.path.dirname(os.path.abspath(__file__))
+_root_dir = os.path.abspath(os.path.join(_backend_dir, "..", ".."))
+_root_env = os.path.join(_root_dir, ".env")
+_backend_env = os.path.join(_backend_dir, ".env")
+
+if os.path.exists(_root_env):
+    load_dotenv(dotenv_path=_root_env, override=False)
+if os.path.exists(_backend_env):
+    load_dotenv(dotenv_path=_backend_env, override=False)
+load_dotenv()
+
 
 logger = logging.getLogger("ruralhealth.snowflake")
 
@@ -85,17 +95,29 @@ class SnowflakeConfig:
     @classmethod
     def from_env(cls) -> "SnowflakeConfig":
         """Instantiates configuration from environment variables."""
+        if os.path.exists(_root_env):
+            load_dotenv(dotenv_path=_root_env, override=False)
+        if os.path.exists(_backend_env):
+            load_dotenv(dotenv_path=_backend_env, override=False)
+
+        def _clean_str(val: Optional[str]) -> Optional[str]:
+            if val is None:
+                return None
+            s = val.strip()
+            return s if s else None
+
         return cls(
-            account=os.environ.get("SNOWFLAKE_ACCOUNT"),
-            user=os.environ.get("SNOWFLAKE_USER"),
-            password=os.environ.get("SNOWFLAKE_PASSWORD"),
-            warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
-            database=os.environ.get("SNOWFLAKE_DATABASE", "RURALHEALTH_DB"),
-            schema=os.environ.get("SNOWFLAKE_SCHEMA", "ANALYTICS"),
-            role=os.environ.get("SNOWFLAKE_ROLE", "RURALHEALTH_APP_ROLE"),
-            login_timeout=int(os.environ.get("SNOWFLAKE_LOGIN_TIMEOUT", "15")),
-            network_timeout=int(os.environ.get("SNOWFLAKE_NETWORK_TIMEOUT", "15")),
+            account=_clean_str(os.environ.get("SNOWFLAKE_ACCOUNT")),
+            user=_clean_str(os.environ.get("SNOWFLAKE_USER")),
+            password=_clean_str(os.environ.get("SNOWFLAKE_PASSWORD")),
+            warehouse=_clean_str(os.environ.get("SNOWFLAKE_WAREHOUSE")) or "COMPUTE_WH",
+            database=_clean_str(os.environ.get("SNOWFLAKE_DATABASE")) or "RURALHEALTH_DB",
+            schema=_clean_str(os.environ.get("SNOWFLAKE_SCHEMA")) or "ANALYTICS",
+            role=_clean_str(os.environ.get("SNOWFLAKE_ROLE")) or "RURALHEALTH_APP_ROLE",
+            login_timeout=int(os.environ.get("SNOWFLAKE_LOGIN_TIMEOUT") or "15"),
+            network_timeout=int(os.environ.get("SNOWFLAKE_NETWORK_TIMEOUT") or "15"),
         )
+
 
     def is_configured(self) -> bool:
         """Checks if all primary credentials required for connection are populated."""
@@ -105,19 +127,24 @@ class SnowflakeConfig:
             self.password and self.password.strip()
         )
 
+    def get_missing_fields(self) -> List[str]:
+        """Returns the list of required Snowflake environment variables currently unpopulated."""
+        missing = []
+        if not (self.account and self.account.strip()):
+            missing.append("SNOWFLAKE_ACCOUNT")
+        if not (self.user and self.user.strip()):
+            missing.append("SNOWFLAKE_USER")
+        if not (self.password and self.password.strip()):
+            missing.append("SNOWFLAKE_PASSWORD")
+        return missing
+
     def validate(self) -> Tuple[bool, Optional[str]]:
         """
         Validates the configuration parameters.
         Returns (is_valid, error_reason).
         """
         if not self.is_configured():
-            missing = []
-            if not (self.account and self.account.strip()):
-                missing.append("SNOWFLAKE_ACCOUNT")
-            if not (self.user and self.user.strip()):
-                missing.append("SNOWFLAKE_USER")
-            if not (self.password and self.password.strip()):
-                missing.append("SNOWFLAKE_PASSWORD")
+            missing = self.get_missing_fields()
             return False, f"Missing required Snowflake configuration: {', '.join(missing)}"
 
         # Prohibit routine usage of ACCOUNTADMIN role in application backend
@@ -306,16 +333,23 @@ class SnowflakeClient:
         """
         # Step 1: Check configuration
         if not self.config.is_configured():
+            is_valid, validation_error = self.config.validate()
+            detail = f": {validation_error}" if validation_error else ""
             return {
                 "snowflake_configured": False,
                 "connection_status": "not_configured",
+                "missing_configuration": self.config.get_missing_fields(),
                 "warehouse_status": "unknown",
+                "user": self.config.user,
                 "role": self.config.role,
                 "database": self.config.database,
                 "schema": self.config.schema,
+                "warehouse": self.config.warehouse,
                 "verification_query_status": "skipped",
                 "verification_record": None,
-                "error": "Snowflake configuration is incomplete: missing required credentials (SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, or SNOWFLAKE_PASSWORD)."
+                "query_source": "Snowflake Cloud Data Warehouse",
+                "is_live_snowflake_connection": False,
+                "error": f"Snowflake configuration is incomplete: missing required credentials (SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, or SNOWFLAKE_PASSWORD){detail}"
             }
 
         is_valid, validation_error = self.config.validate()
@@ -324,11 +358,15 @@ class SnowflakeClient:
                 "snowflake_configured": False,
                 "connection_status": "validation_error",
                 "warehouse_status": "unknown",
+                "user": self.config.user,
                 "role": self.config.role,
                 "database": self.config.database,
                 "schema": self.config.schema,
+                "warehouse": self.config.warehouse,
                 "verification_query_status": "skipped",
                 "verification_record": None,
+                "query_source": "Snowflake Cloud Data Warehouse",
+                "is_live_snowflake_connection": False,
                 "error": validation_error
             }
 
@@ -338,17 +376,51 @@ class SnowflakeClient:
                 cursor = conn.cursor()
                 try:
                     # 2a. Verify session context
-                    cursor.execute("SELECT CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_WAREHOUSE();")
+                    cursor.execute("SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_WAREHOUSE();")
                     session_row = cursor.fetchone()
-                    active_role = session_row[0] if session_row else self.config.role
-                    active_db = session_row[1] if session_row else self.config.database
-                    active_schema = session_row[2] if session_row else self.config.schema
-                    active_wh = session_row[3] if session_row else self.config.warehouse
+                    if session_row and len(session_row) >= 5:
+                        active_user = session_row[0]
+                        active_role = session_row[1]
+                        active_db = session_row[2]
+                        active_schema = session_row[3]
+                        active_wh = session_row[4]
+                    elif session_row and len(session_row) == 4:
+                        active_user = self.config.user
+                        active_role = session_row[0]
+                        active_db = session_row[1]
+                        active_schema = session_row[2]
+                        active_wh = session_row[3]
+                    else:
+                        active_user = self.config.user
+                        active_role = self.config.role
+                        active_db = self.config.database
+                        active_schema = self.config.schema
+                        active_wh = self.config.warehouse
+
+                    # Security policy enforcement: Runtime operations strictly forbid ACCOUNTADMIN
+                    if str(active_role).strip().upper() == "ACCOUNTADMIN":
+                        return {
+                            "snowflake_configured": True,
+                            "connection_status": "security_violation",
+                            "warehouse_status": "accessible" if active_wh else "not_set",
+                            "user": str(active_user),
+                            "role": str(active_role),
+                            "database": str(active_db),
+                            "schema": str(active_schema),
+                            "warehouse": str(active_wh) if active_wh else self.config.warehouse,
+                            "verification_query_status": "blocked",
+                            "verification_record": None,
+                            "query_source": "Snowflake Cloud Data Warehouse (Live)",
+                            "is_live_snowflake_connection": True,
+                            "error": "Security policy violation: Routine application operations cannot use ACCOUNTADMIN role. Please configure a least-privilege role such as RURALHEALTH_APP_ROLE."
+                        }
 
                     # 2b. Execute read-only query on verification table
+                    target_db = active_db or self.config.database or "RURALHEALTH_DB"
+                    target_schema = active_schema or self.config.schema or "ANALYTICS"
                     verification_sql = (
                         f"SELECT TEST_ID, TEST_MESSAGE, CREATED_AT "
-                        f"FROM {self.config.database}.{self.config.schema}.CONNECTION_TEST "
+                        f"FROM {target_db}.{target_schema}.CONNECTION_TEST "
                         f"LIMIT 1;"
                     )
                     cursor.execute(verification_sql)
@@ -366,14 +438,18 @@ class SnowflakeClient:
                         "snowflake_configured": True,
                         "connection_status": "connected",
                         "warehouse_status": "accessible" if active_wh else "not_set",
+                        "user": str(active_user),
                         "role": str(active_role),
                         "database": str(active_db),
                         "schema": str(active_schema),
                         "warehouse": str(active_wh) if active_wh else self.config.warehouse,
                         "verification_query_status": "passed" if record_row else "passed_empty_table",
                         "verification_record": verification_record,
+                        "query_source": "Snowflake Cloud Data Warehouse (Live)",
+                        "is_live_snowflake_connection": True,
                         "error": None
                     }
+
                 finally:
                     cursor.close()
 
@@ -384,11 +460,15 @@ class SnowflakeClient:
                 "snowflake_configured": True,
                 "connection_status": "failed",
                 "warehouse_status": "inaccessible",
+                "user": self.config.user,
                 "role": self.config.role,
                 "database": self.config.database,
                 "schema": self.config.schema,
+                "warehouse": self.config.warehouse,
                 "verification_query_status": "failed",
                 "verification_record": None,
+                "query_source": "Snowflake Cloud Data Warehouse",
+                "is_live_snowflake_connection": False,
                 "error": sanitized_err
             }
 
@@ -419,7 +499,24 @@ def is_snowflake_configured() -> bool:
 
 
 def get_snowflake_health_summary() -> Dict[str, Any]:
-    """Safe high-level summary suitable for public health check endpoints."""
+    """
+    Minimal liveness summary for public health check endpoints.
+    Discloses strictly minimal liveness/configuration status without revealing
+    internal database names, schema names, warehouse names, roles, or credentials.
+    """
+    client = get_snowflake_client()
+    configured = client.is_configured()
+    return {
+        "configured": configured,
+        "status": "configured" if configured else "unconfigured",
+    }
+
+
+def get_snowflake_diagnostic_summary() -> Dict[str, Any]:
+    """
+    Detailed diagnostic summary restricted to authorized operators (SYSTEM_ADMIN).
+    Discloses non-sensitive architecture context without passwords or tokens.
+    """
     client = get_snowflake_client()
     return {
         "configured": client.is_configured(),
@@ -427,4 +524,11 @@ def get_snowflake_health_summary() -> Dict[str, Any]:
         "schema": client.config.schema,
         "warehouse": client.config.warehouse,
         "role": client.config.role,
+        "status": "configured" if client.is_configured() else "unconfigured",
     }
+
+
+if __name__ == "__main__":
+    import json
+    print(json.dumps(verify_snowflake_connection(), indent=2))
+

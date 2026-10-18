@@ -275,11 +275,29 @@ def require_permissions(*required_permissions: str):
 
 # ─── SEED DEFAULT SYSTEM USERS ───────────────────────────────────────────────
 
-def seed_default_users(db: Session):
-    """Populates development/pilot users into the database if not present."""
-    if ENVIRONMENT == "production":
-        print("[auth] Production mode: Development user seeding is disabled.")
-        return
+def seed_default_users(db: Session, env: Optional[str] = None) -> bool:
+    """
+    Populates development/pilot users into the database if not present.
+    STRICT SECURITY ENFORCEMENT:
+    - Strictly prohibited in 'production'.
+    - Limited exclusively to 'development' and 'testing' environments.
+    - Production must NEVER silently create predictable default accounts or passwords.
+    Returns True if seeding was performed, False if skipped.
+    """
+    active_env = (env or os.environ.get("ENVIRONMENT", ENVIRONMENT)).strip().lower()
+    if active_env == "production":
+        import logging
+        logging.getLogger("ruralhealth.auth").warning(
+            "[auth] Security notice: Default user seeding is strictly disabled in production. No accounts created."
+        )
+        return False
+
+    if active_env not in ("development", "testing"):
+        import logging
+        logging.getLogger("ruralhealth.auth").warning(
+            "[auth] Environment '%s' is not authorized for user seeding. Skipping.", active_env
+        )
+        return False
 
     default_users = [
         {

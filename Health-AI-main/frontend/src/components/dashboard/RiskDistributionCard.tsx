@@ -6,16 +6,23 @@ import type { RiskDistributionItem } from './types';
 interface RiskDistributionCardProps {
   data: RiskDistributionItem[];
   totalPatients?: number;
+  period?: string;
   onFilterChange?: (filter: string) => void;
 }
 
 export const RiskDistributionCard: React.FC<RiskDistributionCardProps> = ({
   data,
   totalPatients = 0,
+  period = 'Current Status',
   onFilterChange,
 }) => {
-  const [filter, setFilter] = useState('Today');
+  const [filter, setFilter] = useState(period);
   const [showDropdown, setShowDropdown] = useState(false);
+
+  // Keep internal state in sync with external period prop
+  React.useEffect(() => {
+    if (period) setFilter(period);
+  }, [period]);
 
   return (
     <div className="health-card p-4 sm:p-5 flex flex-col justify-between h-full">
@@ -23,7 +30,7 @@ export const RiskDistributionCard: React.FC<RiskDistributionCardProps> = ({
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-1.5">
           <h3 className="text-sm font-bold text-[#102A56]">Risk Distribution</h3>
-          <span className="text-slate-400 hover:text-slate-600 cursor-help" title="Distribution of patient risk categories based on vitals and AI assessment">
+          <span className="text-slate-400 hover:text-slate-600 cursor-help" title="Distribution of patient risk categories based on latest clinical assessment in selected period">
             <Info className="w-3.5 h-3.5" />
           </span>
         </div>
@@ -39,8 +46,8 @@ export const RiskDistributionCard: React.FC<RiskDistributionCardProps> = ({
           </button>
 
           {showDropdown && (
-            <div className="absolute right-0 mt-1 w-28 bg-white rounded-xl shadow-lg border border-slate-100 py-1 z-20 text-[11px]">
-              {['Today', 'This Week', 'This Month'].map((opt) => (
+            <div className="absolute right-0 mt-1 w-32 bg-white rounded-xl shadow-lg border border-slate-100 py-1 z-20 text-[11px]">
+              {['Current Status', 'Last 7 Days', 'Last 30 Days'].map((opt) => (
                 <button
                   key={opt}
                   onClick={() => {

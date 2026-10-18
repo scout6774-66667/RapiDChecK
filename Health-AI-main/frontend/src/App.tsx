@@ -18,6 +18,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import WaterDropClick from './components/WaterDropClick';
 import { ArrowLeft } from 'lucide-react';
 import { apiFetch } from './api/apiConfig';
+import { SyncManager } from './sync/SyncManager';
 
 export type AppView = 'home' | 'login' | 'app';
 
@@ -48,10 +49,10 @@ export function App() {
   const [notification, setNotification] = useState<string | null>(null);
   const [showResourcesModal, setShowResourcesModal] = useState<boolean>(false);
 
-  // Unsynced count from Dexie IndexedDB
-  const unsyncedPatients = useLiveQuery(() => db.patients.where('synced').equals(0).toArray()) || [];
-  const unsyncedAssessments = useLiveQuery(() => db.assessments.where('synced').equals(0).toArray()) || [];
-  const unsyncedAppointments = useLiveQuery(() => db.appointments.where('synced').equals(0).toArray()) || [];
+  // Unsynced count from Dexie IndexedDB (reconciles both boolean synced and sync_state)
+  const unsyncedPatients = useLiveQuery(() => db.patients.filter(p => !p.synced || p.sync_state === 'QUEUED').toArray()) || [];
+  const unsyncedAssessments = useLiveQuery(() => db.assessments.filter(a => !a.synced || a.sync_state === 'QUEUED').toArray()) || [];
+  const unsyncedAppointments = useLiveQuery(() => db.appointments.filter(ap => !ap.synced || ap.sync_state === 'QUEUED').toArray()) || [];
   const pendingSyncCount = unsyncedPatients.length + unsyncedAssessments.length + unsyncedAppointments.length;
 
   useEffect(() => {
@@ -111,6 +112,15 @@ export function App() {
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, [isAuthenticated]);
 
+  // Periodic background synchronization
+  useEffect(() => {
+    const syncManager = SyncManager.getInstance();
+    syncManager.startPeriodicSync(15000);
+    return () => {
+      syncManager.stopPeriodicSync();
+    };
+  }, []);
+
   // Show toast + trigger sync whenever online status changes
   const prevOnlineRef = React.useRef<boolean | null>(null);
   useEffect(() => {
@@ -140,14 +150,13 @@ export function App() {
     setIsSyncing(true);
 
     try {
-      const pList = await db.patients.where('synced').equals(0).toArray();
-      const aList = await db.assessments.where('synced').equals(0).toArray();
-      const apptList = await db.appointments.where('synced').equals(0).toArray();
+      // 1. Run full Outbox v2 push and pull cycle
+      const syncResult = await SyncManager.getInstance().runFullSync();
 
-      if (pList.length === 0 && aList.length === 0 && apptList.length === 0) {
-        setIsSyncing(false);
-        return;
-      }
+      // 2. Also ensure any legacy non-outbox records are synchronized
+      const pList = await db.patients.filter(p => !p.synced || p.sync_state === 'QUEUED').toArray();
+      const aList = await db.assessments.filter(a => !a.synced || a.sync_state === 'QUEUED').toArray();
+      const apptList = await db.appointments.filter(ap => !ap.synced || ap.sync_state === 'QUEUED').toArray();
 
       if (pList.length > 0 || aList.length > 0) {
         const response = await apiFetch('/api/sync', {
@@ -156,8 +165,8 @@ export function App() {
           timeoutMs: 15000,
         });
         if (response.ok) {
-          for (const p of pList) await db.patients.update(p.id, { synced: true });
-          for (const a of aList) await db.assessments.update(a.id, { synced: true });
+          for (const p of pList) await db.patients.update(p.id, { synced: true, sync_state: 'SYNCED' });
+          for (const a of aList) await db.assessments.update(a.id, { synced: true, sync_state: 'SYNCED' });
         }
       }
 
@@ -169,12 +178,17 @@ export function App() {
             body: JSON.stringify({ ...appt, likely_conditions: appt.likely_conditions || [] }),
             timeoutMs: 10000,
           });
-          await db.appointments.update(appt.id, { synced: true });
+          await db.appointments.update(appt.id, { synced: true, sync_state: 'SYNCED' });
           syncedAppts++;
         } catch { /* skip */ }
       }
 
-      showNotification(`Sync Complete! ${pList.length} patients, ${aList.length} assessments, ${syncedAppts} appointments synced.`);
+      const totalOps = (syncResult.push?.applied || 0) + (syncResult.pull?.appliedCount || 0) + pList.length + aList.length + syncedAppts;
+      if (totalOps > 0) {
+        showNotification(`✓ Sync complete: ${totalOps} records reconciled with server.`);
+      } else {
+        showNotification('✓ Offline records up to date with server.');
+      }
     } catch (err) {
       console.warn('Sync failed', err);
     } finally {

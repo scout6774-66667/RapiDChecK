@@ -50,7 +50,16 @@ def test_production_config_rejects_insecure_secrets():
 
 def test_population_health_snowflake_metadata_clarity():
     """Snowflake metadata must clarify dimensional relational pattern and confirm no external cloud warehouse."""
-    res = client.get("/api/ml/population-health/snowflake/metadata")
+    token = create_access_token({
+        "sub": "usr_officer_patel",
+        "username": "officer.patel",
+        "role": "DISTRICT_OFFICER",
+        "facility_id": "DH_DISTRICT_HQ"
+    })
+    res = client.get(
+        "/api/ml/population-health/snowflake/metadata",
+        headers={"Authorization": f"Bearer {token}"}
+    )
     assert res.status_code == 200
     data = res.json()
     assert data["is_cloud_snowflake_connection"] is False

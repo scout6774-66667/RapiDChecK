@@ -268,7 +268,7 @@ export class RuralHealthDatabase extends Dexie {
     this.version(4).stores({
       patients: 'id, national_health_id, name, village, phone, server_version, is_deleted, sync_state, synced, created_at, updated_at',
       assessments: 'id, patient_id, client_operation_id, triage_state, risk_level, referral_status, server_version, is_deleted, sync_state, synced, created_at, updated_at',
-      appointments: 'id, patient_name, doctor_name, appointment_date, status, server_version, is_deleted, sync_state, synced, created_at, updated_at',
+      appointments: 'id, patient_name, patient_phone, doctor_name, appointment_date, status, server_version, is_deleted, sync_state, synced, created_at, updated_at',
       outbox: 'operation_id, entity_type, entity_id, operation_type, client_sequence, status, retry_count, created_at, updated_at',
       conflicts: 'id, entity_type, entity_id, status, created_at',
       tombstones: 'id, entity_type, entity_id, sync_state, deleted_at',
@@ -279,13 +279,18 @@ export class RuralHealthDatabase extends Dexie {
     this.version(5).stores({
       patients: 'id, national_health_id, name, village, phone, server_version, is_deleted, sync_state, synced, created_at, updated_at',
       assessments: 'id, patient_id, client_operation_id, triage_state, risk_level, referral_status, server_version, is_deleted, sync_state, synced, created_at, updated_at',
-      appointments: 'id, patient_name, doctor_name, appointment_date, status, server_version, is_deleted, sync_state, synced, created_at, updated_at',
+      appointments: 'id, patient_name, patient_phone, doctor_name, appointment_date, status, server_version, is_deleted, sync_state, synced, created_at, updated_at',
       outbox: 'operation_id, entity_type, entity_id, operation_type, client_sequence, status, retry_count, created_at, updated_at',
       conflicts: 'id, entity_type, entity_id, status, created_at',
       tombstones: 'id, entity_type, entity_id, sync_state, deleted_at',
       sync_metadata: 'key, updated_at',
       health_resources: 'id, resource_code, category_code, resource_type, status, version, urgency_level, is_emergency, server_version, is_deleted, created_at, updated_at',
       health_resource_versions: 'id, resource_id, version, status, created_at'
+    });
+
+    // Version 6: Defensive schema upgrade ensuring indexed patient_phone
+    this.version(6).stores({
+      appointments: 'id, patient_name, patient_phone, doctor_name, appointment_date, status, server_version, is_deleted, sync_state, synced, created_at, updated_at'
     });
   }
 }
@@ -728,10 +733,8 @@ export async function deletePatientAtomic(patientId: string): Promise<boolean> {
       .and(op => op.status === 'QUEUED')
       .toArray();
 
-    let wasUnsyncedCreate = false;
     for (const op of pendingOps) {
       if (op.operation_type === 'CREATE') {
-        wasUnsyncedCreate = true;
         // The patient was created offline and never synced to the server.
         // Mark CREATE as CANCELLED so it is never pushed to recreate the patient on server.
         await db.outbox.update(op.operation_id, { status: 'CANCELLED' as any });
@@ -770,7 +773,7 @@ export async function deletePatientAtomic(patientId: string): Promise<boolean> {
 
     // 4b. Cascade cancel/soft-delete associated appointments in Dexie
     if (existing.phone) {
-      const appts = await db.appointments.where('patient_phone').equals(existing.phone).toArray();
+      const appts = await db.appointments.filter(a => a.patient_phone === existing.phone).toArray();
       for (const appt of appts) {
         if (!appt.is_deleted) {
           await db.appointments.update(appt.id, {
@@ -800,23 +803,20 @@ export async function deletePatientAtomic(patientId: string): Promise<boolean> {
       }
     }
 
-    // 5. If this patient was already on the server (serverVersion > 0) or was not an unsynced create,
-    // queue the Outbox DELETE op so the server soft-deletes it during sync.
-    if (!wasUnsyncedCreate || serverVersion > 0) {
-      await db.outbox.put({
-        operation_id: opId,
-        entity_type: 'patient',
-        entity_id: patientId,
-        operation_type: 'DELETE',
-        payload: { id: patientId },
-        base_server_version: serverVersion,
-        client_sequence: seq,
-        status: 'QUEUED',
-        retry_count: 0,
-        created_at: now,
-        updated_at: now
-      });
-    }
+    // 5. Queue Outbox DELETE op so deletion is audited and synced to server
+    await db.outbox.put({
+      operation_id: opId,
+      entity_type: 'patient',
+      entity_id: patientId,
+      operation_type: 'DELETE',
+      payload: { id: patientId },
+      base_server_version: serverVersion,
+      client_sequence: seq,
+      status: 'QUEUED',
+      retry_count: 0,
+      created_at: now,
+      updated_at: now
+    });
 
     return true;
   });

@@ -80,6 +80,7 @@ except Exception as _pop_err:
 from health_resources_service import seed_default_health_resources
 from health_resource_routes import router as health_resource_router
 from snowflake_client import get_snowflake_health_summary, verify_snowflake_connection
+from snowflake_patient_pipeline import sync_governed_patient_analytics, get_governance_policy
 
 app = FastAPI(
     title="RuralHealth AI Backend",
@@ -132,14 +133,17 @@ async def global_exception_handler(request: Request, exc: Exception):
 def startup_event():
     validate_security_configuration()
     init_db()
-    # Seed default frontline & clinician accounts
-    from database import SessionLocal
-    db = SessionLocal()
-    try:
-        seed_default_users(db)
-        seed_default_health_resources(db)
-    finally:
-        db.close()
+    # Seed default frontline & clinician accounts strictly in development or testing environments
+    if ENVIRONMENT in ("development", "testing"):
+        from database import SessionLocal
+        db = SessionLocal()
+        try:
+            seed_default_users(db)
+            seed_default_health_resources(db)
+        finally:
+            db.close()
+    else:
+        logger.info("[startup] Production environment active: default development accounts are not seeded.")
 
 @app.get("/api/health")
 def health_check():
@@ -163,6 +167,30 @@ def admin_snowflake_test_connection(
     (RURALHEALTH_DB.ANALYTICS.CONNECTION_TEST).
     """
     return verify_snowflake_connection()
+
+
+@app.post("/api/admin/snowflake/sync-governed-analytics")
+def admin_snowflake_sync_analytics(
+    max_records: int = 100,
+    current_user: UserModel = Depends(require_roles("SYSTEM_ADMIN", "DISTRICT_OFFICER")),
+    db: Session = Depends(get_db)
+):
+    """
+    Executes the governed de-identified patient synchronization pipeline to Snowflake.
+    Strictly strips all direct PII (names, phones, ABHA, notes) and applies HMAC pseudonymization.
+    Restricted to SYSTEM_ADMIN and DISTRICT_OFFICER roles.
+    """
+    return sync_governed_patient_analytics(db=db, max_records=max_records)
+
+
+@app.get("/api/admin/snowflake/governance-policy")
+def admin_snowflake_governance_policy(
+    current_user: UserModel = Depends(require_roles("SYSTEM_ADMIN", "DISTRICT_OFFICER"))
+):
+    """
+    Returns the documented, audited field allowlist and privacy policy for Snowflake analytics.
+    """
+    return get_governance_policy()
 
 # --- PATIENTS ENDPOINTS ---
 
@@ -905,19 +933,38 @@ def get_dashboard_stats(
         assessments = filtered_ass
 
     total_assessments = len(assessments)
-    unique_patient_ids = set(a.patient_id for a in assessments)
-    total_patients = len(unique_patient_ids)
+    unique_patient_ids = set(a.patient_id for a in assessments if a.patient_id)
+    unique_screened_patients = len(unique_patient_ids)
 
-    high_risk_count = sum(1 for a in assessments if a.risk_level == "HIGH")
+    # Query active registered patients within the requested scope
+    pt_base_query = db.query(PatientModel).filter(PatientModel.is_deleted == 0)
+    if facility_id and facility_id != "ALL":
+        pt_base_query = pt_base_query.filter(PatientModel.facility_id == facility_id)
+    if village and village != "ALL":
+        pt_base_query = pt_base_query.filter(PatientModel.village == village)
+    total_registered_patients = pt_base_query.count()
+    total_patients = total_registered_patients
+
+    high_risk_count = sum(1 for a in assessments if a.risk_level in ["HIGH", "EMERGENCY"])
     moderate_risk_count = sum(1 for a in assessments if a.risk_level == "MODERATE")
     low_risk_count = sum(1 for a in assessments if a.risk_level == "LOW")
     emergency_count = sum(1 for a in assessments if bool(a.is_emergency) or a.triage_state == "EMERGENCY")
+
+    # Latest assessment per patient to compute unique patients at high risk
+    latest_by_patient = {}
+    for a in sorted(assessments, key=lambda x: (x.created_at or '', str(x.id))):
+        if a.patient_id:
+            latest_by_patient[a.patient_id] = a
+    unique_patients_at_high_risk = sum(
+        1 for a in latest_by_patient.values()
+        if a.risk_level in ["HIGH", "EMERGENCY"]
+    )
 
     pending_doctor_review = sum(
         1 for a in assessments
         if getattr(a, 'review_state', 'NOT_REQUIRED') in ["REVIEW_REQUIRED", "ASSIGNED", "IN_REVIEW"]
         or (
-            (bool(a.is_emergency) or a.risk_level == "HIGH" or (a.red_flags and len(a.red_flags) > 0))
+            (bool(a.is_emergency) or a.risk_level in ["HIGH", "EMERGENCY"] or (a.red_flags and len(a.red_flags) > 0))
             and getattr(a, 'review_state', 'NOT_REQUIRED') not in ["APPROVED", "MODIFIED", "REJECTED"]
         )
     )
@@ -959,8 +1006,13 @@ def get_dashboard_stats(
 
     return {
         "total_patients": total_patients,
+        "total_registered_patients": total_registered_patients,
+        "unique_screened_patients": unique_screened_patients,
         "total_assessments": total_assessments,
+        "total_screenings": total_assessments,
         "high_risk_count": high_risk_count,
+        "high_risk_screenings": high_risk_count,
+        "unique_patients_at_high_risk": unique_patients_at_high_risk,
         "moderate_risk_count": moderate_risk_count,
         "low_risk_count": low_risk_count,
         "emergency_count": emergency_count,
@@ -1980,11 +2032,19 @@ def get_feature_dictionary():
 
 
 @app.get("/api/ml/population-health/snowflake/metadata")
-def get_snowflake_metadata():
-    """Returns Snowflake Schema architecture, table dimensions, and fact statistics."""
+def get_snowflake_metadata(
+    use_cloud: bool = False,
+    current_user: UserModel = Depends(require_permissions("analytics:view"))
+):
+    """
+    Returns dimensional schema architecture and statistics.
+    - use_cloud=False: returns local relational storage dimensional schema statistics.
+    - use_cloud=True: returns actual cloud Snowflake connection metadata.
+    Restricted to authorized operators with 'analytics:view' permission (DISTRICT_OFFICER, SYSTEM_ADMIN).
+    """
     if _POPULATION_HEALTH is None:
         raise HTTPException(status_code=503, detail="Population health engine not initialized")
-    return _POPULATION_HEALTH.query_snowflake_metadata()
+    return _POPULATION_HEALTH.query_snowflake_metadata(use_cloud=use_cloud)
 
 
 @app.get("/api/ml/population-health/snowflake/query")
@@ -1995,10 +2055,12 @@ def query_snowflake_schema(
     source: Optional[str] = None,
     domain: Optional[str] = None,
     facility_category: Optional[str] = None,
-    limit: int = 100
+    limit: int = 100,
+    current_user: UserModel = Depends(require_permissions("analytics:view"))
 ):
     """
-    Direct multidimensional query against the Snowflake Schema fact_health_indicator table.
+    Multidimensional query against local relational storage fact_health_indicator table.
+    Restricted to authorized operators with 'analytics:view' permission (DISTRICT_OFFICER, SYSTEM_ADMIN).
     """
     if _POPULATION_HEALTH is None:
         raise HTTPException(status_code=503, detail="Population health engine not initialized")
@@ -2011,6 +2073,34 @@ def query_snowflake_schema(
         facility_category=facility_category,
         limit=limit
     )
+
+
+@app.get("/api/ml/population-health/snowflake/verify-cloud")
+def verify_cloud_snowflake(
+    current_user: UserModel = Depends(require_permissions("analytics:view"))
+):
+    """
+    Queries the read-only synthetic verification table in actual Snowflake
+    (RURALHEALTH_DB.ANALYTICS.CONNECTION_TEST).
+    Restricted exclusively to authorized operators with 'analytics:view' permission.
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    return _POPULATION_HEALTH.query_cloud_snowflake_verification()
+
+
+@app.get("/api/ml/population-health/snowflake/tables")
+def inspect_snowflake_tables(
+    schema: str = "ANALYTICS",
+    current_user: UserModel = Depends(require_permissions("analytics:view"))
+):
+    """
+    Inspects available tables in the specified Snowflake schema before designing queries.
+    Restricted exclusively to authorized operators with 'analytics:view' permission.
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    return _POPULATION_HEALTH.inspect_cloud_snowflake_tables(schema=schema)
 
 
 @app.post("/api/ml/population-health/enrich-screening")

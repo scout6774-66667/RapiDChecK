@@ -54,6 +54,7 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [selectedPatient, setSelectedPatient] = useState<PatientTableRow | null>(null);
   const [trendPeriod, setTrendPeriod] = useState('Last 7 Days');
+  const [riskPeriod, setRiskPeriod] = useState('Current Status');
 
   // Live queries from Dexie offline database (Single Source of Truth)
   const livePatients = useLiveQuery(() => db.patients.filter((p) => !p.is_deleted).toArray()) || [];
@@ -61,46 +62,15 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
   const liveAppointments = useLiveQuery(() => db.appointments.filter((a) => !a.is_deleted && a.status !== 'CANCELLED').toArray()) || [];
 
   // Live queries for synchronization states (Requirement 2.11 & Section 7)
-  const outboxQueuedCount =
-    useLiveQuery(() => db.outbox.where('status').equals('QUEUED').count()) ?? 0;
+  const outboxLiveCount =
+    useLiveQuery(() => db.outbox.where('status').equals('QUEUED').count());
+  const outboxQueuedCount = outboxLiveCount !== undefined ? outboxLiveCount : pendingSyncCount;
   const outboxFailedCount =
     useLiveQuery(() => db.outbox.where('status').equals('FAILED').count()) ?? 0;
   const conflictCount =
     useLiveQuery(() => db.conflicts.where('status').equals('PENDING').count()) ?? 0;
   const lastSyncMeta = useLiveQuery(() => db.sync_metadata.get('last_synced_at'));
   const lastSyncTime = lastSyncMeta?.value;
-
-  // 1 & 2. Derived KPI metrics: Separate unique patients from screening encounters
-  const kpis = useMemo(() => {
-    const totalRegisteredPatients = livePatients.length;
-    const totalScreeningEncounters = liveAssessments.length;
-
-    // Distinct patients with at least 1 screening encounter
-    const screenedPatientIds = new Set(
-      liveAssessments.map((a) => a.patient_id).filter(Boolean)
-    );
-    const uniquePatientsScreened = screenedPatientIds.size;
-    const repeatScreenings = Math.max(0, totalScreeningEncounters - uniquePatientsScreened);
-
-    const highRisk = liveAssessments.filter(
-      (a) => a.risk_level === 'HIGH' || a.risk_level === 'EMERGENCY'
-    ).length;
-    const referrals = liveAssessments.filter(
-      (a) => a.referral_status === 'REFERRED' || a.referral_status === 'APPOINTMENT_REQUESTED'
-    ).length;
-    const appts = liveAppointments.length;
-
-    return {
-      patientsScreened: totalScreeningEncounters,
-      patientsScreenedTrend: `${uniquePatientsScreened} unique (${repeatScreenings} repeat) / ${totalRegisteredPatients} registered`,
-      highRiskCases: highRisk,
-      highRiskTrend: highRisk > 0 ? `${highRisk} flagged cases` : '0 high-risk cases',
-      referralsMade: referrals,
-      referralsTrend: referrals > 0 ? `${referrals} active` : '0 referrals',
-      appointments: appts,
-      appointmentsTrend: appts > 0 ? `${appts} scheduled` : '0 appointments',
-    };
-  }, [livePatients, liveAssessments, liveAppointments]);
 
   // 3. Select latest valid assessment per patient using reliable timestamps and deterministic tie-breaking
   const latestAssessmentByPatient = useMemo(() => {
@@ -126,6 +96,57 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
     return map;
   }, [liveAssessments]);
 
+  // 1 & 2. Derived KPI metrics: Separate unique patients from screening encounters
+  const kpis = useMemo(() => {
+    const totalRegisteredPatients = livePatients.length;
+    const totalScreeningEncounters = liveAssessments.length;
+
+    // Distinct patients with at least 1 screening encounter
+    const screenedPatientIds = new Set(
+      liveAssessments.map((a) => a.patient_id).filter(Boolean)
+    );
+    const uniquePatientsScreened = screenedPatientIds.size;
+    const repeatScreenings = Math.max(0, totalScreeningEncounters - uniquePatientsScreened);
+
+    const highRisk = liveAssessments.filter(
+      (a) => a.risk_level === 'HIGH' || a.risk_level === 'EMERGENCY'
+    ).length;
+
+    // Unique patients whose latest assessment classifies them as high risk
+    let uniquePatientsAtHighRisk = 0;
+    livePatients.forEach((p) => {
+      const ass = latestAssessmentByPatient.get(p.id);
+      if (ass && (ass.risk_level === 'HIGH' || ass.risk_level === 'EMERGENCY')) {
+        uniquePatientsAtHighRisk++;
+      }
+    });
+
+    const referralRequests = liveAssessments.filter(
+      (a) => a.referral_status === 'REFERRED' || a.referral_status === 'APPOINTMENT_REQUESTED'
+    ).length;
+    const completedReferrals = liveAssessments.filter(
+      (a) => a.referral_status === 'CONSULTATION_COMPLETED'
+    ).length;
+    const appts = liveAppointments.length;
+
+    return {
+      patientsScreened: totalScreeningEncounters,
+      patientsScreenedTrend: `${uniquePatientsScreened} unique (${repeatScreenings} repeat) / ${totalRegisteredPatients} registered`,
+      highRiskCases: highRisk,
+      highRiskTrend: uniquePatientsAtHighRisk > 0
+        ? `${uniquePatientsAtHighRisk} high-risk patient${uniquePatientsAtHighRisk === 1 ? '' : 's'} (${highRisk} encounters)`
+        : '0 high-risk cases',
+      referralsMade: referralRequests,
+      referralsTrend: completedReferrals > 0
+        ? `${completedReferrals} completed / ${referralRequests} requested`
+        : referralRequests > 0
+        ? `${referralRequests} active requests`
+        : '0 referrals',
+      appointments: appts,
+      appointmentsTrend: appts > 0 ? `${appts} scheduled` : '0 appointments',
+    };
+  }, [livePatients, liveAssessments, liveAppointments, latestAssessmentByPatient]);
+
   // 4 & 5. Reconciled Risk Distribution: Never map unassessed or insufficient data to LOW
   const riskDistribution = useMemo(() => {
     let high = 0;
@@ -134,8 +155,41 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
     let review = 0;
     let unassessed = 0;
 
+    const now = new Date();
+    const periodDays = riskPeriod === 'Last 7 Days' ? 7 : riskPeriod === 'Last 30 Days' ? 30 : null;
+    const cutoffTime = periodDays ? now.getTime() - periodDays * 24 * 60 * 60 * 1000 : null;
+
+    // Filter assessments by period if a window is selected
+    const eligibleAssessments = cutoffTime !== null
+      ? liveAssessments.filter((a) => {
+          if (!a.created_at) return false;
+          const t = new Date(a.created_at).getTime();
+          return !isNaN(t) && t >= cutoffTime && t <= now.getTime();
+        })
+      : liveAssessments;
+
+    // Determine latest assessment in window per patient
+    const latestInWindow = new Map<string, (typeof liveAssessments)[0]>();
+    for (const ass of eligibleAssessments) {
+      if (!ass.patient_id) continue;
+      const existing = latestInWindow.get(ass.patient_id);
+      if (!existing) {
+        latestInWindow.set(ass.patient_id, ass);
+        continue;
+      }
+      const timeNew = ass.created_at ? new Date(ass.created_at).getTime() : 0;
+      const timeOld = existing.created_at ? new Date(existing.created_at).getTime() : 0;
+      if (timeNew > timeOld) {
+        latestInWindow.set(ass.patient_id, ass);
+      } else if (timeNew === timeOld) {
+        if (String(ass.id) > String(existing.id)) {
+          latestInWindow.set(ass.patient_id, ass);
+        }
+      }
+    }
+
     livePatients.forEach((p) => {
-      const ass = latestAssessmentByPatient.get(p.id);
+      const ass = latestInWindow.get(p.id);
       if (!ass) {
         unassessed++;
       } else if (ass.risk_level === 'HIGH' || ass.risk_level === 'EMERGENCY') {
@@ -161,54 +215,58 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
       { name: 'Needs Review', count: review, percentage: calcPct(review), color: '#8B5CF6' },
       { name: 'Unassessed', count: unassessed, percentage: calcPct(unassessed), color: '#94A3B8' },
     ];
-  }, [livePatients, latestAssessmentByPatient]);
+  }, [livePatients, liveAssessments, riskPeriod]);
 
   // 6. Stable date keys containing the year for time-series aggregation; no silent current-date defaulting
   const screeningsTrend: ScreeningTrendItem[] = useMemo(() => {
-    if (liveAssessments.length === 0) return [];
-
-    const dateMap = new Map<
-      string,
-      { displayDate: string; total: number; highRisk: number; moderateRisk: number; lowRisk: number }
-    >();
-
-    liveAssessments.forEach((ass) => {
-      if (!ass.created_at) return;
-      const d = new Date(ass.created_at);
-      if (isNaN(d.getTime())) return;
-
-      const year = d.getFullYear();
-      const month = String(d.getMonth() + 1).padStart(2, '0');
-      const day = String(d.getDate()).padStart(2, '0');
-      const sortKey = `${year}-${month}-${day}`;
-
-      const displayDate = d.toLocaleDateString('en-US', {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-      });
-
-      if (!dateMap.has(sortKey)) {
-        dateMap.set(sortKey, { displayDate, total: 0, highRisk: 0, moderateRisk: 0, lowRisk: 0 });
-      }
-      const entry = dateMap.get(sortKey)!;
-      entry.total += 1;
-      if (ass.risk_level === 'HIGH' || ass.risk_level === 'EMERGENCY') entry.highRisk += 1;
-      else if (ass.risk_level === 'MODERATE') entry.moderateRisk += 1;
-      else if (ass.risk_level === 'LOW') entry.lowRisk += 1;
-    });
-
     const days = trendPeriod === 'Last 14 Days' ? 14 : trendPeriod === 'Last 30 Days' ? 30 : 7;
     const today = new Date();
     today.setHours(23, 59, 59, 999);
     const start = new Date();
     start.setHours(0, 0, 0, 0);
     start.setDate(start.getDate() - (days - 1));
-    const startKey = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
-    const endKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+    const dateMap = new Map<
+      string,
+      { displayDate: string; total: number; highRisk: number; moderateRisk: number; lowRisk: number }
+    >();
+
+    // Pre-populate each day in the selected window for a continuous timeline
+    const cur = new Date(start);
+    while (cur <= today) {
+      const year = cur.getFullYear();
+      const month = String(cur.getMonth() + 1).padStart(2, '0');
+      const day = String(cur.getDate()).padStart(2, '0');
+      const sortKey = `${year}-${month}-${day}`;
+      const displayDate = cur.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+      });
+      dateMap.set(sortKey, { displayDate, total: 0, highRisk: 0, moderateRisk: 0, lowRisk: 0 });
+      cur.setDate(cur.getDate() + 1);
+    }
+
+    liveAssessments.forEach((ass) => {
+      if (!ass.created_at) return;
+      const d = new Date(ass.created_at);
+      if (isNaN(d.getTime())) return;
+      if (d.getTime() > today.getTime()) return; // Exclude future-dated records
+
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const sortKey = `${year}-${month}-${day}`;
+
+      const entry = dateMap.get(sortKey);
+      if (entry) {
+        entry.total += 1;
+        if (ass.risk_level === 'HIGH' || ass.risk_level === 'EMERGENCY') entry.highRisk += 1;
+        else if (ass.risk_level === 'MODERATE') entry.moderateRisk += 1;
+        else if (ass.risk_level === 'LOW') entry.lowRisk += 1;
+      }
+    });
 
     return Array.from(dateMap.entries())
-      .filter(([key]) => key >= startKey && key <= endKey)
       .sort(([keyA], [keyB]) => keyA.localeCompare(keyB))
       .map(([, entry]) => ({
         date: entry.displayDate,
@@ -506,6 +564,8 @@ export const RuralHealthDashboard: React.FC<RuralHealthDashboardProps> = ({
               <RiskDistributionCard
                 data={riskDistribution}
                 totalPatients={livePatients.length}
+                period={riskPeriod}
+                onFilterChange={setRiskPeriod}
               />
             </div>
             <div className="h-full">

@@ -4,7 +4,7 @@ import {
   AlertTriangle, CheckCircle2, ChevronRight, Loader2,
   Calendar, Activity, ShieldAlert, RefreshCw, UserCog,
   Thermometer, Heart, Droplets, Stethoscope, WifiOff, Clock,
-  Lock, ShieldCheck, ChevronDown
+  Lock, ShieldCheck, ChevronDown, Plus
 } from 'lucide-react';
 import { translations, type Language } from '../i18n/translations';
 import { 
@@ -19,6 +19,7 @@ import {
 } from '../db/offlineDb';
 import { apiFetch } from '../api/apiConfig';
 import { useAuth, type UserRole } from '../auth/AuthContext';
+import { SyncManager } from '../sync/SyncManager';
 
 interface PatientDirectoryProps {
   lang: Language;
@@ -168,24 +169,84 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
   // ─── LOAD DATA ──────────────────────────────────────────────────────────────
   const loadData = useCallback(async () => {
     setIsLoading(true);
+
+    // 1. Always load local IndexedDB patients & assessments first (immediate UI hydration)
+    const [localP, localA] = await Promise.all([getActivePatients(), getActiveAssessments()]);
+    setPatients(localP);
+    setAssessments(localA);
+
+    // 2. If online, trigger reliable sync and reconcile remote records into local Dexie cache
     if (isOnline) {
       try {
+        await SyncManager.getInstance().runFullSync().catch(() => {});
+
         const [pRes, aRes] = await Promise.all([
           apiFetch('/api/patients', { timeoutMs: 8000 }),
           apiFetch('/api/assessments', { timeoutMs: 8000 })
         ]);
+
         if (pRes.ok && aRes.ok) {
-          const [p, a] = await Promise.all([pRes.json(), aRes.json()]);
-          setPatients(p.filter((pt: LocalPatient) => !pt.is_deleted));
-          setAssessments(a.filter((at: LocalAssessment) => !at.is_deleted));
-          setIsLoading(false);
-          return;
+          const [remotePatients, remoteAssessments] = await Promise.all([pRes.json(), aRes.json()]);
+
+          // Reconcile remote patients into local Dexie store without overwriting unpushed local edits
+          const localPatientsAll = await db.patients.toArray();
+          const localMap = new Map(localPatientsAll.map(p => [p.id, p]));
+
+          for (const rp of remotePatients) {
+            const lp = localMap.get(rp.id);
+            if (!lp) {
+              await db.patients.put({
+                ...rp,
+                sync_state: 'SYNCED',
+                synced: true,
+                local_version: rp.server_version || 1,
+                server_version: rp.server_version || 1,
+                is_deleted: Boolean(rp.is_deleted)
+              });
+            } else if (lp.sync_state === 'SYNCED' && (rp.server_version || 0) >= (lp.server_version || 0)) {
+              await db.patients.put({
+                ...lp,
+                ...rp,
+                sync_state: 'SYNCED',
+                synced: true
+              });
+            }
+          }
+
+          // Same reconciliation for remote assessments
+          const localAssessmentsAll = await db.assessments.toArray();
+          const localAssMap = new Map(localAssessmentsAll.map(a => [a.id, a]));
+
+          for (const ra of remoteAssessments) {
+            const la = localAssMap.get(ra.id);
+            if (!la) {
+              await db.assessments.put({
+                ...ra,
+                sync_state: 'SYNCED',
+                synced: true,
+                local_version: ra.server_version || 1,
+                server_version: ra.server_version || 1,
+                is_deleted: Boolean(ra.is_deleted)
+              });
+            } else if (la.sync_state === 'SYNCED' && (ra.server_version || 0) >= (la.server_version || 0)) {
+              await db.assessments.put({
+                ...la,
+                ...ra,
+                sync_state: 'SYNCED',
+                synced: true
+              });
+            }
+          }
+
+          // Re-read final active list from Dexie (contains both synced remote and pending local records)
+          const [finalP, finalA] = await Promise.all([getActivePatients(), getActiveAssessments()]);
+          setPatients(finalP);
+          setAssessments(finalA);
         }
-      } catch { /* fall to IndexedDB */ }
+      } catch (err) {
+        console.warn('[PatientDirectory] Reconcile with server failed, preserving IndexedDB data:', err);
+      }
     }
-    const [p, a] = await Promise.all([getActivePatients(), getActiveAssessments()]);
-    setPatients(p);
-    setAssessments(a);
     setIsLoading(false);
   }, [isOnline]);
 
@@ -295,7 +356,16 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
       });
   }, [assessments]);
 
-  const filtered = patients.filter(p =>
+  // Facility-boundary scoping: Non-admin clinicians only see patients in their assigned facility
+  const scopedPatients = useMemo(() => {
+    if (!user || user.role === 'SYSTEM_ADMIN' || user.role === 'DISTRICT_OFFICER') {
+      return patients;
+    }
+    if (!user.facility_id) return patients;
+    return patients.filter(p => !p.facility_id || p.facility_id === user.facility_id);
+  }, [patients, user]);
+
+  const filtered = scopedPatients.filter(p =>
     p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     p.village.toLowerCase().includes(searchTerm.toLowerCase()) ||
     p.phone.includes(searchTerm) ||
@@ -548,14 +618,22 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
           <p className="text-xs text-slate-500 font-semibold mt-1">
             {patients.length} registered ·{' '}
             <span className="font-black text-indigo-700">IndexedDB</span>
-            {isOnline && <> + <span className="font-black text-emerald-700">SQLite backend</span></>}
+            {isOnline ? <> + <span className="font-black text-emerald-700">SQLite backend</span></> : <> · <span className="font-black text-amber-600">Offline</span></>}
           </p>
         </div>
         <div className="flex items-center gap-2 w-full sm:w-auto">
-          <button onClick={loadData} className="w-9 h-9 rounded-xl bg-slate-100 hover:bg-slate-200 flex items-center justify-center shrink-0" title="Reload">
-            <RefreshCw className="w-4 h-4 text-slate-600" />
+          <a
+            href="#screen"
+            className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs shadow-md transition-all active:scale-95 shrink-0"
+            title="Register a new patient and start clinical screening"
+          >
+            <Plus className="w-4 h-4" />
+            <span className="hidden sm:inline">New Assessment</span>
+          </a>
+          <button onClick={loadData} className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 flex items-center justify-center shrink-0" title="Reload & Reconcile">
+            <RefreshCw className="w-4 h-4 text-slate-600 dark:text-slate-300" />
           </button>
-          <div className="relative flex-1 sm:w-72">
+          <div className="relative flex-1 sm:w-64">
             <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
             <input
               type="text" placeholder={t.searchVillage} value={searchTerm}
@@ -663,7 +741,23 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
                         {displayId}
                       </span>
                     </div>
-                    <p className="text-xs text-slate-500 font-medium mt-0.5">{patient.age} yrs · {patient.gender}</p>
+                    <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                      <p className="text-xs text-slate-500 font-medium">{patient.age} yrs · {patient.gender}</p>
+                      {patient.sync_state === 'QUEUED' || !patient.synced ? (
+                        <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200" title="Saved locally in IndexedDB, queued for backend sync">
+                          ☁️ Pending Sync
+                        </span>
+                      ) : (
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200" title="Synchronized with operational database">
+                          ✓ Synced
+                        </span>
+                      )}
+                      {patient.facility_id && (
+                        <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
+                          🏥 {patient.facility_id}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   {latest ? (
                     <span className={`px-2.5 py-1 rounded-full text-[10px] font-black shrink-0 ml-2 border ${
@@ -845,11 +939,20 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
               </div>
             );
           }) : (
-            <div className="col-span-full bg-white p-10 rounded-3xl text-center border border-slate-100">
-              <Users className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-              <p className="text-slate-400 font-semibold text-sm">
-                {searchTerm ? 'No patients match your search.' : 'No registered patients. Register via + New Assessment.'}
+            <div className="col-span-full bg-white dark:bg-slate-800 p-10 rounded-3xl text-center border border-slate-100 dark:border-slate-700 space-y-3">
+              <Users className="w-12 h-12 text-slate-300 dark:text-slate-600 mx-auto" />
+              <p className="text-slate-500 dark:text-slate-400 font-bold text-sm">
+                {searchTerm ? 'No patients match your search criteria.' : 'No registered patients found in current scope.'}
               </p>
+              <div className="pt-2">
+                <a
+                  href="#screen"
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs shadow-md transition-all active:scale-95"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>+ Register New Patient / Start Screening</span>
+                </a>
+              </div>
             </div>
           )}
         </div>
@@ -869,6 +972,13 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
                 </p>
               </div>
               <div className="flex items-center gap-2">
+                <a
+                  href="#screen"
+                  onClick={() => setViewPatient(null)}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100"
+                >
+                  <Plus className="w-3.5 h-3.5" />New Screening
+                </a>
                 <button onClick={() => { setViewPatient(null); openEditPatient(viewPatient); }}
                   className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100">
                   <Pencil className="w-3.5 h-3.5" />Edit

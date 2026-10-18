@@ -432,27 +432,50 @@ def apply_assessment_operation(
         else:
             facility = payload.get('facility_id') or (patient.facility_id if patient else None)
 
+        # Normalize and validate temperature input safely
+        temp = payload.get('temperature_f')
+        if temp is not None:
+            try:
+                temp_val = float(temp)
+                # Auto-correct common missing decimal typo (e.g. 986 -> 98.6)
+                if 900.0 <= temp_val <= 1150.0:
+                    temp_val = round(temp_val / 10.0, 1)
+                temp = temp_val
+            except (ValueError, TypeError):
+                temp = None
+
         # Run canonical clinical evaluation engine
-        assessment_in = AssessmentCreate(
-            id=op.entity_id,
-            patient_id=patient_id,
-            facility_id=facility,
-            symptoms=payload.get('symptoms', []),
-            symptom_duration_days=payload.get('symptom_duration_days'),
-            temperature_f=payload.get('temperature_f'),
-            systolic_bp=payload.get('systolic_bp'),
-            diastolic_bp=payload.get('diastolic_bp'),
-            glucose_mg_dl=payload.get('glucose_mg_dl'),
-            heart_rate_bpm=payload.get('heart_rate_bpm'),
-            height_cm=payload.get('height_cm'),
-            weight_kg=payload.get('weight_kg'),
-            bmi=payload.get('bmi'),
-            smoking_status=payload.get('smoking_status', 'Never'),
-            alcohol_status=payload.get('alcohol_status', 'Never'),
-            physical_activity=payload.get('physical_activity', 'Moderate'),
-            family_history=payload.get('family_history', []),
-            client_operation_id=op.operation_id
-        )
+        try:
+            assessment_in = AssessmentCreate(
+                id=op.entity_id,
+                patient_id=patient_id,
+                facility_id=facility,
+                symptoms=payload.get('symptoms', []),
+                symptom_duration_days=payload.get('symptom_duration_days'),
+                temperature_f=temp,
+                systolic_bp=payload.get('systolic_bp'),
+                diastolic_bp=payload.get('diastolic_bp'),
+                glucose_mg_dl=payload.get('glucose_mg_dl'),
+                heart_rate_bpm=payload.get('heart_rate_bpm'),
+                height_cm=payload.get('height_cm'),
+                weight_kg=payload.get('weight_kg'),
+                bmi=payload.get('bmi'),
+                smoking_status=payload.get('smoking_status', 'Never'),
+                alcohol_status=payload.get('alcohol_status', 'Never'),
+                physical_activity=payload.get('physical_activity', 'Moderate'),
+                family_history=payload.get('family_history', []),
+                client_operation_id=op.operation_id
+            )
+        except Exception as val_err:
+            return SyncOperationResult(
+                operation_id=op.operation_id,
+                entity_type=op.entity_type,
+                entity_id=op.entity_id,
+                operation_type=op.operation_type,
+                status='REJECTED',
+                server_version=0,
+                error_message=f"Assessment validation failed: {val_err}"
+            )
         eval_result = screening_engine.evaluate(assessment_in.model_dump())
 
 
