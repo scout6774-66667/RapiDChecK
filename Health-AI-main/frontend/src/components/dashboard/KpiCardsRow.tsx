@@ -28,7 +28,7 @@ export const KpiCardsRow: React.FC<KpiCardsRowProps> = ({ kpis, onCardClick }) =
           <div className="text-2xl sm:text-3xl font-extrabold text-[#102A56] tracking-tight">
             {kpis.patientsScreened}
           </div>
-          <div className="text-xs font-semibold text-slate-500 mt-0.5">Patients Screened</div>
+          <div className="text-xs font-semibold text-slate-500 mt-0.5">Screening Encounters</div>
           <div className="text-[11px] font-bold text-[#0A9F68] mt-1.5 flex items-center gap-1">
             <span>{kpis.patientsScreenedTrend}</span>
           </div>
@@ -53,7 +53,7 @@ export const KpiCardsRow: React.FC<KpiCardsRowProps> = ({ kpis, onCardClick }) =
           <div className="text-2xl sm:text-3xl font-extrabold text-[#102A56] tracking-tight">
             {kpis.highRiskCases}
           </div>
-          <div className="text-xs font-semibold text-slate-500 mt-0.5">High Risk Cases</div>
+          <div className="text-xs font-semibold text-slate-500 mt-0.5">High-Risk Screenings</div>
           <div className="text-[11px] font-bold text-[#EF4444] mt-1.5 flex items-center gap-1">
             <span>{kpis.highRiskTrend}</span>
           </div>
@@ -78,7 +78,7 @@ export const KpiCardsRow: React.FC<KpiCardsRowProps> = ({ kpis, onCardClick }) =
           <div className="text-2xl sm:text-3xl font-extrabold text-[#102A56] tracking-tight">
             {kpis.referralsMade}
           </div>
-          <div className="text-xs font-semibold text-slate-500 mt-0.5">Referrals Made</div>
+          <div className="text-xs font-semibold text-slate-500 mt-0.5">Referral Requests</div>
           <div className="text-[11px] font-bold text-[#3B82F6] mt-1.5 flex items-center gap-1">
             <span>{kpis.referralsTrend}</span>
           </div>
