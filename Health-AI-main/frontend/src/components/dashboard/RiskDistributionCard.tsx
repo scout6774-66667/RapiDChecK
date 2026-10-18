@@ -11,7 +11,7 @@ interface RiskDistributionCardProps {
 
 export const RiskDistributionCard: React.FC<RiskDistributionCardProps> = ({
   data,
-  totalPatients = 24,
+  totalPatients = 0,
   onFilterChange,
 }) => {
   const [filter, setFilter] = useState('Today');
