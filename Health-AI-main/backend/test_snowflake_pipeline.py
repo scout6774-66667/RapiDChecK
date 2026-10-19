@@ -24,8 +24,8 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 from main import app
-from database import SessionLocal, init_db, PatientModel, AssessmentModel
-from auth_service import create_access_token
+from database import Base, get_db, PatientModel, AssessmentModel
+from auth_service import create_access_token, seed_default_users
 from snowflake_client import SnowflakeClient, SnowflakeConfig
 from snowflake_patient_pipeline import (
     pseudonymize_patient_id,
@@ -38,14 +38,43 @@ from snowflake_patient_pipeline import (
     get_governance_policy,
     GOVERNANCE_POLICY
 )
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+TEST_DB_URL = "sqlite:///:memory:"
+test_engine = create_engine(
+    TEST_DB_URL,
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool
+)
+TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
+
+def override_get_db():
+    db = TestingSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 client = TestClient(app)
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="module", autouse=True)
+def setup_test_db():
+    Base.metadata.create_all(bind=test_engine)
+    app.dependency_overrides[get_db] = override_get_db
+    session = TestingSessionLocal()
+    seed_default_users(session)
+    session.close()
+    yield
+    app.dependency_overrides.pop(get_db, None)
+    Base.metadata.drop_all(bind=test_engine)
+
+
+@pytest.fixture
 def db_session():
-    init_db()
-    session = SessionLocal()
+    session = TestingSessionLocal()
     yield session
     session.close()
 
@@ -187,7 +216,9 @@ def test_patient_registration_succeeds_when_snowflake_unconfigured(db_session):
         "age": 42,
         "gender": "Female",
         "village": "Bishnupur",
-        "phone": "9998887771"
+        "phone": "9998887771",
+        "record_origin": "TEST_FIXTURE",
+        "is_synthetic": 1
     }
 
     res = client.post("/api/patients", json=payload, headers=headers)

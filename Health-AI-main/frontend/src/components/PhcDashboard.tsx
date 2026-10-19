@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { translations, type Language } from '../i18n/translations';
+import { useLanguage } from '../i18n/LanguageContext';
 import {
   type LocalAssessment,
   getActiveAssessments,
@@ -23,7 +24,9 @@ interface PhcDashboardProps {
 }
 
 export const PhcDashboard: React.FC<PhcDashboardProps> = ({ lang, isOnline, defaultRiskFilter = 'ALL' }) => {
-  const t = translations[lang];
+  const { language: globalLang } = useLanguage();
+  const activeLang = lang || globalLang;
+  const t = translations[activeLang];
   const { user, switchUser } = useAuth();
 
   const [assessments, setAssessments] = useState<LocalAssessment[]>([]);

@@ -7,7 +7,7 @@ RuralHealth AI implements a **dual-database architecture** designed to balance r
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        FRONTEND CLIENTS                                │
-│   • ASHA Frontline Mobile / Tablet (Offline-First via Dexie.js v4)    │
+│   • ASHA Frontline Mobile / Tablet (Offline-First via Dexie.js v4)     │
 │   • PHC Doctor Clinical Review Portal                                  │
 │   • District Health Officer Dashboard                                  │
 └────────────────────────────────────┬───────────────────────────────────┘
@@ -15,7 +15,7 @@ RuralHealth AI implements a **dual-database architecture** designed to balance r
                     HTTPS / REST API │ (Bearer JWT)
                                      ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│                     FASTAPI APPLICATION BACKEND                         │
+│                     FASTAPI APPLICATION BACKEND                        │
 │   • Auth & RBAC (ASHA_WORKER, PHC_DOCTOR, SYSTEM_ADMIN)                │
 │   • Clinical Risk Engine & Deterministic Triage                        │
 │   • Monotonic Sync Journal & Idempotent Push/Pull Engine               │

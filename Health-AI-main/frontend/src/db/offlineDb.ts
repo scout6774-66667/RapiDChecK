@@ -46,6 +46,8 @@ export interface LocalPatient {
   is_deleted: boolean;
   sync_state: SyncState;
   synced?: boolean; // Backward-compatibility flag
+  record_origin?: string;
+  is_synthetic?: number;
   created_at: string;
   updated_at: string;
 }
@@ -114,6 +116,37 @@ export interface LocalAppointment {
   is_deleted: boolean;
   sync_state: SyncState;
   synced?: boolean; // Backward-compatibility flag
+  created_at: string;
+  updated_at: string;
+}
+
+export type ReferralRecordStatus = 'REQUESTED' | 'APPROVED' | 'REFERRED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+export type ReferralPriority = 'ROUTINE' | 'URGENT' | 'EMERGENCY';
+
+export interface LocalReferral {
+  id: string; // e.g. REF-XXXXXXXX or UUID
+  patient_id: string;
+  patient_name?: string;
+  patient_phone?: string;
+  patient_village?: string;
+  patient_age?: number;
+  patient_gender?: string;
+  assessment_id?: string | null;
+  referral_reason: string;
+  priority: ReferralPriority;
+  destination_facility: string;
+  facility_id?: string | null;
+  status: ReferralRecordStatus;
+  notes?: string;
+  outcome_notes?: string;
+  created_by: string;
+  updated_by?: string | null;
+  client_operation_id?: string;
+  server_version: number;
+  local_version: number;
+  is_deleted: boolean;
+  sync_state: SyncState;
+  synced?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -237,6 +270,7 @@ export class RuralHealthDatabase extends Dexie {
   patients!: Table<LocalPatient>;
   assessments!: Table<LocalAssessment>;
   appointments!: Table<LocalAppointment>;
+  referrals!: Table<LocalReferral>;
   outbox!: Table<OutboxOperation>;
   conflicts!: Table<LocalConflict>;
   tombstones!: Table<LocalTombstone>;
@@ -292,10 +326,36 @@ export class RuralHealthDatabase extends Dexie {
     this.version(6).stores({
       appointments: 'id, patient_name, patient_phone, doctor_name, appointment_date, status, server_version, is_deleted, sync_state, synced, created_at, updated_at'
     });
+
+    // Version 7: Dedicated Operational Referral Management Entity
+    this.version(7).stores({
+      referrals: 'id, patient_id, assessment_id, status, priority, destination_facility, facility_id, created_by, server_version, is_deleted, sync_state, synced, created_at, updated_at'
+    });
   }
 }
 
 export const db = new RuralHealthDatabase();
+
+/**
+ * Purges all workspace-specific cached records from IndexedDB.
+ * Must be executed upon logout or tenant workspace switch to guarantee zero client-side data leakage.
+ */
+export async function clearOfflineWorkspaceData(): Promise<void> {
+  try {
+    await db.transaction('rw', [db.patients, db.assessments, db.appointments, db.referrals, db.outbox, db.conflicts, db.tombstones], async () => {
+      await db.patients.clear();
+      await db.assessments.clear();
+      await db.appointments.clear();
+      await db.referrals.clear();
+      await db.outbox.clear();
+      await db.conflicts.clear();
+      await db.tombstones.clear();
+    });
+    console.info('[OfflineDB] Successfully purged workspace-scoped local data.');
+  } catch (err) {
+    console.warn('[OfflineDB] Error clearing workspace tables:', err);
+  }
+}
 
 // ─── SEQUENCING & METADATA HELPERS ───────────────────────────────────────────
 
@@ -402,6 +462,8 @@ export async function savePatientAtomic(
       server_version: serverVersion,
       local_version: localVersion,
       is_deleted: false,
+      record_origin: (patientData as any).record_origin || existing?.record_origin || 'MANUAL_CLINICAL',
+      is_synthetic: (patientData as any).is_synthetic !== undefined ? (patientData as any).is_synthetic : (existing?.is_synthetic || 0),
       sync_state: 'QUEUED',
       synced: false,
       created_at: existing?.created_at || now,
@@ -421,7 +483,9 @@ export async function savePatientAtomic(
         gender: record.gender,
         village: record.village,
         phone: record.phone,
-        patient_id: record.patient_id
+        patient_id: record.patient_id,
+        record_origin: record.record_origin,
+        is_synthetic: record.is_synthetic
       },
       base_server_version: serverVersion,
       client_sequence: seq,
@@ -692,6 +756,151 @@ export async function updateReferralAtomic(
     await db.outbox.put(outboxOp);
     return updated;
   });
+}
+
+/**
+ * Atomically saves an operational referral and stages an outbox operation.
+ */
+export async function saveReferralAtomic(
+  referralData: Omit<LocalReferral, 'id' | 'server_version' | 'local_version' | 'is_deleted' | 'sync_state' | 'synced' | 'created_at' | 'updated_at'> & { id?: string }
+): Promise<LocalReferral> {
+  const now = new Date().toISOString();
+  const refId = referralData.id || `REF-${generateUUID().substring(0, 8).toUpperCase()}`;
+  const opId = generateUUID();
+
+  return await db.transaction('rw', [db.referrals, db.outbox, db.sync_metadata], async () => {
+    const seq = await getNextClientSequence();
+    const record: LocalReferral = {
+      id: refId,
+      patient_id: referralData.patient_id,
+      patient_name: referralData.patient_name,
+      patient_phone: referralData.patient_phone,
+      patient_village: referralData.patient_village,
+      patient_age: referralData.patient_age,
+      patient_gender: referralData.patient_gender,
+      assessment_id: referralData.assessment_id || null,
+      referral_reason: referralData.referral_reason,
+      priority: referralData.priority || 'ROUTINE',
+      destination_facility: referralData.destination_facility,
+      facility_id: referralData.facility_id || null,
+      status: referralData.status || 'REQUESTED',
+      notes: referralData.notes || '',
+      outcome_notes: referralData.outcome_notes || '',
+      created_by: referralData.created_by,
+      updated_by: referralData.updated_by || null,
+      client_operation_id: opId,
+      server_version: 1,
+      local_version: 1,
+      is_deleted: false,
+      sync_state: 'QUEUED',
+      synced: false,
+      created_at: now,
+      updated_at: now
+    };
+
+    const outboxOp: OutboxOperation = {
+      operation_id: opId,
+      entity_type: 'referral',
+      entity_id: refId,
+      operation_type: 'CREATE',
+      payload: {
+        id: refId,
+        patient_id: record.patient_id,
+        assessment_id: record.assessment_id,
+        referral_reason: record.referral_reason,
+        priority: record.priority,
+        destination_facility: record.destination_facility,
+        facility_id: record.facility_id,
+        status: record.status,
+        notes: record.notes,
+        outcome_notes: record.outcome_notes,
+        created_by: record.created_by,
+        client_operation_id: opId
+      },
+      base_server_version: 1,
+      client_sequence: seq,
+      status: 'QUEUED',
+      retry_count: 0,
+      created_at: now,
+      updated_at: now
+    };
+
+    await db.referrals.put(record);
+    await db.outbox.put(outboxOp);
+    return record;
+  });
+}
+
+/**
+ * Atomically updates operational referral status and stages an outbox UPDATE op.
+ */
+export async function updateOperationalReferralAtomic(
+  referralId: string,
+  newStatus: ReferralRecordStatus,
+  outcomeNotes?: string,
+  notes?: string,
+  updatedBy?: string
+): Promise<LocalReferral | null> {
+  const now = new Date().toISOString();
+  const opId = generateUUID();
+
+  return await db.transaction('rw', [db.referrals, db.outbox, db.sync_metadata], async () => {
+    const existing = await db.referrals.get(referralId);
+    if (!existing) return null;
+
+    const serverVersion = existing.server_version || 1;
+    const localVersion = (existing.local_version || 1) + 1;
+    const seq = await getNextClientSequence();
+
+    const updated: LocalReferral = {
+      ...existing,
+      status: newStatus,
+      outcome_notes: outcomeNotes !== undefined ? outcomeNotes : existing.outcome_notes,
+      notes: notes !== undefined ? notes : existing.notes,
+      updated_by: updatedBy || existing.updated_by,
+      local_version: localVersion,
+      sync_state: 'QUEUED',
+      synced: false,
+      updated_at: now
+    };
+
+    const outboxOp: OutboxOperation = {
+      operation_id: opId,
+      entity_type: 'referral',
+      entity_id: referralId,
+      operation_type: 'UPDATE',
+      payload: {
+        id: referralId,
+        status: newStatus,
+        outcome_notes: updated.outcome_notes,
+        notes: updated.notes,
+        updated_by: updated.updated_by
+      },
+      base_server_version: serverVersion,
+      client_sequence: seq,
+      status: 'QUEUED',
+      retry_count: 0,
+      created_at: now,
+      updated_at: now
+    };
+
+    await db.referrals.put(updated);
+    await db.outbox.put(outboxOp);
+    return updated;
+  });
+}
+
+/**
+ * Returns active (non-deleted) operational referrals from local Dexie database.
+ */
+export async function getActiveReferrals(): Promise<LocalReferral[]> {
+  try {
+    const list = await db.referrals.filter(r => !r.is_deleted).toArray();
+    return list.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+  } catch (err) {
+    console.warn('Error reading active referrals from Dexie:', err);
+    return [];
+  }
 }
 
 /**

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { MoreHorizontal, ArrowRight, UserCheck, Stethoscope, Calendar } from 'lucide-react';
 import type { PatientTableRow } from './types';
+import { useLanguage } from '../../i18n';
 
 interface RecentPatientsTableProps {
   patients: PatientTableRow[];
@@ -17,6 +18,7 @@ export const RecentPatientsTable: React.FC<RecentPatientsTableProps> = ({
   onStartScreening,
   onBookAppointment,
 }) => {
+  const { strings } = useLanguage();
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
 
   const getRiskBadge = (risk: PatientTableRow['riskLevel']) => {
@@ -24,32 +26,32 @@ export const RecentPatientsTable: React.FC<RecentPatientsTableProps> = ({
       case 'HIGH':
         return (
           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-[#FEF2F2] text-[#EF4444] border border-red-200">
-            High
+            {strings?.dashboard?.highRisk || 'High'}
           </span>
         );
       case 'MODERATE':
         return (
           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-[#FFFBEB] text-[#F59E0B] border border-amber-200">
-            Moderate
+            {strings?.dashboard?.moderateRisk || 'Moderate'}
           </span>
         );
       case 'LOW':
         return (
           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-[#ECFDF5] text-[#10B981] border border-emerald-200">
-            Low
+            {strings?.dashboard?.lowRisk || 'Low'}
           </span>
         );
       case 'UNASSESSED':
         return (
           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-600 border border-slate-300">
-            Unassessed
+            {strings?.dashboard?.unassessed || 'Unassessed'}
           </span>
         );
       case 'NEEDS_REVIEW':
       default:
         return (
           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
-            Needs Review
+            {strings?.dashboard?.needsReview || 'Needs Review'}
           </span>
         );
     }
@@ -61,28 +63,28 @@ export const RecentPatientsTable: React.FC<RecentPatientsTableProps> = ({
         return (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-[#EFF6FF] text-[#3B82F6] border border-blue-200">
             <span className="w-1.5 h-1.5 rounded-full bg-[#3B82F6]"></span>
-            Referred
+            {strings?.dashboard?.referred || 'Referred'}
           </span>
         );
       case 'APPOINTMENT':
         return (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-[#F5F3FF] text-[#8B5CF6] border border-purple-200">
             <span className="w-1.5 h-1.5 rounded-full bg-[#8B5CF6]"></span>
-            Appointment
+            {strings?.dashboard?.appointment || 'Appointment'}
           </span>
         );
       case 'PENDING':
         return (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-[#FFFBEB] text-[#F59E0B] border border-amber-200">
             <span className="w-1.5 h-1.5 rounded-full bg-[#F59E0B]"></span>
-            Pending
+            {strings?.dashboard?.pending || 'Pending'}
           </span>
         );
       case 'COMPLETED':
         return (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-[#ECFDF5] text-[#10B981] border border-emerald-200">
             <span className="w-1.5 h-1.5 rounded-full bg-[#10B981]"></span>
-            Completed
+            {strings?.dashboard?.completed || 'Completed'}
           </span>
         );
       case 'UNDER_REVIEW':
@@ -90,7 +92,7 @@ export const RecentPatientsTable: React.FC<RecentPatientsTableProps> = ({
         return (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-[#EFF6FF] text-[#3B82F6] border border-blue-200">
             <span className="w-1.5 h-1.5 rounded-full bg-[#3B82F6]"></span>
-            Under Review
+            {strings?.dashboard?.underReview || 'Under Review'}
           </span>
         );
     }
@@ -100,12 +102,12 @@ export const RecentPatientsTable: React.FC<RecentPatientsTableProps> = ({
     <div className="health-card p-4 sm:p-5 flex flex-col justify-between">
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-sm font-bold text-[#102A56]">Recent Patients</h3>
+        <h3 className="text-sm font-bold text-[#102A56]">{strings?.dashboard?.recentPatients || 'Recent Patients'}</h3>
         <button
           onClick={onViewAll}
           className="text-xs font-bold text-[#0A9F68] hover:text-[#088758] flex items-center gap-1 transition-all"
         >
-          <span>View All</span>
+          <span>{strings?.common?.viewAll || 'View All'}</span>
           <ArrowRight className="w-3.5 h-3.5" />
         </button>
       </div>
@@ -116,16 +118,16 @@ export const RecentPatientsTable: React.FC<RecentPatientsTableProps> = ({
           <div className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center text-slate-400 mb-3">
             <UserCheck className="w-6 h-6" />
           </div>
-          <h4 className="text-xs font-bold text-[#102A56]">No Patients Screened Yet</h4>
+          <h4 className="text-xs font-bold text-[#102A56]">{strings?.dashboard?.noPatientsScreened || 'No Patients Screened Yet'}</h4>
           <p className="text-[11px] text-slate-500 max-w-xs mt-1 mb-4">
-            Patient health assessments recorded in the field will appear here.
+            {strings?.dashboard?.noPatientsScreenedDesc || 'Patient health assessments recorded in the field will appear here.'}
           </p>
           <button
             onClick={() => onStartScreening?.(null as any)}
             className="px-3.5 py-1.5 rounded-xl bg-[#0A9F68] hover:bg-[#088758] text-white text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
           >
             <Stethoscope className="w-3.5 h-3.5" />
-            <span>Screen First Patient</span>
+            <span>{strings?.dashboard?.screenFirstPatient || 'Screen First Patient'}</span>
           </button>
         </div>
       ) : (
@@ -133,12 +135,12 @@ export const RecentPatientsTable: React.FC<RecentPatientsTableProps> = ({
           <table className="w-full text-left text-xs">
           <thead>
             <tr className="border-b border-[#E5EEF1] text-slate-400 font-semibold text-[11px]">
-              <th className="pb-3 font-semibold pl-2">Patient</th>
-              <th className="pb-3 font-semibold">Age / Gender</th>
-              <th className="pb-3 font-semibold">Risk Level</th>
-              <th className="pb-3 font-semibold">Key Symptoms</th>
-              <th className="pb-3 font-semibold">Status</th>
-              <th className="pb-3 font-semibold text-right pr-2">Actions</th>
+              <th className="pb-3 font-semibold pl-2">{strings?.dashboard?.patient || 'Patient'}</th>
+              <th className="pb-3 font-semibold">{strings?.dashboard?.ageGender || 'Age / Gender'}</th>
+              <th className="pb-3 font-semibold">{strings?.dashboard?.riskLevel || 'Risk Level'}</th>
+              <th className="pb-3 font-semibold">{strings?.dashboard?.keySymptoms || 'Key Symptoms'}</th>
+              <th className="pb-3 font-semibold">{strings?.dashboard?.status || 'Status'}</th>
+              <th className="pb-3 font-semibold text-right pr-2">{strings?.dashboard?.actions || 'Actions'}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -194,7 +196,7 @@ export const RecentPatientsTable: React.FC<RecentPatientsTableProps> = ({
                       onClick={() =>
                         setActiveMenuId(activeMenuId === patient.id ? null : patient.id)
                       }
-                      className="p-1 rounded-lg text-slate-400 hover:text-[#102A56] hover:bg-slate-100 transition-all"
+                      className="p-1 rounded-lg text-slate-400 hover:text-[#102A56] hover:bg-slate-100 transition-all cursor-pointer"
                       aria-label="Actions"
                     >
                       <MoreHorizontal className="w-4 h-4" />
@@ -210,7 +212,7 @@ export const RecentPatientsTable: React.FC<RecentPatientsTableProps> = ({
                           className="w-full px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2 font-medium"
                         >
                           <UserCheck className="w-3.5 h-3.5 text-slate-500" />
-                          View Health Record
+                          {strings?.dashboard?.viewProfile || 'View Health Record'}
                         </button>
                         <button
                           onClick={() => {
@@ -220,7 +222,7 @@ export const RecentPatientsTable: React.FC<RecentPatientsTableProps> = ({
                           className="w-full px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2 font-medium"
                         >
                           <Stethoscope className="w-3.5 h-3.5 text-[#0A9F68]" />
-                          Run Assessment
+                          {strings?.dashboard?.startAssessment || 'Run Assessment'}
                         </button>
                         <button
                           onClick={() => {
@@ -230,7 +232,7 @@ export const RecentPatientsTable: React.FC<RecentPatientsTableProps> = ({
                           className="w-full px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2 font-medium"
                         >
                           <Calendar className="w-3.5 h-3.5 text-[#8B5CF6]" />
-                          Book Doctor
+                          {strings?.dashboard?.bookTeleconsult || 'Book Doctor'}
                         </button>
                       </div>
                     )}

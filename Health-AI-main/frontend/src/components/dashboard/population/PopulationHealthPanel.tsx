@@ -13,12 +13,14 @@ import { PopulationDomainCard, type DomainCardData } from './PopulationDomainCar
 import { PopulationTrendChart, type TrendSeriesRow } from './PopulationTrendChart';
 import { PopulationIndicatorTable, type IndicatorTableRow } from './PopulationIndicatorTable';
 import { apiFetch } from '../../../api/apiConfig';
+import { useLanguage } from '../../../i18n/LanguageContext';
 
 interface PopulationHealthPanelProps {
   isOnline: boolean;
 }
 
 export const PopulationHealthPanel: FC<PopulationHealthPanelProps> = ({ isOnline }) => {
+  const { strings } = useLanguage();
   const [district] = useState('Kolkata');
   const [selectedYear, setSelectedYear] = useState<number>(2021);
   const [loading, setLoading] = useState<boolean>(true);
@@ -230,7 +232,7 @@ export const PopulationHealthPanel: FC<PopulationHealthPanelProps> = ({ isOnline
             <div className="flex items-center gap-2 mb-3">
               <span className="px-3 py-1 bg-white/10 backdrop-blur-md rounded-full text-xs font-bold tracking-wide uppercase text-emerald-300 border border-white/10 flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5" />
-                HMIS + NFHS-5 Intelligence Layer
+                {strings.population.coverageBadge}
               </span>
               {qualityReport && (
                 <span className="px-3 py-1 bg-emerald-500/20 backdrop-blur-md rounded-full text-xs font-semibold text-emerald-200 border border-emerald-400/30 flex items-center gap-1.5">
@@ -241,10 +243,10 @@ export const PopulationHealthPanel: FC<PopulationHealthPanelProps> = ({ isOnline
             </div>
 
             <h2 className="text-2xl sm:text-3xl font-black tracking-tight leading-tight mb-2">
-              Population Health Intelligence & Risk Context
+              {strings.population.title}
             </h2>
             <p className="text-slate-200 text-xs sm:text-sm leading-relaxed">
-              Longitudinal public health signals for <span className="font-bold text-white">Kolkata</span> across 14 annual cohorts (2008–2021) and NFHS-5 survey baseline context. Supports decision-support and referral prioritization without replacing individual patient measurements.
+              {strings.population.subtitle}
             </p>
           </div>
 

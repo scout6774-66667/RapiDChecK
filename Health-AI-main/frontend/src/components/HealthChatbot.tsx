@@ -19,6 +19,7 @@ import {
   X, MessageCircleHeart, Send, Loader2, AlertCircle, Bot, User, Sparkles, Database, Copy, Check, RotateCcw
 } from 'lucide-react';
 import { type Language } from '../i18n/translations';
+import { useLanguage } from '../i18n/LanguageContext';
 import { apiFetch } from '../api/apiConfig';
 
 interface Props {
@@ -192,8 +193,10 @@ export const HealthChatbot: React.FC<Props> = ({ lang }) => {
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const ui = UI_STRINGS[lang] || UI_STRINGS.en;
-  const quickPrompts = QUICK_PROMPTS[lang] || QUICK_PROMPTS.en;
+  const { language: globalLang } = useLanguage();
+  const activeLang = lang || globalLang;
+  const ui = UI_STRINGS[activeLang] || UI_STRINGS.en;
+  const quickPrompts = QUICK_PROMPTS[activeLang] || QUICK_PROMPTS.en;
 
   // Fetch Ollama health status from FastAPI backend
   const checkOllamaHealth = useCallback(async () => {

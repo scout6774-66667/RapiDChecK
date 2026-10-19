@@ -1,64 +1,120 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { RuralHealthDashboard } from './components/dashboard/RuralHealthDashboard';
 import type { DashboardNavTab } from './components/dashboard/DashboardSidebar';
 import { ScreenPatientPage } from './components/screening/ScreenPatientPage';
-import { PhcDashboard } from './components/PhcDashboard';
+import { IdrcReferralsPage } from './components/referrals/IdrcReferralsPage';
+import { AnalysisPage } from './components/analysis/AnalysisPage';
 import { PatientDirectory } from './components/PatientDirectory';
 import { HealthChatbot } from './components/HealthChatbot';
 import { ChatAssistantPage } from './components/ChatAssistantPage';
 import { TeleconsultBooking } from './components/TeleconsultBooking';
 import { HealthResourcesModal } from './components/dashboard/HealthResourcesModal';
 import { PopulationHealthPanel } from './components/dashboard/population/PopulationHealthPanel';
+import { StaffManagementPage } from './components/staff/StaffManagementPage';
 import { RuralHealthHomepage } from './components/home/RuralHealthHomepage';
-import { LoginPage } from './components/auth/LoginPage';
+import { SignInPage } from './components/auth/SignInPage';
+import { SignUpPage } from './components/auth/SignUpPage';
 import { useAuth } from './auth/AuthContext';
 import { useLanguage } from './i18n';
 import { db } from './db/offlineDb';
 import { useLiveQuery } from 'dexie-react-hooks';
 import WaterDropClick from './components/WaterDropClick';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Globe, ChevronDown } from 'lucide-react';
 import { apiFetch } from './api/apiConfig';
 import { SyncManager } from './sync/SyncManager';
 
-export type AppView = 'home' | 'login' | 'app';
+export type AppView = 'home' | 'signin' | 'signup' | 'app';
+
+const VALID_TABS: DashboardNavTab[] = [
+  'dashboard',
+  'screen',
+  'patients',
+  'referrals',
+  'appointments',
+  'staff',
+  'analytics',
+  'population_health',
+  'chat',
+  'resources',
+];
+
+function parseLocation(): { view: AppView; tab?: DashboardNavTab } {
+  const path = window.location.pathname.toLowerCase().replace(/\/+$/, '') || '/';
+  const hash = window.location.hash.toLowerCase().replace(/^#\/?/, '');
+
+  // 1. Check for Sign In
+  if (path === '/signin' || path === '/login' || hash === 'signin' || hash === 'login') {
+    return { view: 'signin' };
+  }
+
+  // 2. Check for Get Started / Registration
+  if (
+    path === '/signup' ||
+    path === '/register' ||
+    path === '/get-started' ||
+    hash === 'signup' ||
+    hash === 'register' ||
+    hash === 'get-started'
+  ) {
+    return { view: 'signup' };
+  }
+
+  // 3. Check for Dashboard tabs
+  const tabCandidate = (path.replace(/^\//, '') || hash) as DashboardNavTab;
+  if (VALID_TABS.includes(tabCandidate)) {
+    return { view: 'app', tab: tabCandidate };
+  }
+
+  // 4. Default to Homepage
+  return { view: 'home' };
+}
 
 export function App() {
   const { isAuthenticated, logout } = useAuth();
-  const { language: lang, setLanguage: setLang } = useLanguage();
+  const { language: lang, setLanguage: setLang, strings } = useLanguage();
+  const [subscreenLangOpen, setSubscreenLangOpen] = useState(false);
 
-  // Track high-level view (home, login, app)
   const [currentView, setCurrentView] = useState<AppView>(() => {
-    const hash = window.location.hash.replace('#', '');
-    if (hash === 'login') return 'login';
-    if (hash === 'dashboard' || hash === 'screen' || hash === 'patients' || hash === 'referrals' || hash === 'appointments' || hash === 'population_health' || hash === 'analytics' || hash === 'chat') {
+    const loc = parseLocation();
+    if (loc.view === 'signin' || loc.view === 'signup') return loc.view;
+    if (loc.view === 'app') {
       const savedUser = localStorage.getItem('rapidcheck_user');
       const savedToken = localStorage.getItem('rapidcheck_token');
-      return savedUser && savedToken ? 'app' : 'login';
+      return savedUser && savedToken ? 'app' : 'signin';
     }
     return 'home';
   });
 
   const [currentTab, setCurrentTab] = useState<DashboardNavTab>(() => {
-    const hash = window.location.hash.replace('#', '') as DashboardNavTab;
-    const validTabs: DashboardNavTab[] = ['dashboard', 'screen', 'patients', 'referrals', 'appointments', 'analytics', 'population_health', 'chat', 'resources'];
-    return validTabs.includes(hash) ? hash : 'dashboard';
+    const loc = parseLocation();
+    return loc.tab || 'dashboard';
   });
 
+  const [prefilledEmail, setPrefilledEmail] = useState<string>('');
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [notification, setNotification] = useState<string | null>(null);
   const [showResourcesModal, setShowResourcesModal] = useState<boolean>(false);
 
-  // Unsynced count from Dexie IndexedDB (reconciles both boolean synced and sync_state)
+  // Unsynced count from Dexie IndexedDB
   const unsyncedPatients = useLiveQuery(() => db.patients.filter(p => !p.synced || p.sync_state === 'QUEUED').toArray()) || [];
   const unsyncedAssessments = useLiveQuery(() => db.assessments.filter(a => !a.synced || a.sync_state === 'QUEUED').toArray()) || [];
   const unsyncedAppointments = useLiveQuery(() => db.appointments.filter(ap => !ap.synced || ap.sync_state === 'QUEUED').toArray()) || [];
   const pendingSyncCount = unsyncedPatients.length + unsyncedAssessments.length + unsyncedAppointments.length;
 
+  const navigateTo = useCallback((targetUrl: string) => {
+    if (targetUrl.startsWith('#')) {
+      window.location.hash = targetUrl;
+    } else {
+      window.history.pushState({}, '', targetUrl);
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    }
+  }, []);
+
+  // Heartbeat backend connectivity check
   useEffect(() => {
     let heartbeatTimer: ReturnType<typeof setInterval>;
 
-    // Check if the backend is actually reachable
     const checkBackend = async () => {
       try {
         const res = await apiFetch('/api/health', {
@@ -86,30 +142,43 @@ export function App() {
     };
   }, []);
 
-  // Sync hash routing
+  // Synchronization with browser history (popstate) & hash changes
   useEffect(() => {
-    const handleHashChange = () => {
-      const hash = window.location.hash.replace('#', '');
-      if (hash === 'login') {
+    const handleRouteSync = () => {
+      const loc = parseLocation();
+      if (loc.view === 'signin' || loc.view === 'signup') {
         if (isAuthenticated) {
           setCurrentView('app');
+          setCurrentTab('dashboard');
+          if (window.location.pathname !== '/dashboard' && !window.location.hash) {
+            window.history.replaceState({}, '', '/dashboard');
+          }
         } else {
-          setCurrentView('login');
+          setCurrentView(loc.view);
         }
-      } else if (hash === 'home' || hash === '') {
-        setCurrentView('home');
-      } else if (['dashboard', 'screen', 'patients', 'referrals', 'appointments', 'population_health', 'analytics', 'chat'].includes(hash)) {
+      } else if (loc.view === 'app') {
         if (!isAuthenticated) {
-          setCurrentView('login');
+          setCurrentView('signin');
+          if (window.location.pathname !== '/signin' && !window.location.hash) {
+            window.history.replaceState({}, '', '/signin');
+          }
         } else {
           setCurrentView('app');
-          setCurrentTab(hash as DashboardNavTab);
+          if (loc.tab) setCurrentTab(loc.tab);
         }
+      } else {
+        setCurrentView('home');
       }
     };
 
-    window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
+    window.addEventListener('popstate', handleRouteSync);
+    window.addEventListener('hashchange', handleRouteSync);
+    handleRouteSync();
+
+    return () => {
+      window.removeEventListener('popstate', handleRouteSync);
+      window.removeEventListener('hashchange', handleRouteSync);
+    };
   }, [isAuthenticated]);
 
   // Periodic background synchronization
@@ -121,7 +190,7 @@ export function App() {
     };
   }, []);
 
-  // Show toast + trigger sync whenever online status changes
+  // Show toast when online/offline transitions occur
   const prevOnlineRef = React.useRef<boolean | null>(null);
   useEffect(() => {
     if (prevOnlineRef.current === null) {
@@ -150,10 +219,8 @@ export function App() {
     setIsSyncing(true);
 
     try {
-      // 1. Run full Outbox v2 push and pull cycle
       const syncResult = await SyncManager.getInstance().runFullSync();
 
-      // 2. Also ensure any legacy non-outbox records are synchronized
       const pList = await db.patients.filter(p => !p.synced || p.sync_state === 'QUEUED').toArray();
       const aList = await db.assessments.filter(a => !a.synced || a.sync_state === 'QUEUED').toArray();
       const apptList = await db.appointments.filter(ap => !ap.synced || ap.sync_state === 'QUEUED').toArray();
@@ -202,17 +269,17 @@ export function App() {
       return;
     }
     setCurrentTab(tab);
-    window.location.hash = tab;
+    navigateTo(`/${tab}`);
   };
 
   const handleSignIn = () => {
     if (isAuthenticated) {
       setCurrentView('app');
       setCurrentTab('dashboard');
-      window.location.hash = 'dashboard';
+      navigateTo('/dashboard');
     } else {
-      setCurrentView('login');
-      window.location.hash = 'login';
+      setCurrentView('signin');
+      navigateTo('/signin');
     }
   };
 
@@ -220,23 +287,23 @@ export function App() {
     if (isAuthenticated) {
       setCurrentView('app');
       setCurrentTab('dashboard');
-      window.location.hash = 'dashboard';
+      navigateTo('/dashboard');
     } else {
-      setCurrentView('login');
-      window.location.hash = 'login';
+      setCurrentView('signup');
+      navigateTo('/signup');
     }
   };
 
   const handleLoginSuccess = () => {
     setCurrentView('app');
     setCurrentTab('dashboard');
-    window.location.hash = 'dashboard';
+    navigateTo('/dashboard');
   };
 
   const handleLogout = () => {
     logout();
     setCurrentView('home');
-    window.location.hash = 'home';
+    navigateTo('/');
   };
 
   // 1. PUBLIC HOMEPAGE VIEW
@@ -255,36 +322,67 @@ export function App() {
     );
   }
 
-  // 2. AUTHENTICATION / LOGIN VIEW
-  if (currentView === 'login') {
+  // 2. DEDICATED SIGN IN VIEW (/signin)
+  if (currentView === 'signin') {
     return (
       <>
         <WaterDropClick />
-        <LoginPage
+        <SignInPage
           onSuccess={handleLoginSuccess}
-          onBackToHome={() => {
-            setCurrentView('home');
-            window.location.hash = 'home';
+          onNavigateSignUp={() => {
+            setCurrentView('signup');
+            navigateTo('/signup');
           }}
-          lang={lang}
+          onNavigateHome={() => {
+            setCurrentView('home');
+            navigateTo('/');
+          }}
+          initialEmail={prefilledEmail}
         />
       </>
     );
   }
 
-  // 3. PROTECTED APPLICATION DASHBOARD VIEWS
-  // Guard check: if unauthenticated in app view, redirect to login
+  // 3. DEDICATED GET STARTED / REGISTRATION VIEW (/signup)
+  if (currentView === 'signup') {
+    return (
+      <>
+        <WaterDropClick />
+        <SignUpPage
+          onSuccess={(email) => {
+            setPrefilledEmail(email);
+          }}
+          onNavigateSignIn={(email) => {
+            if (email) setPrefilledEmail(email);
+            setCurrentView('signin');
+            navigateTo('/signin');
+          }}
+          onNavigateHome={() => {
+            setCurrentView('home');
+            navigateTo('/');
+          }}
+        />
+      </>
+    );
+  }
+
+  // 4. PROTECTED APPLICATION DASHBOARD VIEWS
+  // Guard check: if unauthenticated in app view, redirect to signin
   if (!isAuthenticated) {
     return (
       <>
         <WaterDropClick />
-        <LoginPage
+        <SignInPage
           onSuccess={handleLoginSuccess}
-          onBackToHome={() => {
-            setCurrentView('home');
-            window.location.hash = 'home';
+          onNavigateSignUp={() => {
+            setCurrentView('signup');
+            navigateTo('/signup');
           }}
-          lang={lang}
+          onNavigateHome={() => {
+            setCurrentView('home');
+            navigateTo('/');
+          }}
+          initialEmail={prefilledEmail}
         />
       </>
     );
@@ -307,29 +405,69 @@ export function App() {
         <div className="bg-white border-b border-[#E5EEF1] px-4 sm:px-6 py-2.5 flex items-center justify-between sticky top-0 z-40 shadow-xs">
           <button
             onClick={() => handleNavigateTab('dashboard')}
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#E7F7F0] text-[#0A9F68] hover:bg-[#0A9F68] hover:text-white font-bold text-xs transition-all"
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#E7F7F0] text-[#0A9F68] hover:bg-[#0A9F68] hover:text-white font-bold text-xs transition-all cursor-pointer"
           >
             <ArrowLeft className="w-4 h-4" />
-            <span>Back to Dashboard</span>
+            <span>{strings?.common?.backToDashboard || 'Back to Dashboard'}</span>
           </button>
 
-          <div className="flex items-center gap-2 text-xs font-semibold">
-            <img src="/logo.png" alt="RuralHealth AI" className="w-4 h-4 object-contain rounded shrink-0" />
-            <span className="text-slate-400">RuralHealth AI</span>
-            <span className="text-slate-300">/</span>
-            <span className="text-[#102A56] capitalize font-bold">
-              {currentTab === 'patients'
-                ? 'Patient Directory'
-                : currentTab === 'referrals'
-                ? 'IDRC Referrals & Care'
-                : currentTab === 'appointments'
-                ? 'Doctor Appointments'
-                : currentTab === 'population_health'
-                ? 'Population Health Intelligence (HMIS + NFHS-5)'
-                : currentTab === 'analytics'
-                ? 'Analytics'
-                : 'Chat Assistant'}
-            </span>
+          <div className="flex items-center gap-4">
+            <div className="hidden sm:flex items-center gap-2 text-xs font-semibold">
+              <img src="/logo.png" alt="RuralHealth AI" className="w-4 h-4 object-contain rounded shrink-0" />
+              <span className="text-slate-400">RuralHealth AI</span>
+              <span className="text-slate-300">/</span>
+              <span className="text-[#102A56] capitalize font-bold">
+                {currentTab === 'patients'
+                  ? strings?.sidebar?.patientDirectory || 'Patient Directory'
+                  : currentTab === 'referrals'
+                  ? strings?.sidebar?.idrcReferrals || 'IDRC Operational Referrals'
+                  : currentTab === 'appointments'
+                  ? strings?.sidebar?.appointments || 'Doctor Appointments'
+                  : currentTab === 'staff'
+                  ? strings?.sidebar?.staffManagement || 'Staff Management'
+                  : currentTab === 'population_health'
+                  ? strings?.sidebar?.populationHealth || 'Population Health Intelligence'
+                  : currentTab === 'analytics'
+                  ? strings?.sidebar?.analytics || 'Clinical Analysis & Insights'
+                  : strings?.sidebar?.chatAssistant || 'Chat Assistant'}
+              </span>
+            </div>
+
+            {/* Quick Language Switcher on Subscreens */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setSubscreenLangOpen(!subscreenLangOpen)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-[#E2E8F0] hover:border-slate-300 bg-white text-xs font-semibold text-[#102A56] hover:bg-slate-50 transition-all cursor-pointer"
+                title="Change language"
+              >
+                <Globe className="w-3.5 h-3.5 text-[#0A9F68]" />
+                <span>
+                  {lang === 'en' ? 'English' : lang === 'hi' ? 'हिन्दी' : 'বাংলা'}
+                </span>
+                <ChevronDown className="w-3 h-3 text-slate-400" />
+              </button>
+
+              {subscreenLangOpen && (
+                <div className="absolute right-0 mt-1.5 w-36 bg-white rounded-xl shadow-lg border border-slate-100 py-1 z-50 animate-in fade-in slide-in-from-top-1 duration-150">
+                  {(['en', 'hi', 'bn'] as const).map((l) => (
+                    <button
+                      key={l}
+                      type="button"
+                      onClick={() => {
+                        setLang(l);
+                        setSubscreenLangOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-2 text-xs font-medium hover:bg-slate-50 ${
+                        lang === l ? 'text-[#0A9F68] font-bold bg-[#E7F7F0]/40' : 'text-[#102A56]'
+                      }`}
+                    >
+                      {l === 'en' ? 'English' : l === 'hi' ? 'हिन्दी (Hindi)' : 'বাংলা (Bengali)'}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -371,12 +509,20 @@ export function App() {
           </div>
         )}
 
-        {(currentTab === 'referrals' || currentTab === 'analytics') && (
+        {currentTab === 'referrals' && (
           <div className="p-4 sm:p-6 max-w-7xl mx-auto">
-            <PhcDashboard
+            <IdrcReferralsPage
               lang={lang}
               isOnline={isOnline}
-              defaultRiskFilter={currentTab === 'referrals' ? 'HIGH' : 'ALL'}
+            />
+          </div>
+        )}
+
+        {currentTab === 'analytics' && (
+          <div className="p-4 sm:p-6 max-w-7xl mx-auto">
+            <AnalysisPage
+              lang={lang}
+              isOnline={isOnline}
             />
           </div>
         )}
@@ -384,6 +530,12 @@ export function App() {
         {currentTab === 'appointments' && (
           <div className="p-4 sm:p-6 max-w-7xl mx-auto">
             <TeleconsultBooking lang={lang} isOnline={isOnline} />
+          </div>
+        )}
+
+        {currentTab === 'staff' && (
+          <div className="p-4 sm:p-6 max-w-7xl mx-auto">
+            <StaffManagementPage />
           </div>
         )}
 

@@ -20,15 +20,19 @@
 # Preserve safe templates containing placeholders only
 !.env.example
 !.env.sample
+!.env.template
 !**/.env.example
 !**/.env.sample
+!**/.env.template
 
 *.pem
 *.key
 *.p12
 *.pfx
-service-account*.json
+*.jks
+credentials.json
 credentials*.json
+service-account*.json
 google-credentials*.json
 *secret*.json
 
@@ -36,11 +40,14 @@ google-credentials*.json
 # 2. Local Databases & Dumps
 # ------------------------------------------------------------------------------
 *.db
+*.db-*
 *.db-journal
 *.db-wal
 *.db-shm
 *.sqlite
+*.sqlite-*
 *.sqlite3
+*.sqlite3-*
 ruralhealth.db
 health_ai.db
 *.dump
@@ -80,6 +87,8 @@ dist/
 .ruff_cache/
 **/.ruff_cache/
 .coverage
+coverage/
+**/coverage/
 htmlcov/
 pip-log.txt
 pip-delete-this-directory.txt
@@ -120,6 +129,8 @@ temp/
 *.ntvs*
 *.njsproj
 *.sln
+*.swp
+*.swo
 *.sw?
 .DS_Store
 **/.DS_Store

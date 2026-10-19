@@ -16,11 +16,11 @@ import secrets
 import jwt
 from datetime import datetime, timedelta
 from typing import List, Optional, Set
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
-from database import get_db, UserModel
+from database import get_db, UserModel, ClinicModel, ClinicMembershipModel
 
 from config import (
     JWT_SECRET_KEY,
@@ -70,49 +70,9 @@ def clear_login_failures(identifier: str):
 # ─── RBAC PERMISSION MATRIX ───────────────────────────────────────────────────
 
 ROLE_PERMISSIONS: dict[str, Set[str]] = {
-    "ASHA_WORKER": {
-        "patients:create",
-        "patients:read",
-        "assessments:create",
-        "assessments:read",
-        "appointments:create",
-        "appointments:read",
-        "resources:read",
-        "sync:push",
-        "sync:pull",
-    },
-    "PHC_DOCTOR": {
-        "patients:create",
-        "patients:read",
-        "patients:update",
-        "patients:delete",
-        "assessments:create",
-        "assessments:read",
-        "assessments:update",
-        "reviews:view_queue",
-        "reviews:perform",
-        "reviews:override",
-        "referrals:update",
-        "appointments:create",
-        "appointments:read",
-        "appointments:manage",
-        "resources:read",
-        "resources:write",
-        "resources:review",
-        "sync:push",
-        "sync:pull",
-    },
-    "DISTRICT_OFFICER": {
-        "patients:read",
-        "assessments:read",
-        "reviews:view_queue",
-        "analytics:view",
-        "audit:read",
-        "resources:read",
-        "resources:write",
-        "sync:pull",
-    },
-    "SYSTEM_ADMIN": {
+    "CLINIC_OWNER": {
+        "clinic:manage",
+        "staff:manage",
         "patients:create",
         "patients:read",
         "patients:update",
@@ -124,6 +84,138 @@ ROLE_PERMISSIONS: dict[str, Set[str]] = {
         "reviews:view_queue",
         "reviews:perform",
         "reviews:override",
+        "referrals:create",
+        "referrals:read",
+        "referrals:update",
+        "appointments:create",
+        "appointments:read",
+        "appointments:manage",
+        "appointments:delete",
+        "analytics:view",
+        "audit:read",
+        "resources:read",
+        "resources:write",
+        "resources:review",
+        "sync:push",
+        "sync:pull",
+    },
+    "DOCTOR": {
+        "patients:create",
+        "patients:read",
+        "patients:update",
+        "patients:delete",
+        "assessments:create",
+        "assessments:read",
+        "assessments:update",
+        "reviews:view_queue",
+        "reviews:perform",
+        "reviews:override",
+        "referrals:create",
+        "referrals:read",
+        "referrals:update",
+        "appointments:create",
+        "appointments:read",
+        "appointments:manage",
+        "analytics:view",
+        "resources:read",
+        "resources:write",
+        "resources:review",
+        "sync:push",
+        "sync:pull",
+    },
+    "HEALTH_WORKER": {
+        "patients:create",
+        "patients:read",
+        "assessments:create",
+        "assessments:read",
+        "referrals:create",
+        "referrals:read",
+        "appointments:create",
+        "appointments:read",
+        "analytics:view",
+        "resources:read",
+        "sync:push",
+        "sync:pull",
+    },
+    "COUNSELOR": {
+        "patients:read",
+        "assessments:read",
+        "referrals:read",
+        "referrals:update",
+        "appointments:read",
+        "appointments:manage",
+        "analytics:view",
+        "resources:read",
+        "sync:pull",
+    },
+    "ASHA_WORKER": {
+        "patients:create",
+        "patients:read",
+        "assessments:create",
+        "assessments:read",
+        "referrals:create",
+        "referrals:read",
+        "appointments:create",
+        "appointments:read",
+        "analytics:view",
+        "resources:read",
+        "sync:push",
+        "sync:pull",
+    },
+    "PHC_DOCTOR": {
+        "clinic:manage",
+        "staff:manage",
+        "patients:create",
+        "patients:read",
+        "patients:update",
+        "patients:delete",
+        "assessments:create",
+        "assessments:read",
+        "assessments:update",
+        "reviews:view_queue",
+        "reviews:perform",
+        "reviews:override",
+        "referrals:create",
+        "referrals:read",
+        "referrals:update",
+        "appointments:create",
+        "appointments:read",
+        "appointments:manage",
+        "analytics:view",
+        "resources:read",
+        "resources:write",
+        "resources:review",
+        "sync:push",
+        "sync:pull",
+    },
+    "DISTRICT_OFFICER": {
+        "patients:read",
+        "assessments:read",
+        "reviews:view_queue",
+        "referrals:read",
+        "referrals:update",
+        "analytics:view",
+        "audit:read",
+        "resources:read",
+        "resources:write",
+        "sync:pull",
+    },
+    "SYSTEM_ADMIN": {
+        "clinic:manage",
+        "staff:manage",
+        "patients:create",
+        "patients:read",
+        "patients:update",
+        "patients:delete",
+        "assessments:create",
+        "assessments:read",
+        "assessments:update",
+        "assessments:delete",
+        "reviews:view_queue",
+        "reviews:perform",
+        "reviews:override",
+        "referrals:create",
+        "referrals:read",
         "referrals:update",
         "appointments:create",
         "appointments:read",
@@ -273,6 +365,106 @@ def require_permissions(*required_permissions: str):
     return permission_checker
 
 
+# ─── CLINIC TENANT RESOLUTION & MEMBERSHIP AUTHORIZATION ─────────────────────
+
+def get_current_clinic(
+    request: Request,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> ClinicModel:
+    """
+    Resolves and verifies the authorized clinic workspace for the authenticated user.
+    Enforces strict multi-tenant boundary checks:
+    - Never trusts arbitrary client-supplied clinic ID without verified membership.
+    - If user requests a clinic they do not belong to: returns 403 Forbidden.
+    - If user has no active memberships: returns 403 Forbidden.
+    - Automatically resolves active clinic if only 1 active membership exists.
+    - Attaches `current_user_role` to the resolved ClinicModel instance.
+    """
+    # 1. Fetch all active memberships for the user
+    memberships = (
+        db.query(ClinicMembershipModel)
+        .filter(ClinicMembershipModel.user_id == current_user.id, ClinicMembershipModel.is_active == 1)
+        .all()
+    )
+
+    req_clinic_id = (request.headers.get("X-Clinic-ID") or request.query_params.get("clinic_id") or "").strip()
+
+    # 2. SYSTEM_ADMIN Superuser Bypass
+    if current_user.role == "SYSTEM_ADMIN":
+        if req_clinic_id:
+            clinic = db.query(ClinicModel).filter(ClinicModel.id == req_clinic_id, ClinicModel.is_active == 1).first()
+            if not clinic:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Requested clinic does not exist.")
+            setattr(clinic, "current_user_role", "SYSTEM_ADMIN")
+            return clinic
+        clinic = db.query(ClinicModel).filter(ClinicModel.is_active == 1).first()
+        if not clinic:
+            # Create a fallback clinic if none exists in fresh testing DB
+            clinic = ClinicModel(
+                id="clinic-system-default",
+                name="System Operations Clinic",
+                facility_code="CENTRAL_OPS",
+                owner_user_id=current_user.id,
+                is_active=1
+            )
+            db.add(clinic)
+            db.commit()
+            db.refresh(clinic)
+        setattr(clinic, "current_user_role", "SYSTEM_ADMIN")
+        return clinic
+
+    # 3. For all standard users: Require at least one active membership
+    if not memberships:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied. You do not belong to any active clinic workspace."
+        )
+
+    membership_by_clinic_id = {m.clinic_id: m for m in memberships}
+
+    # 4. If a specific clinic is requested, verify authorized membership
+    if req_clinic_id:
+        if req_clinic_id not in membership_by_clinic_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: You are not authorized to access this clinic workspace."
+            )
+        matched_mem = membership_by_clinic_id[req_clinic_id]
+        clinic = db.query(ClinicModel).filter(ClinicModel.id == req_clinic_id, ClinicModel.is_active == 1).first()
+        if not clinic:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clinic not found or deactivated.")
+        setattr(clinic, "current_user_role", matched_mem.role)
+        return clinic
+
+    # 5. Default to the user's first active membership clinic
+    default_mem = memberships[0]
+    clinic = db.query(ClinicModel).filter(ClinicModel.id == default_mem.clinic_id, ClinicModel.is_active == 1).first()
+    if not clinic:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clinic not found or deactivated.")
+    setattr(clinic, "current_user_role", default_mem.role)
+    return clinic
+
+
+def require_clinic_permission(required_perm: str):
+    """Enforces role-based permissions scoped to the active clinic workspace."""
+    def permission_checker(
+        current_clinic: ClinicModel = Depends(get_current_clinic),
+        current_user: UserModel = Depends(get_current_user)
+    ) -> ClinicModel:
+        if current_user.role == "SYSTEM_ADMIN":
+            return current_clinic
+        role = getattr(current_clinic, "current_user_role", current_user.role)
+        role_perms = ROLE_PERMISSIONS.get(role, set())
+        if required_perm not in role_perms:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Permission denied: role '{role}' in this clinic lacks '{required_perm}'."
+            )
+        return current_clinic
+    return permission_checker
+
+
 # ─── SEED DEFAULT SYSTEM USERS ───────────────────────────────────────────────
 
 def seed_default_users(db: Session, env: Optional[str] = None) -> bool:
@@ -363,3 +555,38 @@ def seed_default_users(db: Session, env: Optional[str] = None) -> bool:
             )
             db.add(new_user)
     db.commit()
+
+    # Ensure legacy clinic exists and default users have active memberships
+    legacy_clinic = db.query(ClinicModel).filter(ClinicModel.id == "clinic-sonpur-legacy").first()
+    if not legacy_clinic:
+        legacy_clinic = ClinicModel(
+            id="clinic-sonpur-legacy",
+            name="Sonpur Primary Health Centre (Legacy)",
+            facility_code="PHC_SONPUR",
+            owner_user_id="usr_dr_sharma",
+            address="Sonpur Village PHC",
+            phone="033-2289-4401",
+            is_active=1
+        )
+        db.add(legacy_clinic)
+        db.commit()
+
+    # Seed memberships for default users
+    for u in default_users:
+        existing_mem = db.query(ClinicMembershipModel).filter(
+            ClinicMembershipModel.clinic_id == "clinic-sonpur-legacy",
+            ClinicMembershipModel.user_id == u["id"]
+        ).first()
+        if not existing_mem:
+            mem_role = "CLINIC_OWNER" if u["role"] in ("PHC_DOCTOR", "SYSTEM_ADMIN") else "HEALTH_WORKER"
+            new_mem = ClinicMembershipModel(
+                id=f"clm_legacy_{u['id']}",
+                clinic_id="clinic-sonpur-legacy",
+                user_id=u["id"],
+                role=mem_role,
+                status="ACTIVE",
+                is_active=1
+            )
+            db.add(new_mem)
+    db.commit()
+    return True

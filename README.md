@@ -85,11 +85,12 @@ For in-depth architectural and technical specifications, refer to our comprehens
 ### Option A: Complete Docker Compose Stack (Recommended for Production)
 ```powershell
 # 1. Clone the repository
-git clone https://github.com/your-org/Health-AI.git
-cd Health-AI
+git clone https://github.com/sohamghosh1762-max/RapiDChecK.git
+cd RapiDChecK
 
-# 2. Configure environment variables
+# 2. Configure environment variables from safe templates
 cp Health-AI-main/backend/.env.example Health-AI-main/backend/.env
+cp Health-AI-main/frontend/.env.example Health-AI-main/frontend/.env
 
 # 3. Launch all containers (PostgreSQL 16, Backend, Frontend)
 docker-compose up -d --build
@@ -107,16 +108,32 @@ docker-compose up -d --build
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `VITE_API_BASE_URL` | No | `""` (Empty) | Base URL for backend API requests. If empty, the frontend uses relative same-origin paths (`/api/...`) via Vite dev proxy or production reverse proxy. Never place private backend credentials or secrets in `VITE_` variables. |
+| `VITE_GOOGLE_MAPS_API_KEY` | No | `""` (Empty) | Optional Google Maps API key for GPS-based nearby doctor / hospital locator. |
 
 ### Backend (`Health-AI-main/backend/.env`)
 | Variable | Required | Default | Description |
 |---|---|---|---|
+| `ENVIRONMENT` | No | `development` | Environment mode (`development`, `testing`, `production`). In production, PostgreSQL and 32+ character secrets are strictly enforced. |
+| `DATABASE_URL` | No | `sqlite:///./ruralhealth.db` | Database connection string. SQLite for development; PostgreSQL 16 connection string mandatory for production (`postgresql+psycopg2://user:pass@host:5432/db`). |
+| `JWT_SECRET_KEY` | Yes (Prod) | Dev default | Cryptographically secure HMAC key for signing JWT tokens. Must be >= 32 characters in production. |
+| `JWT_ALGORITHM` | No | `HS256` | JWT signing algorithm. |
+| `JWT_ISSUER` | No | `rapidcheck.internal` | Expected JWT issuer claim. |
+| `JWT_AUDIENCE` | No | `rapidcheck-clinical-workforce` | Expected JWT audience claim. |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | No | `1440` | JWT token expiration lifetime in minutes (default: 24 hours). |
+| `REVIEW_SECRET_KEY` | Yes (Prod) | Dev default | Cryptographically secure HMAC-SHA256 key for sealing clinical reviews and doctor overrides. |
+| `CORS_ORIGINS` | No | `http://localhost:5173,...` | Comma-separated list of allowed browser origins. Wildcards (`*`) are rejected in production. |
 | `OLLAMA_BASE_URL` | No | `http://localhost:11434` | Base URL of the local Ollama LLM runtime. |
 | `OLLAMA_MODEL` | No | `gemma3:270m` | Target local model name (Gemma 3 270M). |
-| `DATABASE_URL` | No | `sqlite:///./ruralhealth.db` | Database connection string (PostgreSQL for production). |
-| `JWT_SECRET_KEY` | Yes (Prod) | Auto-generated/Dev default | HMAC key for signing JWT tokens. |
-| `JWT_ALGORITHM` | No | `HS256` | JWT signing algorithm. |
-| `ATTESTATION_SECRET`| Yes (Prod) | Dev default | Secret key used for cryptographic attestation of clinical reviews. |
+| `OLLAMA_TIMEOUT` | No | `45.0` | Timeout in seconds for local AI inference requests. |
+| `SNOWFLAKE_ACCOUNT` | No | `""` | Snowflake account identifier for analytical reporting. Backend only. |
+| `SNOWFLAKE_USER` | No | `""` | Snowflake service user. Backend only. |
+| `SNOWFLAKE_PASSWORD` | No | `""` | Snowflake service password. Backend only. |
+
+### 🔑 Generating Secure Secrets Locally
+To generate high-entropy 256-bit random secrets for `JWT_SECRET_KEY` and `REVIEW_SECRET_KEY`:
+```bash
+python3 -c "import secrets; print(secrets.token_hex(32))"
+```
 
 ---
 
@@ -151,6 +168,12 @@ source venv/bin/activate  # Windows: .\venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 
+# Configure local development environment
+cp .env.example .env
+
+# Run automated backend test suite
+pytest
+
 # Start backend server on port 8000
 uvicorn main:app --reload --port 8000
 ```
@@ -159,8 +182,14 @@ uvicorn main:app --reload --port 8000
 ```bash
 cd Health-AI-main/frontend
 
+# Configure local frontend environment
+cp .env.example .env.local
+
 # Install dependencies
 npm install
+
+# Run type check and production build
+npm run build
 
 # Start Vite dev server (proxies /api to http://127.0.0.1:8000)
 npm run dev

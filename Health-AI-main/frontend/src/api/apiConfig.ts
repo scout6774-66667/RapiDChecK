@@ -64,12 +64,16 @@ export async function apiFetch(
 
   const mergedHeaders: Record<string, string> = {};
 
-  // Auto-inject JWT token if available
+  // Auto-inject JWT token and active clinic ID if available
   if (!skipAuth) {
     try {
       const token = localStorage.getItem('rapidcheck_token');
       if (token) {
         mergedHeaders['Authorization'] = `Bearer ${token}`;
+      }
+      const activeClinicId = localStorage.getItem('rapidcheck_active_clinic_id');
+      if (activeClinicId && !mergedHeaders['X-Clinic-ID']) {
+        mergedHeaders['X-Clinic-ID'] = activeClinicId;
       }
     } catch {
       // localStorage may be restricted in private browsing

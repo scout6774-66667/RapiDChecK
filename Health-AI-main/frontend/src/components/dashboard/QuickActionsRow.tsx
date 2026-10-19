@@ -1,16 +1,19 @@
 import React from 'react';
 import { Plus, Stethoscope, Share2, Calendar, MessageSquare } from 'lucide-react';
+import { useLanguage } from '../../i18n';
 
 interface QuickActionsRowProps {
   onActionClick: (action: 'add_patient' | 'screen' | 'refer' | 'appointment' | 'chat') => void;
 }
 
 export const QuickActionsRow: React.FC<QuickActionsRowProps> = ({ onActionClick }) => {
+  const { strings } = useLanguage();
+
   const actions = [
     {
       id: 'add_patient' as const,
-      title: 'Add New Patient',
-      desc: 'Register and start screening',
+      title: strings?.dashboard?.addPatient || 'Add New Patient',
+      desc: strings?.dashboard?.addPatientDesc || 'Register and start screening',
       icon: Plus,
       bg: 'bg-[#E7F7F0]/70 hover:bg-[#E7F7F0]',
       border: 'border-[#C7EBDD]',
@@ -19,8 +22,8 @@ export const QuickActionsRow: React.FC<QuickActionsRowProps> = ({ onActionClick 
     },
     {
       id: 'screen' as const,
-      title: 'Screen Patient',
-      desc: 'Begin health assessment',
+      title: strings?.dashboard?.screenPatient || 'Screen Patient',
+      desc: strings?.dashboard?.screenPatientDesc || 'Begin health assessment',
       icon: Stethoscope,
       bg: 'bg-[#EFF6FF]/70 hover:bg-[#EFF6FF]',
       border: 'border-[#BFDBFE]',
@@ -29,8 +32,8 @@ export const QuickActionsRow: React.FC<QuickActionsRowProps> = ({ onActionClick 
     },
     {
       id: 'refer' as const,
-      title: 'Refer to PHC',
-      desc: 'Create referral record',
+      title: strings?.dashboard?.referPhc || 'Refer to PHC',
+      desc: strings?.dashboard?.referPhcDesc || 'Create referral record',
       icon: Share2,
       bg: 'bg-[#FFFBEB]/70 hover:bg-[#FFFBEB]',
       border: 'border-[#FDE68A]',
@@ -39,8 +42,8 @@ export const QuickActionsRow: React.FC<QuickActionsRowProps> = ({ onActionClick 
     },
     {
       id: 'appointment' as const,
-      title: 'Book Appointment',
-      desc: 'Schedule follow-up',
+      title: strings?.dashboard?.bookAppt || 'Book Appointment',
+      desc: strings?.dashboard?.bookApptDesc || 'Schedule follow-up',
       icon: Calendar,
       bg: 'bg-[#F5F3FF]/70 hover:bg-[#F5F3FF]',
       border: 'border-[#DDD6FE]',
@@ -49,8 +52,8 @@ export const QuickActionsRow: React.FC<QuickActionsRowProps> = ({ onActionClick 
     },
     {
       id: 'chat' as const,
-      title: 'Open AI Assistant',
-      desc: 'Health guidance & support',
+      title: strings?.dashboard?.openAssistant || 'Open AI Assistant',
+      desc: strings?.dashboard?.openAssistantDesc || 'Health guidance & support',
       icon: MessageSquare,
       bg: 'bg-[#ECFDF5]/70 hover:bg-[#ECFDF5]',
       border: 'border-[#A7F3D0]',
@@ -61,7 +64,9 @@ export const QuickActionsRow: React.FC<QuickActionsRowProps> = ({ onActionClick 
 
   return (
     <div className="health-card p-4 sm:p-5 mt-5">
-      <h3 className="text-sm font-bold text-[#102A56] mb-3">Quick Actions</h3>
+      <h3 className="text-sm font-bold text-[#102A56] mb-3">
+        {strings?.dashboard?.quickActions || 'Quick Actions'}
+      </h3>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         {actions.map((act) => {

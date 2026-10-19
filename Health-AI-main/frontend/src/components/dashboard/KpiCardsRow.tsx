@@ -1,6 +1,7 @@
 import React from 'react';
 import { Users, AlertTriangle, Stethoscope, Calendar, TrendingUp } from 'lucide-react';
 import type { DashboardKpi } from './types';
+import { useLanguage } from '../../i18n';
 
 interface KpiCardsRowProps {
   kpis: DashboardKpi;
@@ -8,6 +9,8 @@ interface KpiCardsRowProps {
 }
 
 export const KpiCardsRow: React.FC<KpiCardsRowProps> = ({ kpis, onCardClick }) => {
+  const { strings } = useLanguage();
+
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
       {/* 1. Patients Screened */}
@@ -28,7 +31,9 @@ export const KpiCardsRow: React.FC<KpiCardsRowProps> = ({ kpis, onCardClick }) =
           <div className="text-2xl sm:text-3xl font-extrabold text-[#102A56] tracking-tight">
             {kpis.patientsScreened}
           </div>
-          <div className="text-xs font-semibold text-slate-500 mt-0.5">Screening Encounters</div>
+          <div className="text-xs font-semibold text-slate-500 mt-0.5">
+            {strings?.dashboard?.kpiScreened || 'Screening Encounters'}
+          </div>
           <div className="text-[11px] font-bold text-[#0A9F68] mt-1.5 flex items-center gap-1">
             <span>{kpis.patientsScreenedTrend}</span>
           </div>
@@ -53,7 +58,9 @@ export const KpiCardsRow: React.FC<KpiCardsRowProps> = ({ kpis, onCardClick }) =
           <div className="text-2xl sm:text-3xl font-extrabold text-[#102A56] tracking-tight">
             {kpis.highRiskCases}
           </div>
-          <div className="text-xs font-semibold text-slate-500 mt-0.5">High-Risk Screenings</div>
+          <div className="text-xs font-semibold text-slate-500 mt-0.5">
+            {strings?.dashboard?.kpiHighRisk || 'High-Risk Screenings'}
+          </div>
           <div className="text-[11px] font-bold text-[#EF4444] mt-1.5 flex items-center gap-1">
             <span>{kpis.highRiskTrend}</span>
           </div>
@@ -78,7 +85,9 @@ export const KpiCardsRow: React.FC<KpiCardsRowProps> = ({ kpis, onCardClick }) =
           <div className="text-2xl sm:text-3xl font-extrabold text-[#102A56] tracking-tight">
             {kpis.referralsMade}
           </div>
-          <div className="text-xs font-semibold text-slate-500 mt-0.5">Referral Requests</div>
+          <div className="text-xs font-semibold text-slate-500 mt-0.5">
+            {strings?.dashboard?.kpiReferrals || 'Referral Requests'}
+          </div>
           <div className="text-[11px] font-bold text-[#3B82F6] mt-1.5 flex items-center gap-1">
             <span>{kpis.referralsTrend}</span>
           </div>
@@ -103,7 +112,9 @@ export const KpiCardsRow: React.FC<KpiCardsRowProps> = ({ kpis, onCardClick }) =
           <div className="text-2xl sm:text-3xl font-extrabold text-[#102A56] tracking-tight">
             {kpis.appointments}
           </div>
-          <div className="text-xs font-semibold text-slate-500 mt-0.5">Appointments</div>
+          <div className="text-xs font-semibold text-slate-500 mt-0.5">
+            {strings?.dashboard?.kpiAppointments || 'Appointments'}
+          </div>
           <div className="text-[11px] font-bold text-[#8B5CF6] mt-1.5 flex items-center gap-1">
             <span>{kpis.appointmentsTrend}</span>
           </div>

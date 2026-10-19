@@ -35,8 +35,12 @@ class PatientModel(Base):
     phone = Column(String, nullable=False)
     patient_id = Column(String, nullable=True)
     facility_id = Column(String, nullable=True, default=None, index=True)
+    clinic_id = Column(String, ForeignKey("clinics.id"), nullable=True, index=True)
     server_version = Column(Integer, default=1, nullable=False)
     is_deleted = Column(Integer, default=0, nullable=False)
+    record_origin = Column(String, default="MANUAL_CLINICAL", nullable=True)
+    is_synthetic = Column(Integer, default=0, nullable=False)
+    sync_status = Column(String, default="SYNCED", nullable=True)
     created_at = Column(String, default=lambda: datetime.utcnow().isoformat())
     updated_at = Column(String, default=lambda: datetime.utcnow().isoformat(), onupdate=lambda: datetime.utcnow().isoformat())
 
@@ -49,6 +53,7 @@ class AssessmentModel(Base):
     id = Column(String, primary_key=True, index=True)
     patient_id = Column(String, ForeignKey("patients.id"), nullable=False)
     facility_id = Column(String, nullable=True, default=None, index=True)
+    clinic_id = Column(String, ForeignKey("clinics.id"), nullable=True, index=True)
     client_operation_id = Column(String, nullable=True, index=True)
     symptoms_json = Column(Text, default="[]")
     symptom_duration_days = Column(Integer, nullable=True, default=None)
@@ -160,6 +165,7 @@ class AppointmentModel(Base):
     status = Column(String, default="PENDING")          # PENDING, CONFIRMED, CANCELLED, COMPLETED
     risk_level = Column(String, nullable=True)
     facility_id = Column(String, nullable=True, default=None, index=True)
+    clinic_id = Column(String, ForeignKey("clinics.id"), nullable=True, index=True)
     likely_conditions_json = Column(Text, default="[]")
     server_version = Column(Integer, default=1, nullable=False)
     is_deleted = Column(Integer, default=0, nullable=False)
@@ -178,6 +184,36 @@ class AppointmentModel(Base):
         self.likely_conditions_json = json.dumps(value or [])
 
 
+class ReferralModel(Base):
+    """
+    Stores operational IDRC patient referrals to healthcare facilities.
+    Distinct from assessment recommendations — represents real clinical referral workflow.
+    """
+    __tablename__ = "referrals"
+
+    id = Column(String, primary_key=True, index=True)
+    patient_id = Column(String, ForeignKey("patients.id"), nullable=False, index=True)
+    assessment_id = Column(String, ForeignKey("assessments.id"), nullable=True, index=True)
+    referral_reason = Column(Text, nullable=False)
+    priority = Column(String, default="ROUTINE", nullable=False, index=True) # ROUTINE, URGENT, EMERGENCY
+    destination_facility = Column(String, nullable=False, index=True)
+    facility_id = Column(String, nullable=True, default=None, index=True) # Originating facility
+    clinic_id = Column(String, ForeignKey("clinics.id"), nullable=True, index=True)
+    status = Column(String, default="REQUESTED", nullable=False, index=True) # REQUESTED, APPROVED, REFERRED, IN_PROGRESS, COMPLETED, CANCELLED
+    notes = Column(Text, default="")
+    outcome_notes = Column(Text, default="")
+    created_by = Column(String, nullable=False)
+    updated_by = Column(String, nullable=True)
+    client_operation_id = Column(String, nullable=True, index=True)
+    server_version = Column(Integer, default=1, nullable=False)
+    is_deleted = Column(Integer, default=0, nullable=False)
+    created_at = Column(String, default=lambda: datetime.utcnow().isoformat())
+    updated_at = Column(String, default=lambda: datetime.utcnow().isoformat(), onupdate=lambda: datetime.utcnow().isoformat())
+
+    patient = relationship("PatientModel", foreign_keys=[patient_id])
+    assessment = relationship("AssessmentModel", foreign_keys=[assessment_id])
+
+
 class SyncJournalModel(Base):
     """
     Immutable monotonic journal of all mutation events applied on the server.
@@ -187,6 +223,7 @@ class SyncJournalModel(Base):
 
     server_sequence = Column(Integer, primary_key=True, autoincrement=True, index=True)
     device_id = Column(String, nullable=True, index=True)
+    clinic_id = Column(String, ForeignKey("clinics.id"), nullable=True, index=True)
     entity_type = Column(String, nullable=False)   # patient, assessment, appointment, referral
     entity_id = Column(String, nullable=False, index=True)
     operation_type = Column(String, nullable=False) # CREATE, UPDATE, DELETE
@@ -245,6 +282,7 @@ class UserModel(Base):
     last_login_at = Column(String, nullable=True)
 
     reviews = relationship("ClinicalReviewModel", back_populates="reviewer")
+    memberships = relationship("ClinicMembershipModel", back_populates="user", cascade="all, delete-orphan")
 
     @property
     def assigned_villages(self):
@@ -258,6 +296,52 @@ class UserModel(Base):
         self.assigned_villages_json = json.dumps(value or [])
 
 
+class ClinicModel(Base):
+    """
+    Multi-tenant Clinic/Facility entity providing tenant boundary isolation.
+    Every doctor or clinic owner has a completely separate, secure workspace.
+    """
+    __tablename__ = "clinics"
+
+    id = Column(String, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    facility_code = Column(String, nullable=True, index=True)
+    owner_user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    address = Column(String, nullable=True, default="")
+    phone = Column(String, nullable=True, default="")
+    is_active = Column(Integer, default=1, nullable=False)
+    created_at = Column(String, default=lambda: datetime.utcnow().isoformat())
+    updated_at = Column(String, default=lambda: datetime.utcnow().isoformat(), onupdate=lambda: datetime.utcnow().isoformat())
+
+    owner = relationship("UserModel", foreign_keys=[owner_user_id])
+    memberships = relationship("ClinicMembershipModel", back_populates="clinic", cascade="all, delete-orphan")
+
+
+class ClinicMembershipModel(Base):
+    """
+    Verified clinic membership mapping users to clinics with role-based permissions.
+    Enforces authorization on backend and resolves workspaces securely.
+    """
+    __tablename__ = "clinic_memberships"
+
+    id = Column(String, primary_key=True, index=True)
+    clinic_id = Column(String, ForeignKey("clinics.id"), nullable=False, index=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    role = Column(String, nullable=False, default="DOCTOR") # CLINIC_OWNER, DOCTOR, HEALTH_WORKER, COUNSELOR
+    status = Column(String, nullable=False, default="ACTIVE") # ACTIVE, INVITED, SUSPENDED, REVOKED
+    is_active = Column(Integer, default=1, nullable=False)
+    invited_by = Column(String, nullable=True)
+    created_at = Column(String, default=lambda: datetime.utcnow().isoformat())
+    updated_at = Column(String, default=lambda: datetime.utcnow().isoformat(), onupdate=lambda: datetime.utcnow().isoformat())
+
+    __table_args__ = (
+        UniqueConstraint("clinic_id", "user_id", name="uq_clinic_user_membership"),
+    )
+
+    clinic = relationship("ClinicModel", back_populates="memberships")
+    user = relationship("UserModel", back_populates="memberships", foreign_keys=[user_id])
+
+
 class ClinicalReviewModel(Base):
     """
     Clinician review records with mandatory override justification, clinical notes,
@@ -266,6 +350,7 @@ class ClinicalReviewModel(Base):
     __tablename__ = "clinical_reviews"
 
     id = Column(String, primary_key=True, index=True)
+    clinic_id = Column(String, ForeignKey("clinics.id"), nullable=True, index=True)
     assessment_id = Column(String, ForeignKey("assessments.id"), nullable=False, index=True)
     reviewer_user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
     reviewer_name = Column(String, nullable=False)
@@ -291,6 +376,7 @@ class AuditEventModel(Base):
     __tablename__ = "audit_events"
 
     event_id = Column(String, primary_key=True, index=True)
+    clinic_id = Column(String, ForeignKey("clinics.id"), nullable=True, index=True)
     event_type = Column(String, nullable=False, index=True) # e.g. PATIENT_CREATED, ASSESSMENT_CREATED, REVIEW_COMPLETED, CLINICIAN_OVERRIDE, RESOURCE_PUBLISHED
     entity_type = Column(String, nullable=False)
     entity_id = Column(String, nullable=False, index=True)
@@ -618,11 +704,45 @@ class FactHealthIndicator(Base):
 
 
 def _migrate_sqlite_columns():
-    """Ensures legacy SQLite files receive newly added table columns."""
+    """Ensures legacy SQLite files receive newly added table columns and multi-clinic isolation tables."""
     if not str(DATABASE_URL).startswith("sqlite"):
         return
     try:
         with engine.connect() as conn:
+            # 1. Ensure clinics table exists
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS clinics (
+                    id VARCHAR PRIMARY KEY,
+                    name VARCHAR NOT NULL,
+                    facility_code VARCHAR,
+                    owner_user_id VARCHAR NOT NULL,
+                    address VARCHAR DEFAULT '',
+                    phone VARCHAR DEFAULT '',
+                    is_active INTEGER DEFAULT 1 NOT NULL,
+                    created_at VARCHAR,
+                    updated_at VARCHAR
+                )
+            """))
+
+            # 2. Ensure clinic_memberships table exists
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS clinic_memberships (
+                    id VARCHAR PRIMARY KEY,
+                    clinic_id VARCHAR NOT NULL,
+                    user_id VARCHAR NOT NULL,
+                    role VARCHAR DEFAULT 'DOCTOR' NOT NULL,
+                    status VARCHAR DEFAULT 'ACTIVE' NOT NULL,
+                    is_active INTEGER DEFAULT 1 NOT NULL,
+                    invited_by VARCHAR,
+                    created_at VARCHAR,
+                    updated_at VARCHAR,
+                    FOREIGN KEY(clinic_id) REFERENCES clinics(id),
+                    FOREIGN KEY(user_id) REFERENCES users(id),
+                    CONSTRAINT uq_clinic_user_membership UNIQUE (clinic_id, user_id)
+                )
+            """))
+            conn.commit()
+
             # Check patients table
             patient_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(patients)")).fetchall()]
             if patient_cols:
@@ -630,12 +750,20 @@ def _migrate_sqlite_columns():
                     conn.execute(text("ALTER TABLE patients ADD COLUMN national_health_id VARCHAR"))
                 if "facility_id" not in patient_cols:
                     conn.execute(text("ALTER TABLE patients ADD COLUMN facility_id VARCHAR"))
+                if "clinic_id" not in patient_cols:
+                    conn.execute(text("ALTER TABLE patients ADD COLUMN clinic_id VARCHAR"))
                 if "server_version" not in patient_cols:
                     conn.execute(text("ALTER TABLE patients ADD COLUMN server_version INTEGER DEFAULT 1 NOT NULL"))
                 if "is_deleted" not in patient_cols:
                     conn.execute(text("ALTER TABLE patients ADD COLUMN is_deleted INTEGER DEFAULT 0 NOT NULL"))
                 if "updated_at" not in patient_cols:
                     conn.execute(text("ALTER TABLE patients ADD COLUMN updated_at VARCHAR"))
+                if "record_origin" not in patient_cols:
+                    conn.execute(text("ALTER TABLE patients ADD COLUMN record_origin VARCHAR DEFAULT 'MANUAL_CLINICAL'"))
+                if "is_synthetic" not in patient_cols:
+                    conn.execute(text("ALTER TABLE patients ADD COLUMN is_synthetic INTEGER DEFAULT 0 NOT NULL"))
+                if "sync_status" not in patient_cols:
+                    conn.execute(text("ALTER TABLE patients ADD COLUMN sync_status VARCHAR DEFAULT 'SYNCED'"))
                 conn.commit()
 
             # Check assessments table
@@ -643,6 +771,7 @@ def _migrate_sqlite_columns():
             if assessment_cols:
                 cols_to_add = [
                     ("facility_id", "VARCHAR"),
+                    ("clinic_id", "VARCHAR"),
                     ("client_operation_id", "VARCHAR"),
                     ("triage_state", "VARCHAR DEFAULT 'LOW_RISK'"),
                     ("is_emergency", "INTEGER DEFAULT 0"),
@@ -667,6 +796,7 @@ def _migrate_sqlite_columns():
             if appt_cols:
                 appt_cols_to_add = [
                     ("facility_id", "VARCHAR"),
+                    ("clinic_id", "VARCHAR"),
                     ("server_version", "INTEGER DEFAULT 1 NOT NULL"),
                     ("is_deleted", "INTEGER DEFAULT 0 NOT NULL"),
                     ("updated_at", "VARCHAR")
@@ -675,6 +805,94 @@ def _migrate_sqlite_columns():
                     if col_name not in appt_cols:
                         conn.execute(text(f"ALTER TABLE appointments ADD COLUMN {col_name} {col_type}"))
                 conn.commit()
+
+            # Check referrals table
+            ref_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(referrals)")).fetchall()]
+            if not ref_cols:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS referrals (
+                        id VARCHAR PRIMARY KEY,
+                        patient_id VARCHAR NOT NULL,
+                        assessment_id VARCHAR,
+                        referral_reason TEXT NOT NULL,
+                        priority VARCHAR DEFAULT 'ROUTINE' NOT NULL,
+                        destination_facility VARCHAR NOT NULL,
+                        facility_id VARCHAR,
+                        clinic_id VARCHAR,
+                        status VARCHAR DEFAULT 'REQUESTED' NOT NULL,
+                        notes TEXT DEFAULT '',
+                        outcome_notes TEXT DEFAULT '',
+                        created_by VARCHAR NOT NULL,
+                        updated_by VARCHAR,
+                        client_operation_id VARCHAR,
+                        server_version INTEGER DEFAULT 1 NOT NULL,
+                        is_deleted INTEGER DEFAULT 0 NOT NULL,
+                        created_at VARCHAR,
+                        updated_at VARCHAR,
+                        FOREIGN KEY(patient_id) REFERENCES patients(id),
+                        FOREIGN KEY(assessment_id) REFERENCES assessments(id)
+                    )
+                """))
+                conn.commit()
+            else:
+                ref_cols_to_add = [
+                    ("outcome_notes", "TEXT DEFAULT ''"),
+                    ("notes", "TEXT DEFAULT ''"),
+                    ("facility_id", "VARCHAR"),
+                    ("clinic_id", "VARCHAR"),
+                    ("client_operation_id", "VARCHAR"),
+                    ("updated_by", "VARCHAR")
+                ]
+                for col_name, col_type in ref_cols_to_add:
+                    if col_name not in ref_cols:
+                        conn.execute(text(f"ALTER TABLE referrals ADD COLUMN {col_name} {col_type}"))
+                conn.commit()
+
+            # Check sync_journal table
+            journal_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(sync_journal)")).fetchall()]
+            if journal_cols and "clinic_id" not in journal_cols:
+                conn.execute(text("ALTER TABLE sync_journal ADD COLUMN clinic_id VARCHAR"))
+                conn.commit()
+
+            # Check audit_events table
+            audit_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(audit_events)")).fetchall()]
+            if audit_cols and "clinic_id" not in audit_cols:
+                conn.execute(text("ALTER TABLE audit_events ADD COLUMN clinic_id VARCHAR"))
+                conn.commit()
+
+            # Check clinical_reviews table
+            review_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(clinical_reviews)")).fetchall()]
+            if review_cols and "clinic_id" not in review_cols:
+                conn.execute(text("ALTER TABLE clinical_reviews ADD COLUMN clinic_id VARCHAR"))
+                conn.commit()
+
+            # 3. Legacy Migration: Attribute legacy records to designated legacy clinic
+            legacy_clinic = conn.execute(text("SELECT id FROM clinics WHERE id = 'clinic-sonpur-legacy'")).fetchone()
+            if not legacy_clinic:
+                conn.execute(text("""
+                    INSERT INTO clinics (id, name, facility_code, owner_user_id, address, phone, is_active, created_at, updated_at)
+                    VALUES ('clinic-sonpur-legacy', 'Sonpur Primary Health Centre (Legacy)', 'PHC_SONPUR', 'usr_dr_sharma', 'Sonpur Village PHC', '033-2289-4401', 1, '2026-01-01T00:00:00', '2026-01-01T00:00:00')
+                """))
+                # Associate existing legacy system users with the legacy clinic
+                users_tbl = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")).fetchone()
+                if users_tbl:
+                    legacy_users = conn.execute(text("SELECT id, role FROM users")).fetchall()
+                    for uid, urole in legacy_users:
+                        mem_role = "CLINIC_OWNER" if urole in ("PHC_DOCTOR", "SYSTEM_ADMIN") else "HEALTH_WORKER"
+                        conn.execute(text(f"""
+                            INSERT OR IGNORE INTO clinic_memberships (id, clinic_id, user_id, role, status, is_active, created_at, updated_at)
+                            VALUES ('clm_legacy_{uid}', 'clinic-sonpur-legacy', '{uid}', '{mem_role}', 'ACTIVE', 1, '2026-01-01T00:00:00', '2026-01-01T00:00:00')
+                        """))
+                conn.commit()
+
+            # Backfill existing records where clinic_id IS NULL into legacy clinic
+            for tbl in ["patients", "assessments", "appointments", "referrals", "clinical_reviews", "sync_journal", "audit_events"]:
+                tbl_exists = conn.execute(text(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{tbl}'")).fetchone()
+                if tbl_exists:
+                    cols = [row[1] for row in conn.execute(text(f"PRAGMA table_info({tbl})")).fetchall()]
+                    if "clinic_id" in cols:
+                        conn.execute(text(f"UPDATE {tbl} SET clinic_id = 'clinic-sonpur-legacy' WHERE clinic_id IS NULL"))
+            conn.commit()
     except Exception as err:
         print(f"[database] Note on SQLite column migration: {err}")
 

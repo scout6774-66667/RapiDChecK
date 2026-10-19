@@ -13,7 +13,8 @@
     "test:golden": "node test_golden_vectors.js",
     "test:phase2": "node test_phase2_frontend.js",
     "test:phase3": "node test_phase3_frontend.js",
-    "test:phase4": "node test_phase4_frontend.js"
+    "test:phase4": "node test_phase4_frontend.js",
+    "test:i18n": "node test_i18n_coverage.mjs"
   },
   "dependencies": {
     "@types/leaflet": "^1.9.22",

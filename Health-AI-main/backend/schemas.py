@@ -13,6 +13,10 @@ class PatientBase(BaseModel):
     phone: Optional[str] = Field(default="", max_length=20)
     patient_id: Optional[str] = None
     facility_id: Optional[str] = None
+    clinic_id: Optional[str] = None
+    record_origin: Optional[str] = "MANUAL_CLINICAL"
+    is_synthetic: Optional[int] = 0
+    sync_status: Optional[str] = "SYNCED"
 
 class PatientCreate(PatientBase):
     pass
@@ -22,6 +26,9 @@ class PatientResponse(PatientBase):
     is_deleted: int = 0
     created_at: str
     updated_at: Optional[str] = None
+    record_origin: Optional[str] = "MANUAL_CLINICAL"
+    is_synthetic: Optional[int] = 0
+    sync_status: Optional[str] = "SYNCED"
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -60,6 +67,7 @@ class AssessmentResponse(BaseModel):
     patient_name: Optional[str] = None
     village: Optional[str] = None
     facility_id: Optional[str] = None
+    clinic_id: Optional[str] = None
     client_operation_id: Optional[str] = None
     symptoms: List[str] = Field(default_factory=list)
     symptom_duration_days: Optional[int] = None
@@ -124,6 +132,7 @@ class AppointmentCreate(BaseModel):
     status: Optional[str] = "PENDING"
     risk_level: Optional[str] = None
     facility_id: Optional[str] = None
+    clinic_id: Optional[str] = None
     likely_conditions: Optional[List[str]] = []
 
 
@@ -140,6 +149,7 @@ class AppointmentResponse(BaseModel):
     status: str
     risk_level: Optional[str]
     facility_id: Optional[str] = None
+    clinic_id: Optional[str] = None
     likely_conditions: List[str]
     server_version: int = 1
     is_deleted: int = 0
@@ -290,6 +300,53 @@ class SyncPullResponse(BaseModel):
     changes: List[SyncJournalEntry] = Field(default_factory=list)
 
 
+# ─── MULTI-CLINIC & STAFF SCHEMAS ──────────────────────────────────────────────
+
+class ClinicSummary(BaseModel):
+    id: str
+    name: str
+    role: str
+    facility_code: Optional[str] = None
+
+class ClinicResponse(BaseModel):
+    id: str
+    name: str
+    facility_code: Optional[str] = None
+    owner_user_id: str
+    address: Optional[str] = ""
+    phone: Optional[str] = ""
+    role: Optional[str] = None
+    created_at: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+class ClinicStaffMemberResponse(BaseModel):
+    membership_id: str
+    clinic_id: str
+    user_id: str
+    full_name: str
+    email: str
+    username: str
+    role: str
+    status: str
+    is_active: int
+    created_at: str
+    invited_by: Optional[str] = None
+
+class AddStaffRequest(BaseModel):
+    full_name: str = Field(..., min_length=2)
+    email: str
+    role: Literal['DOCTOR', 'HEALTH_WORKER', 'COUNSELOR', 'CLINIC_OWNER'] = 'DOCTOR'
+    password: Optional[str] = None
+    temporary_password: Optional[str] = None
+    phone: Optional[str] = None
+
+class UpdateStaffRequest(BaseModel):
+    role: Optional[Literal['CLINIC_OWNER', 'DOCTOR', 'HEALTH_WORKER', 'COUNSELOR']] = None
+    is_active: Optional[int] = None
+    status: Optional[Literal['ACTIVE', 'INVITED', 'SUSPENDED', 'REVOKED']] = None
+
+
 # ─── AUTHENTICATION & RBAC SCHEMAS (TASK-010 & TASK-011) ─────────────────────
 
 class UserLoginRequest(BaseModel):
@@ -297,13 +354,16 @@ class UserLoginRequest(BaseModel):
     password: str
 
 class UserRegisterRequest(BaseModel):
-    username: str
+    username: Optional[str] = None
     password: str
     email: str
     full_name: str
-    role: Literal['ASHA_WORKER', 'PHC_DOCTOR', 'DISTRICT_OFFICER', 'SYSTEM_ADMIN'] = 'ASHA_WORKER'
+    role: Optional[str] = None
+    clinic_name: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
     license_number: Optional[str] = None
-    facility_id: Optional[str] = 'PHC_MAIN'
+    facility_id: Optional[str] = None
     assigned_villages: Optional[List[str]] = Field(default_factory=list)
 
 class UserResponse(BaseModel):
@@ -314,6 +374,7 @@ class UserResponse(BaseModel):
     role: str
     license_number: Optional[str] = None
     facility_id: Optional[str] = None
+    clinic_id: Optional[str] = None
     assigned_villages: List[str] = Field(default_factory=list)
     is_active: int
     created_at: str
@@ -327,10 +388,14 @@ class TokenResponse(BaseModel):
     expires_in_minutes: int
     user: UserResponse
     permissions: List[str]
+    clinics: List[ClinicSummary] = Field(default_factory=list)
+    active_clinic: Optional[ClinicResponse] = None
 
 class UserProfileResponse(BaseModel):
     user: UserResponse
     permissions: List[str]
+    clinics: List[ClinicSummary] = Field(default_factory=list)
+    active_clinic: Optional[ClinicResponse] = None
 
 
 # ─── CLINICIAN REVIEW & ATTESTATION SCHEMAS (TASK-012) ────────────────────────
@@ -396,3 +461,99 @@ class ReviewHistoryItem(BaseModel):
     signature_hash: str
     created_at: str
 
+
+# ─── OPERATIONAL REFERRAL SCHEMAS ─────────────────────────────────────────────
+
+class ReferralCreate(BaseModel):
+    patient_id: str
+    assessment_id: Optional[str] = None
+    referral_reason: str
+    priority: Optional[Literal["ROUTINE", "URGENT", "EMERGENCY"]] = "ROUTINE"
+    destination_facility: str
+    facility_id: Optional[str] = None
+    clinic_id: Optional[str] = None
+    notes: Optional[str] = ""
+    client_operation_id: Optional[str] = None
+
+
+class ReferralStatusUpdate(BaseModel):
+    status: Literal["REQUESTED", "APPROVED", "REFERRED", "IN_PROGRESS", "COMPLETED", "CANCELLED"]
+    outcome_notes: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class ReferralResponse(BaseModel):
+    id: str
+    patient_id: str
+    patient_name: Optional[str] = None
+    patient_phone: Optional[str] = None
+    patient_village: Optional[str] = None
+    patient_age: Optional[int] = None
+    patient_gender: Optional[str] = None
+    assessment_id: Optional[str] = None
+    referral_reason: str
+    priority: str
+    destination_facility: str
+    facility_id: Optional[str] = None
+    clinic_id: Optional[str] = None
+    status: str
+    notes: Optional[str] = ""
+    outcome_notes: Optional[str] = ""
+    created_by: str
+    updated_by: Optional[str] = None
+    server_version: int = 1
+    is_deleted: int = 0
+    created_at: str
+    updated_at: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ─── CLINICAL ANALYSIS & INSIGHTS SCHEMAS ────────────────────────────────────
+
+class AnalysisOverviewResponse(BaseModel):
+    total_screening_encounters: int
+    unique_patients_screened: int
+    unique_high_risk_patients: int
+    high_risk_encounters: int
+    moderate_risk_encounters: int
+    low_risk_encounters: int
+    insufficient_data_encounters: int
+    total_operational_referrals: int
+    pending_referrals: int
+    in_progress_referrals: int
+    completed_referrals: int
+    cancelled_referrals: int
+    completion_rate_percent: float
+
+
+class ScreeningTrendPoint(BaseModel):
+    date: str
+    encounters: int
+    unique_patients: int
+
+
+class RiskDistributionItem(BaseModel):
+    tier: str
+    label: str
+    count: int
+    percentage: float
+    color: str
+
+
+class RiskDistributionResponse(BaseModel):
+    total_encounters: int
+    unique_screened_patients: int
+    high_or_emergency: int
+    moderate: int
+    low: int
+    insufficient_data: int
+    distribution: List[RiskDistributionItem]
+
+
+class ReferralStatisticsResponse(BaseModel):
+    total_referrals: int
+    by_status: Dict[str, int]
+    by_priority: Dict[str, int]
+    by_facility: Dict[str, int]
+    completion_rate_percent: float

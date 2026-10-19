@@ -237,7 +237,7 @@ export const AshaScreeningFlow: React.FC<AshaScreeningFlowProps> = ({
 
       // Online register + assess
       try {
-        await apiFetch('/api/patients', {
+        const pRes = await apiFetch('/api/patients', {
           method: 'POST',
           body: JSON.stringify({
             id: effectivePatientId,
@@ -251,15 +251,19 @@ export const AshaScreeningFlow: React.FC<AshaScreeningFlowProps> = ({
           timeoutMs: 10000,
         });
 
-        await apiFetch('/api/assess', {
+        const aRes = await apiFetch('/api/assess', {
           method: 'POST',
           body: JSON.stringify(payload),
           timeoutMs: 10000,
         });
 
-        // Update local sync status to SYNCED
-        await db.patients.update(effectivePatientId, { sync_state: 'SYNCED', synced: true });
-        await db.assessments.update(localAssessment.id, { sync_state: 'SYNCED', synced: true });
+        // Only update local sync status to SYNCED upon confirmed backend success (Requirement 4 & 8)
+        if (pRes.ok && aRes.ok) {
+          await db.patients.update(effectivePatientId, { sync_state: 'SYNCED', synced: true });
+          await db.assessments.update(localAssessment.id, { sync_state: 'SYNCED', synced: true });
+        } else {
+          console.warn('Online sync returned HTTP error; retaining QUEUED status for durable outbox retry');
+        }
       } catch (syncErr) {
         console.warn('Online sync failed, outbox queued for automatic retry', syncErr);
       }

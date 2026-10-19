@@ -6,7 +6,8 @@ import {
   Thermometer, Heart, Droplets, Stethoscope, WifiOff, Clock,
   Lock, ShieldCheck, ChevronDown, Plus
 } from 'lucide-react';
-import { translations, type Language } from '../i18n/translations';
+import { type Language } from '../i18n/translations';
+import { useLanguage } from '../i18n/LanguageContext';
 import { 
   db, 
   type LocalPatient, 
@@ -135,8 +136,8 @@ export function normalizePatientName(rawName: string): string {
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 
-export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnline }) => {
-  const t = translations[lang];
+export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ isOnline }) => {
+  const { strings } = useLanguage();
   const { user, hasPermission, switchUser } = useAuth();
   const canDelete = hasPermission('patients:delete') || user?.role === 'SYSTEM_ADMIN' || user?.role === 'PHC_DOCTOR';
 
@@ -145,6 +146,8 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
   const [searchTerm,  setSearchTerm]  = useState('');
   const [isLoading,   setIsLoading]   = useState(true);
   const [expandedDupId, setExpandedDupId] = useState<string | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [operationalOnly, setOperationalOnly] = useState<boolean>(false);
 
   // ── Panels ──────────────────────────────────────────────────────────────────
   const [viewPatient,    setViewPatient]    = useState<LocalPatient | null>(null);
@@ -186,6 +189,7 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
         ]);
 
         if (pRes.ok && aRes.ok) {
+          setFetchError(null);
           const [remotePatients, remoteAssessments] = await Promise.all([pRes.json(), aRes.json()]);
 
           // Reconcile remote patients into local Dexie store without overwriting unpushed local edits
@@ -201,12 +205,16 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
                 synced: true,
                 local_version: rp.server_version || 1,
                 server_version: rp.server_version || 1,
+                record_origin: rp.record_origin || 'MANUAL_CLINICAL',
+                is_synthetic: rp.is_synthetic ?? 0,
                 is_deleted: Boolean(rp.is_deleted)
               });
             } else if (lp.sync_state === 'SYNCED' && (rp.server_version || 0) >= (lp.server_version || 0)) {
               await db.patients.put({
                 ...lp,
                 ...rp,
+                record_origin: rp.record_origin || lp.record_origin || 'MANUAL_CLINICAL',
+                is_synthetic: rp.is_synthetic ?? lp.is_synthetic ?? 0,
                 sync_state: 'SYNCED',
                 synced: true
               });
@@ -242,8 +250,15 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
           const [finalP, finalA] = await Promise.all([getActivePatients(), getActiveAssessments()]);
           setPatients(finalP);
           setAssessments(finalA);
+        } else {
+          const errDetail = !pRes.ok
+            ? `Backend patients service returned status ${pRes.status} (${pRes.statusText || 'Error'})`
+            : `Backend assessments service returned status ${aRes.status} (${aRes.statusText || 'Error'})`;
+          setFetchError(`${errDetail}. Retaining local IndexedDB records.`);
+          console.warn('[PatientDirectory] Server returned error status:', errDetail);
         }
-      } catch (err) {
+      } catch (err: any) {
+        setFetchError('Connection error contacting healthcare backend. Retaining local IndexedDB records.');
         console.warn('[PatientDirectory] Reconcile with server failed, preserving IndexedDB data:', err);
       }
     }
@@ -365,13 +380,15 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
     return patients.filter(p => !p.facility_id || p.facility_id === user.facility_id);
   }, [patients, user]);
 
-  const filtered = scopedPatients.filter(p =>
-    p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    p.village.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    p.phone.includes(searchTerm) ||
-    (p.patient_id && p.patient_id.toLowerCase().includes(searchTerm.toLowerCase())) ||
-    p.id.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filtered = scopedPatients
+    .filter(p => !operationalOnly || (!p.is_synthetic && p.record_origin !== 'TEST_FIXTURE'))
+    .filter(p =>
+      p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      p.village.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      p.phone.includes(searchTerm) ||
+      (p.patient_id && p.patient_id.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      p.id.toLowerCase().includes(searchTerm.toLowerCase())
+    );
 
   // ─── OPEN EDIT PATIENT ──────────────────────────────────────────────────────
   const openEditPatient = (p: LocalPatient, e?: React.MouseEvent) => {
@@ -458,7 +475,7 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
       // 3. Push to backend if online
       if (isOnline) {
         try {
-          await apiFetch(`/api/patients/${encodeURIComponent(editingPatient.id)}`, {
+          const pRes = await apiFetch(`/api/patients/${encodeURIComponent(editingPatient.id)}`, {
             method: 'PUT',
             body: JSON.stringify({
               id: savedPatient.id,
@@ -470,7 +487,11 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
             }),
             timeoutMs: 8000,
           });
-          await db.patients.update(editingPatient.id, { sync_state: 'SYNCED', synced: true });
+          if (pRes.ok) {
+            await db.patients.update(editingPatient.id, { sync_state: 'SYNCED', synced: true });
+          } else {
+            console.warn('[PatientDirectory] Online PUT returned HTTP error, outbox queued for retry');
+          }
         } catch { /* sync later via outbox */ }
       }
 
@@ -613,12 +634,12 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
         <div>
           <h2 className="text-2xl font-black text-slate-900 flex items-center gap-2">
             <Users className="w-7 h-7 text-emerald-600" />
-            {t.rolePatients}
+            {strings.patients.title}
           </h2>
           <p className="text-xs text-slate-500 font-semibold mt-1">
-            {patients.length} registered ·{' '}
+            {patients.length} {strings.patients.totalPatients.toLowerCase()} ·{' '}
             <span className="font-black text-indigo-700">IndexedDB</span>
-            {isOnline ? <> + <span className="font-black text-emerald-700">SQLite backend</span></> : <> · <span className="font-black text-amber-600">Offline</span></>}
+            {isOnline ? <> + <span className="font-black text-emerald-700">SQLite backend</span></> : <> · <span className="font-black text-amber-600">{strings.common.offline}</span></>}
           </p>
         </div>
         <div className="flex items-center gap-2 w-full sm:w-auto">
@@ -628,15 +649,27 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
             title="Register a new patient and start clinical screening"
           >
             <Plus className="w-4 h-4" />
-            <span className="hidden sm:inline">New Assessment</span>
+            <span className="hidden sm:inline">{strings.patients.registerNewPatient}</span>
           </a>
-          <button onClick={loadData} className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 flex items-center justify-center shrink-0" title="Reload & Reconcile">
+          <button onClick={loadData} className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 flex items-center justify-center shrink-0" title={strings.common.refresh}>
             <RefreshCw className="w-4 h-4 text-slate-600 dark:text-slate-300" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setOperationalOnly(!operationalOnly)}
+            className={`text-xs font-bold px-3 py-2 rounded-xl border transition-all flex items-center gap-1.5 shrink-0 ${
+              operationalOnly
+                ? 'bg-teal-600 text-white border-teal-600 shadow-xs'
+                : 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-600 hover:border-slate-300'
+            }`}
+            title="Toggle between all records and genuine operational clinical records"
+          >
+            <span>{operationalOnly ? `✓ ${strings.patients.operationalOnly}` : 'All Records'}</span>
           </button>
           <div className="relative flex-1 sm:w-64">
             <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
             <input
-              type="text" placeholder={t.searchVillage} value={searchTerm}
+              type="text" placeholder={strings.patients.searchPlaceholder} value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
               className="w-full text-xs font-semibold pl-10 pr-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-emerald-500 outline-none"
             />
@@ -699,6 +732,22 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
         </div>
       </div>
 
+      {/* ── Network / Backend Error Alert Banner (Requirement 3 & 7) ─────────────── */}
+      {fetchError && (
+        <div className="bg-rose-50 border border-rose-200 text-rose-800 px-5 py-3.5 rounded-2xl flex items-center justify-between text-xs font-semibold shadow-xs">
+          <div className="flex items-center gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+            <span><b>Backend Connection Issue:</b> {fetchError}</span>
+          </div>
+          <button
+            onClick={loadData}
+            className="text-xs bg-white text-rose-700 px-3 py-1.5 rounded-xl border border-rose-300 font-bold hover:bg-rose-100 transition-colors flex items-center gap-1.5 shrink-0"
+          >
+            <RefreshCw className="w-3.5 h-3.5" /> Retry
+          </button>
+        </div>
+      )}
+
       {/* ── Storage info banner ──────────────────────────────────────────────── */}
       <div className="bg-gradient-to-r from-slate-900 to-indigo-950 text-white rounded-2xl px-5 py-3.5 flex flex-wrap items-center gap-x-6 gap-y-1.5 text-xs font-semibold shadow-lg">
         <span className="text-indigo-300 font-black text-[10px] uppercase tracking-widest">📦 Data Saved In:</span>
@@ -743,13 +792,30 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
                     </div>
                     <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                       <p className="text-xs text-slate-500 font-medium">{patient.age} yrs · {patient.gender}</p>
-                      {patient.sync_state === 'QUEUED' || !patient.synced ? (
+                      {patient.sync_state === 'FAILED' ? (
+                        <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200" title="Sync failed — queued for automatic retry">
+                          ⚠️ Sync Failed
+                        </span>
+                      ) : patient.sync_state === 'CONFLICT' ? (
+                        <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-200" title="Version conflict detected">
+                          ⚡ Conflict
+                        </span>
+                      ) : patient.sync_state === 'SYNCING' ? (
+                        <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200" title="Synchronizing with server...">
+                          🔄 Syncing...
+                        </span>
+                      ) : patient.sync_state === 'QUEUED' || patient.sync_state === 'LOCAL' || !patient.synced ? (
                         <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200" title="Saved locally in IndexedDB, queued for backend sync">
                           ☁️ Pending Sync
                         </span>
                       ) : (
                         <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200" title="Synchronized with operational database">
                           ✓ Synced
+                        </span>
+                      )}
+                      {(patient.is_synthetic === 1 || patient.record_origin === 'TEST_FIXTURE') && (
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800" title="Synthetic or test fixture record">
+                          🧪 Synthetic Fixture
                         </span>
                       )}
                       {patient.facility_id && (
@@ -868,14 +934,14 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
                 <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2" onClick={e => e.stopPropagation()}>
                   <button onClick={() => setViewPatient(patient)}
                     className="flex items-center gap-1 text-[11px] font-bold text-slate-500 hover:text-emerald-700">
-                    <ChevronRight className="w-3.5 h-3.5" />History
+                    <ChevronRight className="w-3.5 h-3.5" />{strings.patients.latestAssessment || 'History'}
                   </button>
                   <div className="flex gap-2">
                     <button
                       onClick={e => openEditPatient(patient, e)}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-extrabold bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 active:scale-95 transition-all"
                     >
-                      <Pencil className="w-3 h-3" />Edit
+                      <Pencil className="w-3 h-3" />{strings.common.edit}
                     </button>
                     {(() => {
                       const isForeignFacility = user?.role !== 'SYSTEM_ADMIN' && Boolean(user?.facility_id && patient.facility_id && patient.facility_id !== user.facility_id);
@@ -940,19 +1006,67 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
             );
           }) : (
             <div className="col-span-full bg-white dark:bg-slate-800 p-10 rounded-3xl text-center border border-slate-100 dark:border-slate-700 space-y-3">
-              <Users className="w-12 h-12 text-slate-300 dark:text-slate-600 mx-auto" />
-              <p className="text-slate-500 dark:text-slate-400 font-bold text-sm">
-                {searchTerm ? 'No patients match your search criteria.' : 'No registered patients found in current scope.'}
-              </p>
-              <div className="pt-2">
-                <a
-                  href="#screen"
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs shadow-md transition-all active:scale-95"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>+ Register New Patient / Start Screening</span>
-                </a>
-              </div>
+              {fetchError && patients.length === 0 ? (
+                <>
+                  <AlertTriangle className="w-12 h-12 text-rose-500 mx-auto" />
+                  <p className="text-rose-700 dark:text-rose-400 font-extrabold text-base">
+                    Healthcare Server Unavailable
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto">
+                    {fetchError}
+                  </p>
+                  <div className="pt-2 flex items-center justify-center gap-3">
+                    <button
+                      onClick={loadData}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-900 text-white font-extrabold text-xs shadow-md hover:bg-slate-800 transition-all active:scale-95"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      <span>Retry Connection</span>
+                    </button>
+                    <a
+                      href="#screen"
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 text-white font-extrabold text-xs shadow-md hover:bg-emerald-700 transition-all active:scale-95"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>Register Offline</span>
+                    </a>
+                  </div>
+                </>
+              ) : operationalOnly && filtered.length === 0 && scopedPatients.length > 0 ? (
+                <>
+                  <ShieldAlert className="w-12 h-12 text-teal-400 mx-auto" />
+                  <p className="text-slate-800 dark:text-slate-200 font-bold text-sm">
+                    No operational clinical records in current scope.
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto">
+                    {scopedPatients.length} record(s) exist but are marked as synthetic test fixtures. Toggle 'All Records' to view them.
+                  </p>
+                  <div className="pt-2">
+                    <button
+                      onClick={() => setOperationalOnly(false)}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-teal-600 text-white font-extrabold text-xs shadow-md hover:bg-teal-700 transition-all active:scale-95"
+                    >
+                      <span>Show All Records ({scopedPatients.length})</span>
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <Users className="w-12 h-12 text-slate-300 dark:text-slate-600 mx-auto" />
+                  <p className="text-slate-500 dark:text-slate-400 font-bold text-sm">
+                    {searchTerm ? 'No patients match your search criteria.' : 'No registered patients found in current scope.'}
+                  </p>
+                  <div className="pt-2">
+                    <a
+                      href="#screen"
+                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs shadow-md transition-all active:scale-95"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>+ Register New Patient / Start Screening</span>
+                    </a>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -1294,13 +1408,13 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
             <div className="px-6 py-4 border-t border-slate-100 flex gap-3 shrink-0">
               <button onClick={() => { setEditingPatient(null); setFormError(''); }}
                 className="flex-1 px-4 py-3 rounded-2xl border border-slate-300 font-bold text-slate-700 text-sm hover:bg-slate-50 flex items-center justify-center gap-2">
-                <X className="w-4 h-4" />Cancel
+                <X className="w-4 h-4" />{strings.common.cancel}
               </button>
               <button onClick={saveEdit} disabled={isSaving}
                 className="flex-1 px-4 py-3 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 text-white font-extrabold text-sm shadow-lg disabled:opacity-60 flex items-center justify-center gap-2 active:scale-95 transition-all">
                 {isSaving
-                  ? <><Loader2 className="w-4 h-4 animate-spin" />Saving…</>
-                  : <><UserCog className="w-4 h-4" />Save All Changes</>}
+                  ? <><Loader2 className="w-4 h-4 animate-spin" />{strings.common.loading}</>
+                  : <><UserCog className="w-4 h-4" />{strings.common.save}</>}
               </button>
             </div>
           </div>
@@ -1318,8 +1432,8 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
                 <Trash2 className="w-5 h-5" />
               </div>
               <div>
-                <p className="text-xs font-bold text-rose-200 uppercase tracking-widest">Confirm Deletion</p>
-                <h3 className="font-black text-lg">Archive & Delete Patient?</h3>
+                <p className="text-xs font-bold text-rose-200 uppercase tracking-widest">{strings.patients.confirmDeleteTitle}</p>
+                <h3 className="font-black text-lg">{strings.patients.deletePatient}?</h3>
               </div>
             </div>
             <div className="p-6 space-y-4">
@@ -1347,7 +1461,7 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
                   disabled={isDeleting}
                   className="flex-1 px-4 py-3 rounded-2xl border border-slate-300 dark:border-slate-600 font-bold text-slate-700 dark:text-slate-200 text-sm hover:bg-slate-50 dark:hover:bg-slate-700 flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
                 >
-                  <X className="w-4 h-4" />Cancel
+                  <X className="w-4 h-4" />{strings.common.cancel}
                 </button>
                 <button
                   onClick={confirmDelete}
@@ -1355,9 +1469,9 @@ export const PatientDirectory: React.FC<PatientDirectoryProps> = ({ lang, isOnli
                   className="flex-1 px-4 py-3 rounded-2xl bg-gradient-to-r from-rose-600 to-red-600 text-white font-extrabold text-sm shadow-lg hover:shadow-rose-500/25 disabled:opacity-60 flex items-center justify-center gap-2 active:scale-95 transition-all"
                 >
                   {isDeleting ? (
-                    <><Loader2 className="w-4 h-4 animate-spin" />Archiving…</>
+                    <><Loader2 className="w-4 h-4 animate-spin" />{strings.common.loading}</>
                   ) : (
-                    <><Trash2 className="w-4 h-4" />Confirm Deletion</>
+                    <><Trash2 className="w-4 h-4" />{strings.common.delete}</>
                   )}
                 </button>
               </div>

@@ -20,19 +20,23 @@
 # Preserve safe templates containing placeholders only
 !.env.example
 !.env.sample
+!.env.template
 !**/.env.example
 !**/.env.sample
+!**/.env.template
 
 # Private keys, certificates & credentials
 *.pem
 *.key
 *.p12
 *.pfx
+*.jks
 *.crt
 *.cer
 *.der
-service-account*.json
+credentials.json
 credentials*.json
+service-account*.json
 google-credentials*.json
 *secret*.json
 *.secret
@@ -41,11 +45,14 @@ google-credentials*.json
 # 2. Local Databases, Dumps & Sensitive Data
 # ------------------------------------------------------------------------------
 *.db
+*.db-*
 *.db-journal
 *.db-wal
 *.db-shm
 *.sqlite
+*.sqlite-*
 *.sqlite3
+*.sqlite3-*
 *.sqlite3-journal
 ruralhealth.db
 health_ai.db
@@ -113,6 +120,8 @@ MANIFEST
 **/.ruff_cache/
 .coverage
 .coverage.*
+coverage/
+**/coverage/
 htmlcov/
 nosetests.xml
 coverage.xml
@@ -154,6 +163,8 @@ tmp/
 temp/
 .cache/
 *.tmp
+*.swp
+*.swo
 *.sw?
 *~
 gemini_generated_video_*.mp4

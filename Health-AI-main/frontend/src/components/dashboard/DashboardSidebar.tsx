@@ -10,11 +10,14 @@ import {
   BookOpen,
   CheckCircle2,
   Heart,
+  UserCheck,
   X
 } from 'lucide-react';
 import ashaIllustration from '../../assets/asha_sidebar.jpg';
 
 import { RuralHealthLogo } from '../brand/RuralHealthLogo';
+import { useLanguage } from '../../i18n';
+import { useAuth } from '../../auth/AuthContext';
 
 export type DashboardNavTab =
   | 'dashboard'
@@ -22,6 +25,7 @@ export type DashboardNavTab =
   | 'patients'
   | 'referrals'
   | 'appointments'
+  | 'staff'
   | 'analytics'
   | 'population_health'
   | 'chat'
@@ -42,16 +46,28 @@ export const DashboardSidebar: React.FC<DashboardSidebarProps> = ({
   appointmentCount = 0,
   onCloseMobileMenu,
 }) => {
+  const { strings } = useLanguage();
+  const { user } = useAuth();
+  const isOwnerOrDoctor =
+    !user ||
+    user.role === 'CLINIC_OWNER' ||
+    user.role === 'SYSTEM_ADMIN' ||
+    user.role === 'PHC_DOCTOR' ||
+    user.role === 'DOCTOR';
+
   const navItems: { id: DashboardNavTab; label: string; icon: React.ElementType; badge?: number | string }[] = [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'screen', label: 'Screen Patients', icon: ClipboardCheck },
-    { id: 'patients', label: 'Patient Directory', icon: Users },
-    { id: 'referrals', label: 'IDRC Referrals', icon: Share2 },
-    { id: 'appointments', label: 'Appointments', icon: Calendar, badge: appointmentCount },
-    { id: 'population_health', label: 'Population Health', icon: Heart, badge: 'HMIS' },
-    { id: 'analytics', label: 'Analytics', icon: BarChart3 },
-    { id: 'chat', label: 'Chat Assistant', icon: MessageCircle },
-    { id: 'resources', label: 'Health Resources', icon: BookOpen },
+    { id: 'dashboard', label: strings?.sidebar?.dashboard || 'Dashboard', icon: LayoutDashboard },
+    { id: 'screen', label: strings?.sidebar?.screenPatients || 'Screen Patients', icon: ClipboardCheck },
+    { id: 'patients', label: strings?.sidebar?.patientDirectory || 'Patient Directory', icon: Users },
+    { id: 'referrals', label: strings?.sidebar?.idrcReferrals || 'IDRC Referrals', icon: Share2 },
+    { id: 'appointments', label: strings?.sidebar?.appointments || 'Appointments', icon: Calendar, badge: appointmentCount },
+    ...(isOwnerOrDoctor
+      ? [{ id: 'staff' as DashboardNavTab, label: strings?.sidebar?.staffManagement || 'Staff Management', icon: UserCheck }]
+      : []),
+    { id: 'population_health', label: strings?.sidebar?.populationHealth || 'Population Health', icon: Heart, badge: 'HMIS' },
+    { id: 'analytics', label: strings?.sidebar?.analytics || 'Analysis', icon: BarChart3 },
+    { id: 'chat', label: strings?.sidebar?.chatAssistant || 'Chat Assistant', icon: MessageCircle },
+    { id: 'resources', label: strings?.sidebar?.healthResources || 'Health Resources', icon: BookOpen },
   ];
 
   return (
@@ -130,15 +146,19 @@ export const DashboardSidebar: React.FC<DashboardSidebarProps> = ({
         <div className="bg-[#EAF7F1]/80 border border-[#BDE7D3] rounded-2xl p-3 text-left">
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-[10px] font-extrabold tracking-wider text-[#0A9F68] uppercase bg-white/80 px-2 py-0.5 rounded-md border border-[#0A9F68]/20">
-              {isOnline ? 'ONLINE' : 'OFFLINE MODE'}
+              {isOnline ? strings?.sidebar?.onlineBadge || 'ONLINE' : strings?.sidebar?.offlineBadge || 'OFFLINE MODE'}
             </span>
             <CheckCircle2 className="w-3.5 h-3.5 text-[#0A9F68]" />
           </div>
           <p className="text-xs font-bold text-[#102A56] leading-tight">
-            {isOnline ? 'System Synchronized' : 'You are offline'}
+            {isOnline
+              ? strings?.sidebar?.systemSynchronized || 'System Synchronized'
+              : strings?.sidebar?.youAreOffline || 'You are offline'}
           </p>
           <p className="text-[10px] text-slate-600 mt-0.5 leading-snug">
-            {isOnline ? 'All health records up-to-date.' : 'Data will sync automatically'}
+            {isOnline
+              ? strings?.sidebar?.recordsUpToDate || 'All health records up-to-date.'
+              : strings?.sidebar?.dataWillSync || 'Data will sync automatically'}
           </p>
         </div>
 
@@ -154,7 +174,7 @@ export const DashboardSidebar: React.FC<DashboardSidebarProps> = ({
           </div>
 
           <p className="text-[12px] font-handwriting text-[#102A56] font-bold leading-tight px-1 flex items-center justify-center flex-wrap gap-1">
-            <span>Technology in the hands of Health Workers for a Healthier Tomorrow</span>
+            <span>{strings?.sidebar?.missionStatement || 'Technology in the hands of Health Workers for a Healthier Tomorrow'}</span>
             <Heart className="w-3.5 h-3.5 fill-red-500 text-red-500 inline-block" />
           </p>
         </div>

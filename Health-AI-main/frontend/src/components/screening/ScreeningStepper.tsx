@@ -1,6 +1,7 @@
 import React from 'react';
 import { Check } from 'lucide-react';
 import type { ScreeningStep } from './types';
+import { useLanguage } from '../../i18n/LanguageContext';
 
 interface ScreeningStepperProps {
   currentStep: ScreeningStep;
@@ -13,14 +14,15 @@ export const ScreeningStepper: React.FC<ScreeningStepperProps> = ({
   onStepClick,
   maxStepReached,
 }) => {
+  const { strings } = useLanguage();
   const steps = [
-    { num: 1 as ScreeningStep, label: 'Patient' },
-    { num: 2 as ScreeningStep, label: 'Symptoms' },
-    { num: 3 as ScreeningStep, label: 'Vitals' },
-    { num: 4 as ScreeningStep, label: 'Risk Factors' },
-    { num: 5 as ScreeningStep, label: 'Review' },
-    { num: 6 as ScreeningStep, label: 'Screening' },
-    { num: 7 as ScreeningStep, label: 'Next Steps' },
+    { num: 1 as ScreeningStep, label: strings.screening.step1Title },
+    { num: 2 as ScreeningStep, label: strings.screening.step2Title },
+    { num: 3 as ScreeningStep, label: strings.screening.step3Title },
+    { num: 4 as ScreeningStep, label: strings.screening.step4Title },
+    { num: 5 as ScreeningStep, label: strings.screening.step5Title },
+    { num: 6 as ScreeningStep, label: strings.screening.step6Title },
+    { num: 7 as ScreeningStep, label: strings.screening.step7Title },
   ];
 
   const currentStepObj = steps.find((s) => s.num === currentStep) || steps[0];

@@ -15,6 +15,7 @@ node_modules/
 dist/
 dist-ssr/
 build/
+coverage/
 .vite/
 *.local
 
@@ -32,14 +33,17 @@ build/
 *.env
 !.env.example
 !.env.sample
+!.env.template
 
 # Secrets & Certificates
 *.pem
 *.key
 *.p12
 *.pfx
-service-account*.json
+*.jks
+credentials.json
 credentials*.json
+service-account*.json
 google-credentials*.json
 *secret*.json
 
@@ -49,8 +53,11 @@ google-credentials*.json
 !.vscode/settings.json
 .idea/
 .DS_Store
+Thumbs.db
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
+*.swp
+*.swo
 *.sw?

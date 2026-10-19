@@ -1,5 +1,6 @@
 import React from 'react';
 import { X, BookOpen, ShieldCheck } from 'lucide-react';
+import { useLanguage } from '../../i18n/LanguageContext';
 
 interface HealthResourcesModalProps {
   isOpen: boolean;
@@ -7,32 +8,33 @@ interface HealthResourcesModalProps {
 }
 
 export const HealthResourcesModal: React.FC<HealthResourcesModalProps> = ({ isOpen, onClose }) => {
+  const { strings } = useLanguage();
   if (!isOpen) return null;
 
   const resources = [
     {
-      title: 'National Health Mission (NHM) ASHA Guidelines',
-      category: 'Protocol & Guidelines',
-      desc: 'Standard field protocol for maternal & child health screening and vital sign recording in rural households.',
-      tag: 'Official Protocol',
+      title: strings.resources.res1Title,
+      category: strings.resources.res1Category,
+      desc: strings.resources.res1Desc,
+      tag: strings.resources.officialProtocol,
     },
     {
-      title: 'Community Screening for Hypertension & Diabetes',
-      category: 'NCD Care',
-      desc: 'Early symptom checklist, blood glucose thresholds, and triage criteria for PHC physician referrals.',
-      tag: 'Clinical Guide',
+      title: strings.resources.res2Title,
+      category: strings.resources.res2Category,
+      desc: strings.resources.res2Desc,
+      tag: strings.resources.clinicalGuide,
     },
     {
-      title: 'Tuberculosis & Chronic Respiratory Screening',
-      category: 'Infectious Diseases',
-      desc: 'Sputum sample collection protocol, cough duration evaluation (>14 days), and contact tracing workflow.',
-      tag: 'Triage Protocol',
+      title: strings.resources.res3Title,
+      category: strings.resources.res3Category,
+      desc: strings.resources.res3Desc,
+      tag: strings.resources.triageProtocol,
     },
     {
-      title: 'Emergency Signs in Antenatal & Postnatal Care',
-      category: 'Maternal Health',
-      desc: 'High-risk danger signs (severe headache, bleeding, high BP) requiring immediate 108 ambulance dispatch.',
-      tag: 'Emergency Checklist',
+      title: strings.resources.res4Title,
+      category: strings.resources.res4Category,
+      desc: strings.resources.res4Desc,
+      tag: strings.resources.emergencyChecklist,
     },
   ];
 
@@ -46,9 +48,9 @@ export const HealthResourcesModal: React.FC<HealthResourcesModalProps> = ({ isOp
               <BookOpen className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-extrabold text-[#102A56]">Clinical Health Resources</h3>
+              <h3 className="text-base font-extrabold text-[#102A56]">{strings.resources.title}</h3>
               <p className="text-xs text-slate-400 font-medium">
-                Standard Protocols & Decision Support Guidelines for Field Workers
+                {strings.resources.subtitle}
               </p>
             </div>
           </div>
@@ -90,7 +92,7 @@ export const HealthResourcesModal: React.FC<HealthResourcesModalProps> = ({ isOp
                   }}
                   className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#E7F7F0] text-[#0A9F68] hover:bg-[#0A9F68] hover:text-white text-[10px] font-bold transition-all"
                 >
-                  <span>Ask Local AI to Explain</span>
+                  <span>{strings.resources.askAiToExplain}</span>
                   <span>→</span>
                 </button>
               </div>
@@ -102,13 +104,13 @@ export const HealthResourcesModal: React.FC<HealthResourcesModalProps> = ({ isOp
         <div className="p-4 border-t border-slate-100 bg-slate-50/60 flex items-center justify-between text-xs">
           <div className="flex items-center gap-1.5 text-slate-400">
             <ShieldCheck className="w-4 h-4 text-[#0A9F68]" />
-            <span>Ministry of Health & Family Welfare guidelines</span>
+            <span>{strings.resources.mohfwNotice}</span>
           </div>
           <button
             onClick={onClose}
             className="px-4 py-2 rounded-xl bg-[#0A9F68] hover:bg-[#088758] text-white font-bold transition-all shadow-xs"
           >
-            Done
+            {strings.resources.done}
           </button>
         </div>
       </div>

@@ -2,6 +2,7 @@ import React from 'react';
 import { Calendar, Sun, Moon } from 'lucide-react';
 import heroBannerBg from '../../assets/hero_banner.jpg';
 import type { Language } from '../../i18n/translations';
+import { useLanguage } from '../../i18n';
 
 interface WelcomeHeroBannerProps {
   userName?: string | null;
@@ -14,15 +15,18 @@ export const WelcomeHeroBanner: React.FC<WelcomeHeroBannerProps> = ({
   userName,
   facilityName,
   blockName,
-  lang = 'en',
+  lang,
 }) => {
+  const { strings, language } = useLanguage();
+  const currentLang = lang || language || 'en';
+
   // Locale-sensitive real-time date formatting from system clock (Requirement 2.9)
   const localeMap: Record<Language, string> = {
     en: 'en-US',
     hi: 'hi-IN',
     bn: 'bn-IN',
   };
-  const locale = localeMap[lang] || 'en-US';
+  const locale = localeMap[currentLang] || 'en-US';
   const now = new Date();
   const todayDateStr = new Intl.DateTimeFormat(locale, {
     weekday: 'long',
@@ -34,12 +38,16 @@ export const WelcomeHeroBanner: React.FC<WelcomeHeroBannerProps> = ({
   // Time-of-day greeting
   const currentHour = now.getHours();
   const greeting =
-    currentHour < 12 ? 'Good Morning' : currentHour < 17 ? 'Good Afternoon' : 'Good Evening';
+    currentHour < 12
+      ? strings?.dashboard?.goodMorning || 'Good Morning'
+      : currentHour < 17
+      ? strings?.dashboard?.goodAfternoon || 'Good Afternoon'
+      : strings?.dashboard?.goodEvening || 'Good Evening';
 
   // Explicit unavailable fallback states (Requirement 2.8)
-  const displayUser = userName?.trim() ? userName : 'Healthcare Worker (Identity Unavailable)';
-  const displayFacility = facilityName?.trim() ? facilityName : 'Facility Unassigned';
-  const displayBlock = blockName?.trim() ? blockName : 'Jurisdiction Unspecified';
+  const displayUser = userName?.trim() ? userName : strings?.dashboard?.identityUnavailable || 'Healthcare Worker (Identity Unavailable)';
+  const displayFacility = facilityName?.trim() ? facilityName : strings?.dashboard?.facilityUnassigned || 'Facility Unassigned';
+  const displayBlock = blockName?.trim() ? blockName : strings?.dashboard?.jurisdictionUnspecified || 'Jurisdiction Unspecified';
 
   return (
     <div className="relative rounded-2xl overflow-hidden shadow-xs border border-[#E5EEF1] bg-[#EAF5F0] mb-5">
@@ -64,7 +72,7 @@ export const WelcomeHeroBanner: React.FC<WelcomeHeroBannerProps> = ({
             <span className="inline-block animate-wave origin-[70%_70%]">👋</span>
           </h2>
           <p className="text-xs sm:text-sm font-medium text-slate-600 mt-1">
-            Together for healthier villages and stronger communities.
+            {strings?.dashboard?.heroSub || 'Together for healthier villages and stronger communities.'}
           </p>
         </div>
 

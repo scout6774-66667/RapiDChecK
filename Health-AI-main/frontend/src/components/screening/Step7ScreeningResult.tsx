@@ -14,6 +14,7 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import type { ScreeningResultData } from './types';
+import { useLanguage } from '../../i18n/LanguageContext';
 
 interface Step7ScreeningResultProps {
   result: ScreeningResultData;
@@ -30,6 +31,7 @@ export const Step7ScreeningResult: React.FC<Step7ScreeningResultProps> = ({
   onReviewAgain,
   onFinish,
 }) => {
+  const { strings } = useLanguage();
   const [showModelInfo, setShowModelInfo] = useState(false);
 
   // Styling based on risk level
@@ -273,7 +275,7 @@ export const Step7ScreeningResult: React.FC<Step7ScreeningResultProps> = ({
             className="p-3.5 rounded-2xl bg-[#0A9F68] hover:bg-[#088758] text-white font-bold text-xs transition-all shadow-md shadow-[#0A9F68]/20 flex items-center justify-center gap-2 group"
           >
             <Share2 className="w-4 h-4" />
-            <span>Refer to PHC</span>
+            <span>{strings.screening.initiatePhcReferralBtn}</span>
             <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
           </button>
 
@@ -284,7 +286,7 @@ export const Step7ScreeningResult: React.FC<Step7ScreeningResultProps> = ({
             className="p-3.5 rounded-2xl bg-[#F5F3FF] hover:bg-[#EDE9FE] text-[#8B5CF6] border border-purple-200 font-bold text-xs transition-all flex items-center justify-center gap-2"
           >
             <Calendar className="w-4 h-4" />
-            <span>Book Consultation</span>
+            <span>{strings.screening.bookTeleconsultBtn}</span>
           </button>
 
           {/* Action 3: Review Assessment */}
@@ -294,7 +296,7 @@ export const Step7ScreeningResult: React.FC<Step7ScreeningResultProps> = ({
             className="p-3.5 rounded-2xl bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-bold text-xs transition-all flex items-center justify-center gap-2"
           >
             <RotateCcw className="w-4 h-4 text-slate-500" />
-            <span>Review Assessment</span>
+            <span>{strings.screening.printSummaryBtn || 'Review Assessment'}</span>
           </button>
 
           {/* Action 4: Finish */}
@@ -304,7 +306,7 @@ export const Step7ScreeningResult: React.FC<Step7ScreeningResultProps> = ({
             className="p-3.5 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition-all flex items-center justify-center gap-2"
           >
             <Check className="w-4 h-4 text-[#0A9F68]" />
-            <span>Save & Dashboard</span>
+            <span>{strings.screening.saveLocallyBtn || 'Save & Dashboard'}</span>
           </button>
         </div>
       </div>
