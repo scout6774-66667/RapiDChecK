@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 200" width="100%" height="100%">
+  <defs>
+    <style>
+      .node-box { fill: #0f172a; stroke: #334155; stroke-width: 1.5; rx: 8; }
+      .node-box-active { fill: #0f172a; stroke: #0d9488; stroke-width: 2; rx: 8; }
+      .node-box-accent { fill: #0f172a; stroke: #2563eb; stroke-width: 2; rx: 8; }
+      .title-text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 13px; font-weight: 600; fill: #f8fafc; }
+      .sub-text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 10px; fill: #94a3b8; }
+      .badge-text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 9px; font-weight: 700; }
+      .flow-line { stroke: #0ea5e9; stroke-width: 2; stroke-dasharray: 6,4; fill: none; animation: flowPulse 2s linear infinite; }
+      .sync-line { stroke: #10b981; stroke-width: 2; stroke-dasharray: 6,4; fill: none; animation: flowPulse 2s linear infinite; }
+      .boundary-box { fill: none; stroke: #1e293b; stroke-width: 1; stroke-dasharray: 4,4; rx: 12; }
+      .boundary-label { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; }
+      @keyframes flowPulse {
+        from { stroke-dashoffset: 20; }
+        to { stroke-dashoffset: 0; }
+      }
+    </style>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#0ea5e9"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#10b981"/>
+    </marker>
+  </defs>
+
+  <!-- Background Base -->
+  <rect width="880" height="200" fill="#020617" rx="12"/>
+
+  <!-- Zone 1: Edge / Offline Device Boundary -->
+  <rect x="15" y="15" width="415" height="170" class="boundary-box"/>
+  <text x="25" y="32" class="boundary-label" fill="#0d9488">FIELD DEVICE BOUNDARY (OFFLINE DURABLE)</text>
+
+  <!-- Zone 2: Central PHC & Cloud Boundary -->
+  <rect x="450" y="15" width="415" height="170" class="boundary-box"/>
+  <text x="460" y="32" class="boundary-label" fill="#3b82f6">HEALTH CENTRE &amp; CLOUD BOUNDARY</text>
+
+  <!-- Node 1: Intake -->
+  <g transform="translate(30, 50)">
+    <rect width="115" height="110" class="node-box-active"/>
+    <circle cx="25" cy="25" r="10" fill="#134e4a"/>
+    <text x="22" y="29" font-family="sans-serif" font-size="11" fill="#2dd4bf" font-weight="bold">1</text>
+    <text x="42" y="28" class="title-text">ASHA Intake</text>
+    <text x="12" y="55" class="sub-text">• Vitals Collection</text>
+    <text x="12" y="70" class="sub-text">• Symptom Dictation</text>
+    <text x="12" y="85" class="sub-text">• Voice (HI / BN / EN)</text>
+    <rect x="12" y="94" width="75" height="12" rx="3" fill="#042f2e"/>
+    <text x="16" y="103" class="badge-text" fill="#2dd4bf">DOORSTEP INTAKE</text>
+  </g>
+
+  <!-- Connector 1 -> 2 -->
+  <path d="M 145 105 L 165 105" class="flow-line" marker-end="url(#arrow-blue)"/>
+
+  <!-- Node 2: Safety Rules -->
+  <g transform="translate(170, 50)">
+    <rect width="120" height="110" class="node-box-active"/>
+    <circle cx="25" cy="25" r="10" fill="#1e3a8a"/>
+    <text x="22" y="29" font-family="sans-serif" font-size="11" fill="#60a5fa" font-weight="bold">2</text>
+    <text x="42" y="28" class="title-text">Safety Engine</text>
+    <text x="12" y="55" class="sub-text">• Red-Flag Alerts</text>
+    <text x="12" y="70" class="sub-text">• Missing Vitals Gate</text>
+    <text x="12" y="85" class="sub-text">• Golden Vectors 10/10</text>
+    <rect x="12" y="94" width="96" height="12" rx="3" fill="#172554"/>
+    <text x="16" y="103" class="badge-text" fill="#93c5fd">DETERMINISTIC TRIAGE</text>
+  </g>
+
+  <!-- Connector 2 -> 3 -->
+  <path d="M 290 105 L 310 105" class="flow-line" marker-end="url(#arrow-blue)"/>
+
+  <!-- Node 3: Outbox -->
+  <g transform="translate(315, 50)">
+    <rect width="100" height="110" class="node-box"/>
+    <circle cx="25" cy="25" r="10" fill="#312e81"/>
+    <text x="22" y="29" font-family="sans-serif" font-size="11" fill="#a5b4fc" font-weight="bold">3</text>
+    <text x="42" y="28" class="title-text">Dexie Outbox</text>
+    <text x="12" y="55" class="sub-text">• IndexedDB Store</text>
+    <text x="12" y="70" class="sub-text">• Atomic Mutation</text>
+    <text x="12" y="85" class="sub-text">• Client Seq &amp; UUID</text>
+    <rect x="12" y="94" width="76" height="12" rx="3" fill="#1e1b4b"/>
+    <text x="16" y="103" class="badge-text" fill="#c7d2fe">OFFLINE QUEUE</text>
+  </g>
+
+  <!-- Connector 3 -> 4 (Sync Boundary) -->
+  <path d="M 415 105 L 465 105" class="sync-line" marker-end="url(#arrow-green)"/>
+  <rect x="422" y="85" width="36" height="14" rx="3" fill="#064e3b"/>
+  <text x="426" y="95" class="badge-text" fill="#6ee7b7">SYNC</text>
+
+  <!-- Node 4: FastAPI Core -->
+  <g transform="translate(470, 50)">
+    <rect width="120" height="110" class="node-box-accent"/>
+    <circle cx="25" cy="25" r="10" fill="#1e293b"/>
+    <text x="22" y="29" font-family="sans-serif" font-size="11" fill="#38bdf8" font-weight="bold">4</text>
+    <text x="42" y="28" class="title-text">FastAPI Server</text>
+    <text x="12" y="55" class="sub-text">• OCC Version Check</text>
+    <text x="12" y="70" class="sub-text">• RBAC / Facility Tenancy</text>
+    <text x="12" y="85" class="sub-text">• ML Classifier L-BFGS</text>
+    <rect x="12" y="94" width="96" height="12" rx="3" fill="#082f49"/>
+    <text x="16" y="103" class="badge-text" fill="#38bdf8">VALIDATION GATEWAY</text>
+  </g>
+
+  <!-- Connector 4 -> 5 -->
+  <path d="M 590 105 L 605 105" class="flow-line" marker-end="url(#arrow-blue)"/>
+
+  <!-- Node 5: Persistence -->
+  <g transform="translate(610, 50)">
+    <rect width="115" height="110" class="node-box"/>
+    <circle cx="25" cy="25" r="10" fill="#14532d"/>
+    <text x="22" y="29" font-family="sans-serif" font-size="11" fill="#4ade80" font-weight="bold">5</text>
+    <text x="42" y="28" class="title-text">PostgreSQL 16</text>
+    <text x="12" y="55" class="sub-text">• Monotonic Journal</text>
+    <text x="12" y="70" class="sub-text">• Audit Trails</text>
+    <text x="12" y="85" class="sub-text">• SQLite Dev Fixtures</text>
+    <rect x="12" y="94" width="91" height="12" rx="3" fill="#052e16"/>
+    <text x="16" y="103" class="badge-text" fill="#86efac">AUTHORITATIVE STORE</text>
+  </g>
+
+  <!-- Connector 5 -> 6 -->
+  <path d="M 725 105 L 740 105" class="flow-line" marker-end="url(#arrow-blue)"/>
+
+  <!-- Node 6: Doctor Review & Attestation -->
+  <g transform="translate(745, 50)">
+    <rect width="110" height="110" class="node-box-active"/>
+    <circle cx="25" cy="25" r="10" fill="#701a75"/>
+    <text x="22" y="29" font-family="sans-serif" font-size="11" fill="#f472b6" font-weight="bold">6</text>
+    <text x="42" y="28" class="title-text">Doctor Review</text>
+    <text x="12" y="55" class="sub-text">• Triage Override</text>
+    <text x="12" y="70" class="sub-text">• HMAC Attestation</text>
+    <text x="12" y="85" class="sub-text">• IDRC Referral Order</text>
+    <rect x="12" y="94" width="86" height="12" rx="3" fill="#4a044e"/>
+    <text x="16" y="103" class="badge-text" fill="#f472b6">CLINICAL SIGN-OFF</text>
+  </g>
+</svg>
