@@ -1,0 +1,22 @@
+{
+  "name": "rapidcheck-workspace",
+  "version": "2.0.0",
+  "private": true,
+  "description": "RapiDChecK — RuralHealth AI Monorepo Workspace",
+  "scripts": {
+    "dev": "./scripts/development/run_frontend.sh",
+    "dev:frontend": "./scripts/development/run_frontend.sh",
+    "dev:backend": "./scripts/development/run_backend.sh",
+    "dev:all": "./scripts/development/run_all.sh",
+    "typecheck": "npm --prefix Health-AI-main/frontend run typecheck",
+    "build": "npm --prefix Health-AI-main/frontend run build",
+    "test": "npm run test:all",
+    "test:frontend": "npm --prefix Health-AI-main/frontend test",
+    "test:backend": "cd Health-AI-main/backend && ./venv/bin/pytest",
+    "test:i18n": "npm --prefix Health-AI-main/frontend run test:i18n",
+    "test:role-selection": "npm --prefix Health-AI-main/frontend run test:role-selection",
+    "test:golden": "python3 scripts/validation/generate_golden_vectors_report.py && npm --prefix Health-AI-main/frontend run test:golden",
+    "test:all": "npm run typecheck && npm run test:i18n && npm run test:role-selection && npm run test:golden && npm run test:backend && npm run build"
+  },
+  "devDependencies": {}
+}

@@ -34,6 +34,10 @@
 *.crt
 *.cer
 *.der
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
 credentials.json
 credentials*.json
 service-account*.json
@@ -51,9 +55,13 @@ google-credentials*.json
 *.db-shm
 *.sqlite
 *.sqlite-*
+*.sqlite-wal
+*.sqlite-shm
 *.sqlite3
 *.sqlite3-*
 *.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
 ruralhealth.db
 health_ai.db
 
@@ -76,7 +84,9 @@ etl_staging/
 # 3. Python Virtual Environments, Caches & Bytecode
 # ------------------------------------------------------------------------------
 __pycache__/
+__pycache__
 **/__pycache__/
+**/__pycache__
 *.py[cod]
 *$py.class
 *.pyc
@@ -194,3 +204,8 @@ desktop.ini
 !.vscode/extensions.json
 !.vscode/launch.json
 !.vscode/settings.json
+
+# ------------------------------------------------------------------------------
+# 7. RunQL Local Workspace System Files
+# ------------------------------------------------------------------------------
+RunQL/system/

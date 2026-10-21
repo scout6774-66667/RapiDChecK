@@ -30,7 +30,7 @@ from sqlalchemy.pool import StaticPool
 from database import (
     Base, get_db, UserModel, PatientModel, AssessmentModel,
     AppointmentModel, ClinicalReviewModel, AuditEventModel,
-    SyncJournalModel, IdempotencyModel
+    SyncJournalModel, IdempotencyModel, ClinicModel, ClinicMembershipModel
 )
 from main import app
 from auth_service import create_access_token, seed_default_users, hash_password
@@ -75,7 +75,22 @@ def setup_database():
         facility_id="PHC_RAMPUR",
         is_active=1
     )
-    db.add(rampur_doc)
+    rampur_clinic = ClinicModel(
+        id="PHC_RAMPUR",
+        name="Rampur Primary Health Centre",
+        facility_code="PHC_RAMPUR",
+        owner_user_id="usr_dr_rampur",
+        is_active=1
+    )
+    rampur_mem = ClinicMembershipModel(
+        id=str(uuid.uuid4()),
+        clinic_id="PHC_RAMPUR",
+        user_id="usr_dr_rampur",
+        role="DOCTOR",
+        status="ACTIVE",
+        is_active=1
+    )
+    db.add_all([rampur_doc, rampur_clinic, rampur_mem])
     db.commit()
     db.close()
     yield

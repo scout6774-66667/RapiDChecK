@@ -33,12 +33,12 @@
 ### FINDING-003: Cross-Platform Golden Vectors (Fidelity & Equivalence)
 - **Requirement:** Python backend evaluator and TypeScript offline evaluator must produce identical, deterministic results across all approved clinical workflows.
 - **Observed Behavior:** Previously, prototype used divergent rule weights between Python and JavaScript.
-- **Implementation:** Created canonical ruleset artifact [`golden_test_vectors.json`](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/Health-AI-main/clinical-rules/v2.0.0/golden_test_vectors.json) executed across Python and TypeScript.
+- **Implementation:** Created canonical ruleset artifact [`golden_test_vectors.json`](../../Health-AI-main/clinical-rules/v2.0.0/golden_test_vectors.json) executed across Python and TypeScript.
 - **Test:** `backend/test_golden_vectors.py` and `frontend/test_golden_vectors.js`.
 - **Expected:** 10/10 vectors pass identically in both environments.
 - **Actual:** 10/10 vectors passed with zero divergence.
 - **Result:** **PASS**
-- **Evidence:** [`artifacts/golden-vectors/report.json`](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/artifacts/golden-vectors/report.json).
+- **Evidence:** [`artifacts/golden-vectors/report.json`](../../artifacts/golden-vectors/report.json).
 
 ---
 
@@ -62,7 +62,7 @@
 - **Expected:** Duplicate returns `status='DUPLICATE'`; stale update returns `status='CONFLICT'`.
 - **Actual:** All operations verified with 100% idempotency and zero silent overwrites.
 - **Result:** **PASS**
-- **Evidence:** [`artifacts/sync-validation/report.json`](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/artifacts/sync-validation/report.json).
+- **Evidence:** [`artifacts/sync-validation/report.json`](../../artifacts/sync-validation/report.json).
 
 ---
 
@@ -96,7 +96,7 @@
 - **Implementation:** Implemented `generate_offline_validation_report.py` testing TEST-OFF-001 through TEST-OFF-020 and Two-Device concurrent mutation.
 - **Test:** Automated execution in `generate_offline_validation_report.py`.
 - **Result:** **PASS**
-- **Evidence:** [`artifacts/offline-validation/report.json`](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/artifacts/offline-validation/report.json).
+- **Evidence:** [`artifacts/offline-validation/report.json`](../../artifacts/offline-validation/report.json).
 
 ---
 
@@ -107,7 +107,7 @@
 - **Expected:** Startup fails fast if PostgreSQL unavailable; migration script verifies 100% row match and foreign key integrity.
 - **Actual:** Zero row count discrepancy, complete foreign key preservation, atomic rollbacks confirmed.
 - **Result:** **PASS**
-- **Evidence:** [`artifacts/postgres-validation/report.json`](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/artifacts/postgres-validation/report.json) & [`artifacts/migration-validation/report.json`](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/artifacts/migration-validation/report.json).
+- **Evidence:** [`artifacts/postgres-validation/report.json`](../../artifacts/postgres-validation/report.json) & [`artifacts/migration-validation/report.json`](../../artifacts/migration-validation/report.json).
 
 ---
 
@@ -118,5 +118,5 @@
 - **Expected:** All 23 adversarial attack and constraint tests pass (100%).
 - **Actual:** 23/23 tests passed cleanly with zero security bypasses.
 - **Result:** **PASS**
-- **Evidence:** [`artifacts/auth-validation/report.json`](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/artifacts/auth-validation/report.json) & [`artifacts/security-validation/report.json`](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/artifacts/security-validation/report.json).
+- **Evidence:** [`artifacts/auth-validation/report.json`](../../artifacts/auth-validation/report.json) & [`artifacts/security-validation/report.json`](../../artifacts/security-validation/report.json).
 

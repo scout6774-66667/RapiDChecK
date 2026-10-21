@@ -21,7 +21,7 @@ import jwt
 
 from database import (
     Base, get_db, UserModel, PatientModel, AssessmentModel, ClinicalReviewModel,
-    SyncJournalModel, AuditEventModel, IdempotencyModel
+    SyncJournalModel, AuditEventModel, IdempotencyModel, ClinicModel, ClinicMembershipModel
 )
 from auth_service import (
     create_access_token, verify_password, hash_password,
@@ -108,7 +108,53 @@ def setup_test_db():
         facility_id="PHC_NORTH",
         is_active=0
     )
-    db.add_all([admin, doc_a, doc_b, asha, district, disabled_user])
+    clinic_north = ClinicModel(
+        id="PHC_NORTH",
+        name="North Primary Health Centre",
+        facility_code="PHC_NORTH",
+        owner_user_id="doc_a_uuid",
+        is_active=1
+    )
+    clinic_south = ClinicModel(
+        id="PHC_SOUTH",
+        name="South Primary Health Centre",
+        facility_code="PHC_SOUTH",
+        owner_user_id="doc_b_uuid",
+        is_active=1
+    )
+    mem_doc_a = ClinicMembershipModel(
+        id=str(uuid.uuid4()),
+        clinic_id="PHC_NORTH",
+        user_id="doc_a_uuid",
+        role="DOCTOR",
+        status="ACTIVE",
+        is_active=1
+    )
+    mem_doc_b = ClinicMembershipModel(
+        id=str(uuid.uuid4()),
+        clinic_id="PHC_SOUTH",
+        user_id="doc_b_uuid",
+        role="DOCTOR",
+        status="ACTIVE",
+        is_active=1
+    )
+    mem_asha = ClinicMembershipModel(
+        id=str(uuid.uuid4()),
+        clinic_id="PHC_NORTH",
+        user_id="asha_uuid",
+        role="HEALTH_WORKER",
+        status="ACTIVE",
+        is_active=1
+    )
+    mem_district = ClinicMembershipModel(
+        id=str(uuid.uuid4()),
+        clinic_id="PHC_NORTH",
+        user_id="district_uuid",
+        role="DOCTOR",
+        status="ACTIVE",
+        is_active=1
+    )
+    db.add_all([admin, doc_a, doc_b, asha, district, disabled_user, clinic_north, clinic_south, mem_doc_a, mem_doc_b, mem_asha, mem_district])
     db.commit()
     db.close()
     

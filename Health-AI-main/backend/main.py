@@ -87,14 +87,16 @@ from health_resource_routes import router as health_resource_router
 from snowflake_client import get_snowflake_health_summary, verify_snowflake_connection
 from snowflake_patient_pipeline import sync_governed_patient_analytics, get_governance_policy
 
-def clinic_scope_filter(model_column, clinic_id: str):
+def clinic_scope_filter(model_column, clinic_id: str, facility_column=None):
     """
     Returns SQL filter ensuring strict clinic boundary isolation:
-    - Dedicated clinic workspaces match strictly model_column == clinic_id.
+    - Dedicated clinic workspaces match model_column == clinic_id, or if model_column is NULL (legacy), match facility_column == clinic_id.
     - Legacy clinic ('clinic-sonpur-legacy') also includes unbackfilled historical records (clinic_id IS NULL).
     """
     if clinic_id == "clinic-sonpur-legacy":
         return or_(model_column == clinic_id, model_column.is_(None))
+    if facility_column is not None:
+        return or_(model_column == clinic_id, and_(model_column.is_(None), facility_column == clinic_id))
     return model_column == clinic_id
 
 app = FastAPI(
@@ -332,7 +334,7 @@ def get_patients(
         query = query.filter(PatientModel.is_synthetic == 0)
     # Clinic boundary: restrict exclusively to the caller's active clinic workspace
     if current_user.role != "SYSTEM_ADMIN" or current_clinic:
-        query = query.filter(clinic_scope_filter(PatientModel.clinic_id, current_clinic.id))
+        query = query.filter(clinic_scope_filter(PatientModel.clinic_id, current_clinic.id, PatientModel.facility_id))
     return query.order_by(PatientModel.created_at.desc()).all()
 
 
@@ -348,10 +350,16 @@ def get_patient_by_id(
         raise HTTPException(status_code=404, detail="Patient not found")
 
     if current_user.role != "SYSTEM_ADMIN":
-        if existing.clinic_id != current_clinic.id and not (existing.clinic_id is None and current_clinic.id == "clinic-sonpur-legacy"):
+        if existing.clinic_id and existing.clinic_id != current_clinic.id and not (existing.clinic_id is None and current_clinic.id == "clinic-sonpur-legacy"):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Patient not found"
+            )
+        target_fac = existing.clinic_id or existing.facility_id
+        if target_fac and target_fac != current_clinic.id and target_fac != getattr(current_user, "facility_id", None):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied: Patient belongs to facility {target_fac}."
             )
     return existing
 
@@ -370,10 +378,16 @@ def update_patient(
         raise HTTPException(status_code=404, detail="Patient not found")
 
     if current_user.role != "SYSTEM_ADMIN":
-        if existing.clinic_id and existing.clinic_id != current_clinic.id:
+        if existing.clinic_id and existing.clinic_id != current_clinic.id and not (existing.clinic_id is None and current_clinic.id == "clinic-sonpur-legacy"):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Patient not found"
+            )
+        target_fac = existing.clinic_id or existing.facility_id
+        if target_fac and target_fac != current_clinic.id and target_fac != getattr(current_user, "facility_id", None):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied: Patient belongs to facility {target_fac}."
             )
 
     existing.name    = patient.name
@@ -427,10 +441,16 @@ def delete_patient(
         raise HTTPException(status_code=404, detail="Patient not found")
 
     if current_user.role != "SYSTEM_ADMIN":
-        if existing.clinic_id and existing.clinic_id != current_clinic.id:
+        if existing.clinic_id and existing.clinic_id != current_clinic.id and not (existing.clinic_id is None and current_clinic.id == "clinic-sonpur-legacy"):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Patient not found"
+            )
+        target_fac = existing.clinic_id or existing.facility_id
+        if target_fac and target_fac != current_clinic.id and target_fac != getattr(current_user, "facility_id", None):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied: Patient belongs to facility {target_fac}."
             )
 
     now_iso = datetime.utcnow().isoformat()
@@ -470,7 +490,11 @@ def delete_patient(
     if existing.phone:
         linked_appts = db.query(AppointmentModel).filter(
             AppointmentModel.patient_phone == existing.phone,
-            AppointmentModel.clinic_id == current_clinic.id,
+            or_(
+                AppointmentModel.clinic_id == current_clinic.id,
+                AppointmentModel.facility_id == current_clinic.id,
+                AppointmentModel.facility_id == getattr(current_user, "facility_id", None)
+            ),
             AppointmentModel.is_deleted == 0
         ).all()
         for appt in linked_appts:
@@ -535,7 +559,8 @@ def create_assessment(
     # 1. Fetch or verify patient & enforce clinic tenancy
     patient = db.query(PatientModel).filter(PatientModel.id == assessment.patient_id).first()
     if patient and current_user.role != "SYSTEM_ADMIN":
-        if patient.clinic_id and patient.clinic_id != current_clinic.id:
+        target_fac = patient.clinic_id or patient.facility_id
+        if target_fac and target_fac != current_clinic.id and target_fac != getattr(current_user, "facility_id", None):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Access denied: cannot perform assessment on patient from foreign clinic workspace."
@@ -1652,6 +1677,13 @@ def get_dashboard_stats(
         query = query.filter(AssessmentModel.clinic_id == current_clinic.id)
 
     if facility_id and facility_id != "ALL":
+        if current_user.role not in ("SYSTEM_ADMIN", "DISTRICT_OFFICER"):
+            target_fac = current_clinic.id if current_clinic else current_user.facility_id
+            if facility_id != target_fac and facility_id != getattr(current_user, "facility_id", None):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Access denied: cannot query stats for foreign facility '{facility_id}'."
+                )
         query = query.filter(AssessmentModel.facility_id == facility_id)
 
     # Date range filtering
@@ -3058,7 +3090,7 @@ def register_user(
             # Clinic Owner / Doctor self-registration flow
             target_role = "CLINIC_OWNER"
         else:
-            if requested_role in ("CLINIC_OWNER", "DOCTOR", "HEALTH_WORKER", "ASHA_WORKER"):
+            if requested_role in ("CLINIC_OWNER", "DOCTOR", "HEALTH_WORKER", "ASHA_WORKER", "PATIENT"):
                 target_role = requested_role
             else:
                 if requested_role in ("PHC_DOCTOR", "SYSTEM_ADMIN", "DISTRICT_OFFICER"):

@@ -46,33 +46,33 @@ The application core is functionally verified and architecturally robust. All co
 ## 3. File-Level Changes & Technical Rationale
 
 ### 3.1 Infrastructure & Security
-- [docker-compose.yml](file:///Users/sohamghosh/RapiDChecK/docker-compose.yml): Removed `ports: - "5432:5432"` from `postgres` service to prevent exposing PostgreSQL to external networks. Replaced hardcoded credentials with `${POSTGRES_PASSWORD:?err}`, `${JWT_SECRET_KEY:?err}`, and `${REVIEW_SECRET_KEY:?err}` to ensure fail-closed execution if required production secrets are omitted.
-- [Health-AI-main/backend/Dockerfile](file:///Users/sohamghosh/RapiDChecK/Health-AI-main/backend/Dockerfile): Introduced non-root system user `appuser` (UID/GID 1001), restricted `/app` directory ownership, and configured HTTP health checks against `/api/health`.
-- [.dockerignore](file:///Users/sohamghosh/RapiDChecK/.dockerignore), [Health-AI-main/backend/.dockerignore](file:///Users/sohamghosh/RapiDChecK/Health-AI-main/backend/.dockerignore), [Health-AI-main/frontend/.dockerignore](file:///Users/sohamghosh/RapiDChecK/Health-AI-main/frontend/.dockerignore): Excluded database files (`ruralhealth.db`, `*.sqlite*`), virtual environments (`venv/`), dependencies (`node_modules/`), build outputs (`dist/`), and local secrets (`.env`) from Docker build contexts.
-- [.env.example](file:///Users/sohamghosh/RapiDChecK/.env.example): Added explicit documentation for `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` environment variables.
+- [docker-compose.yml](../docker-compose.yml): Removed `ports: - "5432:5432"` from `postgres` service to prevent exposing PostgreSQL to external networks. Replaced hardcoded credentials with `${POSTGRES_PASSWORD:?err}`, `${JWT_SECRET_KEY:?err}`, and `${REVIEW_SECRET_KEY:?err}` to ensure fail-closed execution if required production secrets are omitted.
+- [Health-AI-main/backend/Dockerfile](../Health-AI-main/backend/Dockerfile): Introduced non-root system user `appuser` (UID/GID 1001), restricted `/app` directory ownership, and configured HTTP health checks against `/api/health`.
+- [.dockerignore](../.dockerignore), [Health-AI-main/backend/.dockerignore](../Health-AI-main/backend/.dockerignore), [Health-AI-main/frontend/.dockerignore](../Health-AI-main/frontend/.dockerignore): Excluded database files (`ruralhealth.db`, `*.sqlite*`), virtual environments (`venv/`), dependencies (`node_modules/`), build outputs (`dist/`), and local secrets (`.env`) from Docker build contexts.
+- [.env.example](../.env.example): Added explicit documentation for `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` environment variables.
 
 ### 3.2 Clinical Data Governance & Dashboard Correctness
-- [RuralHealthDashboard.tsx](file:///Users/sohamghosh/RapiDChecK/Health-AI-main/frontend/src/components/dashboard/RuralHealthDashboard.tsx):
+- [RuralHealthDashboard.tsx](../Health-AI-main/frontend/src/components/dashboard/RuralHealthDashboard.tsx):
   - **KPI Separation:** `patientsScreened` now measures completed assessment encounters (`liveAssessments.length`), while subtext reports unique screened patients, repeat screenings, and registered patients.
   - **Deterministic Tie-Breaking:** Implemented `latestAssessmentByPatient` Map sorting assessments by `created_at` timestamp descending with deterministic assessment `id` string tie-breaking.
   - **No False Lows:** Unassessed patients receive `'UNASSESSED'`; incomplete assessments receive `'NEEDS_REVIEW'`. Neither is ever coerced to `'LOW'`.
   - **Reconciled Risk Distribution:** Categories (`High`, `Moderate`, `Low`, `Needs Review`, `Unassessed`) sum exactly to total registered patients (`livePatients.length`).
   - **Stable Date Keys:** Trend aggregation groups by ISO `YYYY-MM-DD` and formats with calendar years. Missing timestamps are safely bypassed without polluting today's counts.
   - **Multi-State Sync Bar:** Displays backend connectivity, queued outbox operations count, failed operations count, concurrency conflict count, and localized last sync timestamp.
-- [WelcomeHeroBanner.tsx](file:///Users/sohamghosh/RapiDChecK/Health-AI-main/frontend/src/components/dashboard/WelcomeHeroBanner.tsx): Removed hardcoded strings (`Sunita Devi`, `14 Nov 2024`). Dynamically generates dates from the system clock using `Intl.DateTimeFormat` with locale support (`en-US`, `hi-IN`, `bn-IN`) and time-of-day greetings. Displays explicit fallback states when profile information is unavailable.
-- [DashboardSidebar.tsx](file:///Users/sohamghosh/RapiDChecK/Health-AI-main/frontend/src/components/dashboard/DashboardSidebar.tsx): Replaced `appointmentCount = 3` default parameter with `appointmentCount = 0` to prevent fictitious appointment badges.
-- [types.ts](file:///Users/sohamghosh/RapiDChecK/Health-AI-main/frontend/src/components/dashboard/types.ts): Added `'UNASSESSED'` to `PatientTableRow.riskLevel` union.
-- [RecentPatientsTable.tsx](file:///Users/sohamghosh/RapiDChecK/Health-AI-main/frontend/src/components/dashboard/RecentPatientsTable.tsx): Added distinct styling badges for `Unassessed` (slate) and `Needs Review` (amber).
-- [PatientDetailsModal.tsx](file:///Users/sohamghosh/RapiDChecK/Health-AI-main/frontend/src/components/dashboard/PatientDetailsModal.tsx): Fixed modal risk styling to render `UNASSESSED` (slate) and `NEEDS REVIEW` (amber) distinctly without falling back to green.
+- [WelcomeHeroBanner.tsx](../Health-AI-main/frontend/src/components/dashboard/WelcomeHeroBanner.tsx): Removed hardcoded strings (`Sunita Devi`, `14 Nov 2024`). Dynamically generates dates from the system clock using `Intl.DateTimeFormat` with locale support (`en-US`, `hi-IN`, `bn-IN`) and time-of-day greetings. Displays explicit fallback states when profile information is unavailable.
+- [DashboardSidebar.tsx](../Health-AI-main/frontend/src/components/dashboard/DashboardSidebar.tsx): Replaced `appointmentCount = 3` default parameter with `appointmentCount = 0` to prevent fictitious appointment badges.
+- [types.ts](../Health-AI-main/frontend/src/components/dashboard/types.ts): Added `'UNASSESSED'` to `PatientTableRow.riskLevel` union.
+- [RecentPatientsTable.tsx](../Health-AI-main/frontend/src/components/dashboard/RecentPatientsTable.tsx): Added distinct styling badges for `Unassessed` (slate) and `Needs Review` (amber).
+- [PatientDetailsModal.tsx](../Health-AI-main/frontend/src/components/dashboard/PatientDetailsModal.tsx): Fixed modal risk styling to render `UNASSESSED` (slate) and `NEEDS REVIEW` (amber) distinctly without falling back to green.
 
 ### 3.3 Population Health Analytics Integration
-- [PopulationHealthPanel.tsx](file:///Users/sohamghosh/RapiDChecK/Health-AI-main/frontend/src/components/dashboard/population/PopulationHealthPanel.tsx):
+- [PopulationHealthPanel.tsx](../Health-AI-main/frontend/src/components/dashboard/population/PopulationHealthPanel.tsx):
   - Explicitly handles HTTP 401, 403, 404, and 500 status codes with descriptive, user-friendly error messages.
   - Tracks `isStale` state to display a persistent warning banner when cached data is being displayed after a failed fetch.
   - Provides prominent "Retry" controls on both stale banners and initial load failure cards.
   - Validates API payloads before passing to child presentation components.
-- [PopulationTrendChart.tsx](file:///Users/sohamghosh/RapiDChecK/Health-AI-main/frontend/src/components/dashboard/population/PopulationTrendChart.tsx): Dynamically resolves NFHS-5 benchmark values from `nfhsBaseline` props before falling back to metadata. Correctly labels discrete survey snapshots and prevents forward-filling across annual HMIS time series.
-- [backend/ml/population_health.py](file:///Users/sohamghosh/RapiDChecK/Health-AI-main/backend/ml/population_health.py): Updated `get_metadata()` in `SnowflakeSchemaProvider` to return `is_cloud_snowflake_connection: False` and explicitly document the dimensional star/snowflake relational schema pattern.
+- [PopulationTrendChart.tsx](../Health-AI-main/frontend/src/components/dashboard/population/PopulationTrendChart.tsx): Dynamically resolves NFHS-5 benchmark values from `nfhsBaseline` props before falling back to metadata. Correctly labels discrete survey snapshots and prevents forward-filling across annual HMIS time series.
+- [backend/ml/population_health.py](../Health-AI-main/backend/ml/population_health.py): Updated `get_metadata()` in `SnowflakeSchemaProvider` to return `is_cloud_snowflake_connection: False` and explicitly document the dimensional star/snowflake relational schema pattern.
 
 ---
 

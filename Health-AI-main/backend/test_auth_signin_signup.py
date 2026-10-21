@@ -268,3 +268,28 @@ def test_admin_can_register_doctor_with_token(client):
     data = res.json()
     assert data["role"] == "PHC_DOCTOR"
     assert data["license_number"] == "MCI-2022-77112"
+
+
+def test_patient_self_registration_and_login(client):
+    """Verify that a general user can self-register with role PATIENT and log in successfully."""
+    reg_res = client.post("/api/v2/auth/register", json={
+        "full_name": "Sunil Das",
+        "email": "sunil.das@citizen.in",
+        "password": "CitizenPassword123!",
+        "role": "PATIENT"
+    })
+    assert reg_res.status_code == 200
+    data = reg_res.json()
+    assert data["role"] == "PATIENT"
+    assert data["full_name"] == "Sunil Das"
+    assert data["email"] == "sunil.das@citizen.in"
+
+    # Now verify login works
+    login_res = client.post("/api/v2/auth/login", json={
+        "username": "sunil.das@citizen.in",
+        "password": "CitizenPassword123!"
+    })
+    assert login_res.status_code == 200
+    login_data = login_res.json()
+    assert login_data["user"]["role"] == "PATIENT"
+    assert "access_token" in login_data

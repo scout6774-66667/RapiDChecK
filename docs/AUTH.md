@@ -8,7 +8,7 @@
 
 ## 1. Authentication Architecture & Token Lifecycle
 
-Authentication is implemented in [`backend/auth_service.py`](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/Health-AI-main/backend/auth_service.py) with zero client-side privilege escalation trust.
+Authentication is implemented in [`backend/auth_service.py`](../Health-AI-main/backend/auth_service.py) with zero client-side privilege escalation trust.
 
 ```
 Frontline Worker / Doctor               FastAPI Auth Endpoint                PostgreSQL DB
@@ -114,7 +114,7 @@ $$\text{Payload} = \text{review\_id} \,\|\, \text{assessment\_id} \,\|\, \text{r
 
 ## 5. Adversarial Security Verification Suite
 
-The comprehensive test suite [`backend/test_adversarial_security.py`](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/Health-AI-main/backend/test_adversarial_security.py) executes 23 live adversarial attack vectors:
+The comprehensive test suite [`backend/test_adversarial_security.py`](../Health-AI-main/backend/test_adversarial_security.py) executes 23 live adversarial attack vectors:
 
 ### 5.1 Authentication Suite (`AUTH-001` – `AUTH-009`)
 - `AUTH-001`: Valid login issues JWT with correct role and facility claims (**PASS**).

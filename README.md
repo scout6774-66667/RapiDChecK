@@ -20,10 +20,16 @@
 
 ## Documentation Quick Links
 
-- [System Architecture & Engineering Specification](docs/PROJECT.md)
-- [Database Schema & Migration Guide](docs/DATABASE.md)
+- [Documentation Hub](docs/README.md)
+- [System Architecture & Engineering Specification](docs/ARCHITECTURE.md)
+- [Clinical Decision Support Governance & Safety Invariants](docs/CLINICAL_GOVERNANCE.md)
+- [REST API Reference & Endpoints](docs/API.md)
 - [Authentication, RBAC & Cryptographic Attestation](docs/AUTH.md)
+- [Database Schema & Migration Guide](docs/DATABASE.md)
 - [Feature Capabilities & Clinical Ruleset Engine](docs/FEATURE.md)
+- [Deployment, Docker Compose & Operations Guide](docs/DEPLOYMENT.md)
+- [Security Policy & Vulnerability Reporting](SECURITY.md)
+- [Local Development & Engineering Guide](docs/DEVELOPMENT.md)
 - [Validation Records & Test Traceability Matrix](docs/validation/requirements-test-matrix.md)
 - [Snowflake Population Health Pipeline](docs/SNOWFLAKE_INTEGRATION.md)
 
@@ -81,6 +87,7 @@ Frontline community health workers—principally Accredited Social Health Activi
 
 | Persona | Operational Context | Primary Responsibilities & Permitted Actions |
 | :--- | :--- | :--- |
+| **Patient / General User** | Remote households, community, personal devices | Checks symptoms with interactive red-flag detection, locates nearby public health facilities, schedules teleconsultations, accesses authorized personal & family health records. |
 | **ASHA / ANM Worker** | Village habitations, doorstep screenings, Sub-Centres | Registers patients, collects vital signs and symptom histories, conducts offline screenings, initiates urgent referral requests. *Strictly restricted from clinical overrides.* |
 | **PHC Medical Officer** | Primary Health Centre outpatient clinics | Reviews referred screenings in the triage queue, conducts clinical examinations, attests decisions with cryptographic signatures, adjusts triage priorities with documented justifications, manages referral transitions. |
 | **District Health Officer / CMO** | District Headquarters, Chief Medical Office | Reviews aggregate epidemiological indicators, monitors facility screening volumes, conducts audit trail inspections, allocates clinical resources across blocks. |
@@ -332,64 +339,48 @@ To support frontline workers operating in linguistically diverse districts:
 
 ```
 RapiDChecK/
-├── docker-compose.yml              # Production multi-container orchestration specification
-├── .dockerignore                   # Docker build context exclusion rules
-├── .env.example                    # Root environment configuration template
-├── .gitignore                      # Git repository exclusion rules
 ├── README.md                       # Canonical repository architectural documentation
-├── docs/                           # Technical documentation and validation repository
-│   ├── PROJECT.md                  # Master architecture and engineering specifications
+├── LICENSE                         # MIT License with clinical decision support disclaimer
+├── CONTRIBUTING.md                 # Contribution guidelines, code standards & clinical safety
+├── SECURITY.md                     # Security policy, vulnerability disclosure & threat model
+├── .editorconfig                   # Cross-IDE code style and indentation definitions
+├── .gitattributes                  # Line ending normalization and binary file tracking
+├── .gitignore                      # Consolidated Git repository exclusion rules
+├── .env.example                    # Root environment configuration template
+├── package.json                    # Workspace monorepo command orchestration scripts
+├── docker-compose.yml              # Production multi-container orchestration specification
+├── .github/                        # Continuous Integration & Automation
+│   └── workflows/ci.yml            # Automated CI pipeline (lint, typecheck, i18n, pytest)
+├── docs/                           # Technical documentation and architecture repository
+│   ├── README.md                   # Documentation index and sitemap
+│   ├── ARCHITECTURE.md             # System architecture blueprint & Mermaid diagrams
+│   ├── CLINICAL_GOVERNANCE.md      # Clinical safety invariants, missing vitals gating & attestation
+│   ├── API.md                      # REST API endpoint reference and RBAC permissions
+│   ├── AUTH.md                     # Authentication, PBKDF2 hashing, and JWT specifications
 │   ├── DATABASE.md                 # Relational schema specification and migration guides
-│   ├── AUTH.md                     # Authentication, RBAC, and attestation standards
 │   ├── FEATURE.md                  # Feature specifications and clinical ruleset logic
+│   ├── DEPLOYMENT.md               # Production Docker deployment and operations guide
+│   ├── SECURITY.md                 # In-depth security architecture and adversarial mitigations
+│   ├── DEVELOPMENT.md              # Local developer guide, port allocation & troubleshooting
+│   ├── PROJECT.md                  # Comprehensive engineering overview and specifications
 │   ├── SNOWFLAKE_INTEGRATION.md    # Snowflake analytics connection architecture
+│   ├── diagrams/                   # Mermaid architecture & dataflow diagrams
 │   ├── assets/                     # Architecture diagrams and visual documentation assets
-│   │   └── workflow_pipeline.svg   # Self-contained animated SVG workflow pipeline
 │   └── validation/                 # Automated test traceability and validation records
 │       ├── VALIDATION_RECORD.md    # Production validation baseline and sign-offs
 │       └── requirements-test-matrix.md # Requirements-to-test mapping matrix
-├── Health-AI-main/                 # Primary application implementation root
-│   ├── backend/                    # FastAPI application server
-│   │   ├── Dockerfile              # Multi-stage production container definition
-│   │   ├── requirements.txt        # Python production dependencies manifest
-│   │   ├── main.py                 # FastAPI application routes, endpoints, and middleware
-│   │   ├── database.py             # SQLAlchemy models, connection pool, SQLite migrations
-│   │   ├── schemas.py              # Pydantic request, response, and validation schemas
-│   │   ├── auth_service.py         # PBKDF2 hashing, JWT signing, RBAC permissions
-│   │   ├── sync_service.py         # Sync engine, outbox processing, OCC conflict logic
-│   │   ├── risk_scoring.py         # Deterministic triage rules, missing-vital safety gates
-│   │   ├── review_service.py       # Clinical review queue and HMAC attestation engine
-│   │   ├── hospital_recommender.py # Facility geolocation and routing utilities
-│   │   ├── health_resources_service.py # Knowledge repository and clinical guideline service
-│   │   ├── snowflake_client.py     # Snowflake connection manager and query sanitization
-│   │   ├── ml/                     # Machine learning classification and training pipeline
-│   │   │   ├── predictor.py        # Model inference engine and feature contribution logic
-│   │   │   ├── train_model.py      # Logistic regression model training script
-│   │   │   ├── curate_dataset.py   # Dataset cleaning, deduplication, and feature mapping
-│   │   │   ├── training_report.md  # Model evaluation metrics and class distribution report
-│   │   │   └── test_predictor.py   # Model inference and prediction unit tests
-│   │   └── test_*.py               # Pytest automated test suites (259 collected tests)
-│   └── frontend/                   # React + TypeScript Progressive Web App
-│       ├── Dockerfile              # Production multi-stage NGINX container definition
-│       ├── nginx.conf              # Production reverse proxy and SPA routing config
-│       ├── package.json            # Node.js dependencies and test execution scripts
-│       ├── vite.config.ts          # Vite build configuration, dev proxy, Workbox PWA setup
-│       ├── tsconfig.json           # TypeScript compilation configuration
-│       └── src/                    # Client application source code
-│           ├── App.tsx             # Root application component, routing, tab navigation
-│           ├── main.tsx            # Application entry point and service worker registration
-│           ├── db/
-│           │   └── offlineDb.ts    # Dexie.js v7 IndexedDB schemas, atomic transaction helpers
-│           ├── auth/
-│           │   └── AuthContext.tsx # Authentication provider, role state, permission checks
-│           ├── sync/
-│           │   └── SyncManager.ts  # Client sync orchestrator, network monitor, push/pull loops
-│           └── components/         # Modular user interface components
-│               ├── dashboard/      # PHC Doctor review queue and triage dashboards
-│               ├── referrals/      # Operational IDRC Referral ledger and transfer modal
-│               ├── analysis/       # Population health analytics and epidemiological metrics
-│               ├── maps/           # Leaflet and Google Maps nearby facility locator
-│               └── ai/             # Assistive AI chat drawer and PII scrubbing wrapper
+├── scripts/                        # Repository maintenance and developer scripts
+│   ├── development/                # Local runtime scripts (run_backend.sh, run_frontend.sh, run_all.sh)
+│   ├── validation/                 # Automated validation report generators
+│   └── maintenance/                # Database migrations & Snowflake SQL setup
+├── artifacts/                      # Validated execution evidence (auth, clinical, sync, postgres)
+├── fixtures/clinical/golden/       # Canonical clinical golden test vectors (v2.0.0)
+├── RunQL/                          # Local RunQL query index and SQL workflows
+└── Health-AI-main/                 # Primary application implementation root
+    ├── backend/                    # FastAPI application server, ML engine, database models
+    ├── frontend/                   # React 19 + TypeScript + Vite 8 Progressive Web App
+    ├── clinical-rules/             # Versioned clinical decision support ruleset (v2.0.0)
+    └── kolkata_model_output/       # ML training datasets and feature dictionaries
 ```
 
 ---
@@ -445,7 +436,25 @@ docker compose down
 
 ## 7. Local Development Setup
 
-For local feature development, the backend and frontend can be executed directly on the host operating system.
+### 7.0 Quick Start from Repository Root (Recommended)
+
+The repository root provides unified workspace scripts to run and test both services effortlessly:
+
+```bash
+# Start both backend and frontend concurrently
+npm run dev:all
+
+# Or start services individually:
+npm run dev:backend   # Launches FastAPI on http://127.0.0.1:8000
+npm run dev:frontend  # Launches Vite PWA on http://localhost:5173
+
+# Run all test suites across frontend and backend:
+npm run test:all
+```
+
+---
+
+For local feature development, the backend and frontend can also be executed individually directly on the host operating system.
 
 ### 7.1 Backend Service (FastAPI)
 

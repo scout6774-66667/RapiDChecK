@@ -132,7 +132,6 @@ ROLE_PERMISSIONS: dict[str, Set[str]] = {
         "referrals:read",
         "appointments:create",
         "appointments:read",
-        "analytics:view",
         "resources:read",
         "sync:push",
         "sync:pull",
@@ -157,7 +156,6 @@ ROLE_PERMISSIONS: dict[str, Set[str]] = {
         "referrals:read",
         "appointments:create",
         "appointments:read",
-        "analytics:view",
         "resources:read",
         "sync:push",
         "sync:pull",
@@ -199,6 +197,14 @@ ROLE_PERMISSIONS: dict[str, Set[str]] = {
         "resources:read",
         "resources:write",
         "sync:pull",
+    },
+    "PATIENT": {
+        "patients:read",
+        "assessments:create",
+        "assessments:read",
+        "appointments:create",
+        "appointments:read",
+        "resources:read",
     },
     "SYSTEM_ADMIN": {
         "clinic:manage",
@@ -536,6 +542,17 @@ def seed_default_users(db: Session, env: Optional[str] = None) -> bool:
             "facility_id": "CENTRAL_OPS",
             "assigned_villages": [],
         },
+        {
+            "id": "usr_patient_ramesh",
+            "username": "ramesh.kumar",
+            "email": "ramesh.patient@ruralhealth.org",
+            "password": "patient123",
+            "full_name": "Ramesh Kumar (Patient)",
+            "role": "PATIENT",
+            "license_number": None,
+            "facility_id": "PHC_SONPUR",
+            "assigned_villages": ["Sonpur"],
+        },
     ]
 
     for u in default_users:
@@ -578,7 +595,7 @@ def seed_default_users(db: Session, env: Optional[str] = None) -> bool:
             ClinicMembershipModel.user_id == u["id"]
         ).first()
         if not existing_mem:
-            mem_role = "CLINIC_OWNER" if u["role"] in ("PHC_DOCTOR", "SYSTEM_ADMIN") else "HEALTH_WORKER"
+            mem_role = "CLINIC_OWNER" if u["role"] in ("PHC_DOCTOR", "SYSTEM_ADMIN") else ("PATIENT" if u["role"] == "PATIENT" else "HEALTH_WORKER")
             new_mem = ClinicMembershipModel(
                 id=f"clm_legacy_{u['id']}",
                 clinic_id="clinic-sonpur-legacy",

@@ -13,10 +13,13 @@ client = TestClient(app)
 
 @pytest.fixture(scope="module", autouse=True)
 def setup_database():
+    app.dependency_overrides.clear()
     init_db()
     db = SessionLocal()
     seed_default_health_resources(db)
     db.close()
+    yield
+    app.dependency_overrides.clear()
 
 
 def test_001_get_categories_list():

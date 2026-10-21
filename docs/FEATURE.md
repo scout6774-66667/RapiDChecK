@@ -54,7 +54,7 @@ await db.transaction('rw', [db.patients, db.sync_outbox], async () => {
 This guarantees that an entity record can never exist locally without its corresponding queued outbox operation.
 
 ### 1.2 20 Offline Failure-Injection Scenarios (`TEST-OFF-001` – `TEST-OFF-020`)
-The outbox and sync engine are verified against 20 real-world failure scenarios in [`artifacts/offline-validation/report.json`](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/artifacts/offline-validation/report.json):
+The outbox and sync engine are verified against 20 real-world failure scenarios in [`artifacts/offline-validation/report.json`](../artifacts/offline-validation/report.json):
 1. `TEST-OFF-001`: Create patient and assessment offline (**PASS**).
 2. `TEST-OFF-002`: Edit patient offline with incremented base version (**PASS**).
 3. `TEST-OFF-003`: Delete patient offline creating durable tombstone (**PASS**).

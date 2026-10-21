@@ -14,6 +14,9 @@ import { StaffManagementPage } from './components/staff/StaffManagementPage';
 import { RuralHealthHomepage } from './components/home/RuralHealthHomepage';
 import { SignInPage } from './components/auth/SignInPage';
 import { SignUpPage } from './components/auth/SignUpPage';
+import { RoleSelectionPage } from './components/auth/RoleSelectionPage';
+import { PatientRegistrationPage } from './components/auth/PatientRegistrationPage';
+import { PatientDashboard } from './components/patient/PatientDashboard';
 import { useAuth } from './auth/AuthContext';
 import { useLanguage } from './i18n';
 import { db } from './db/offlineDb';
@@ -23,7 +26,14 @@ import { ArrowLeft, Globe, ChevronDown } from 'lucide-react';
 import { apiFetch } from './api/apiConfig';
 import { SyncManager } from './sync/SyncManager';
 
-export type AppView = 'home' | 'signin' | 'signup' | 'app';
+export type AppView =
+  | 'home'
+  | 'signin'
+  | 'signup'
+  | 'role_selection'
+  | 'patient_register'
+  | 'patient_dashboard'
+  | 'app';
 
 const VALID_TABS: DashboardNavTab[] = [
   'dashboard',
@@ -47,40 +57,91 @@ function parseLocation(): { view: AppView; tab?: DashboardNavTab } {
     return { view: 'signin' };
   }
 
-  // 2. Check for Get Started / Registration
+  // 2. Check for Get Started / Role Selection
+  if (
+    path === '/get-started' ||
+    path === '/role-selection' ||
+    path === '/select-role' ||
+    hash === 'get-started' ||
+    hash === 'role-selection' ||
+    hash === 'select-role'
+  ) {
+    return { view: 'role_selection' };
+  }
+
+  // 3. Check for Professional Registration (Existing SignUpPage)
   if (
     path === '/signup' ||
     path === '/register' ||
-    path === '/get-started' ||
+    path === '/professional-signup' ||
     hash === 'signup' ||
     hash === 'register' ||
-    hash === 'get-started'
+    hash === 'professional-signup'
   ) {
     return { view: 'signup' };
   }
 
-  // 3. Check for Dashboard tabs
+  // 4. Check for Patient Registration
+  if (
+    path === '/patient-register' ||
+    path === '/patient-signup' ||
+    path === '/patient-onboarding' ||
+    hash === 'patient-register' ||
+    hash === 'patient-signup' ||
+    hash === 'patient-onboarding'
+  ) {
+    return { view: 'patient_register' };
+  }
+
+  // 5. Check for Patient Dashboard
+  if (
+    path === '/patient-dashboard' ||
+    path === '/patient' ||
+    path === '/my-health' ||
+    hash === 'patient-dashboard' ||
+    hash === 'patient' ||
+    hash === 'my-health'
+  ) {
+    return { view: 'patient_dashboard' };
+  }
+
+  // 6. Check for Dashboard tabs
   const tabCandidate = (path.replace(/^\//, '') || hash) as DashboardNavTab;
   if (VALID_TABS.includes(tabCandidate)) {
     return { view: 'app', tab: tabCandidate };
   }
 
-  // 4. Default to Homepage
+  // 7. Default to Homepage
   return { view: 'home' };
 }
 
 export function App() {
-  const { isAuthenticated, logout } = useAuth();
+  const { isAuthenticated, user, logout } = useAuth();
   const { language: lang, setLanguage: setLang, strings } = useLanguage();
   const [subscreenLangOpen, setSubscreenLangOpen] = useState(false);
 
   const [currentView, setCurrentView] = useState<AppView>(() => {
     const loc = parseLocation();
-    if (loc.view === 'signin' || loc.view === 'signup') return loc.view;
+    if (
+      loc.view === 'signin' ||
+      loc.view === 'signup' ||
+      loc.view === 'role_selection' ||
+      loc.view === 'patient_register' ||
+      loc.view === 'patient_dashboard'
+    ) {
+      return loc.view;
+    }
     if (loc.view === 'app') {
       const savedUser = localStorage.getItem('rapidcheck_user');
       const savedToken = localStorage.getItem('rapidcheck_token');
-      return savedUser && savedToken ? 'app' : 'signin';
+      if (savedUser && savedToken) {
+        try {
+          const parsed = JSON.parse(savedUser);
+          if (parsed?.role === 'PATIENT') return 'patient_dashboard';
+        } catch { /* ignore */ }
+        return 'app';
+      }
+      return 'signin';
     }
     return 'home';
   });
@@ -146,21 +207,71 @@ export function App() {
   useEffect(() => {
     const handleRouteSync = () => {
       const loc = parseLocation();
-      if (loc.view === 'signin' || loc.view === 'signup') {
+      const savedUser = localStorage.getItem('rapidcheck_user');
+      let currentRole = user?.role;
+      if (savedUser) {
+        try {
+          currentRole = JSON.parse(savedUser)?.role;
+        } catch { /* ignore */ }
+      }
+
+      if (loc.view === 'signin') {
         if (isAuthenticated) {
+          if (currentRole === 'PATIENT') {
+            setCurrentView('patient_dashboard');
+            if (window.location.pathname !== '/patient-dashboard' && !window.location.hash) {
+              window.history.replaceState({}, '', '/patient-dashboard');
+            }
+          } else {
+            setCurrentView('app');
+            setCurrentTab('dashboard');
+            if (window.location.pathname !== '/dashboard' && !window.location.hash) {
+              window.history.replaceState({}, '', '/dashboard');
+            }
+          }
+        } else {
+          setCurrentView('signin');
+        }
+      } else if (loc.view === 'role_selection') {
+        setCurrentView('role_selection');
+      } else if (loc.view === 'signup') {
+        if (isAuthenticated && currentRole !== 'PATIENT') {
           setCurrentView('app');
           setCurrentTab('dashboard');
           if (window.location.pathname !== '/dashboard' && !window.location.hash) {
             window.history.replaceState({}, '', '/dashboard');
           }
         } else {
-          setCurrentView(loc.view);
+          setCurrentView('signup');
+        }
+      } else if (loc.view === 'patient_register') {
+        if (isAuthenticated && currentRole === 'PATIENT') {
+          setCurrentView('patient_dashboard');
+          if (window.location.pathname !== '/patient-dashboard' && !window.location.hash) {
+            window.history.replaceState({}, '', '/patient-dashboard');
+          }
+        } else {
+          setCurrentView('patient_register');
+        }
+      } else if (loc.view === 'patient_dashboard') {
+        if (!isAuthenticated) {
+          setCurrentView('signin');
+          if (window.location.pathname !== '/signin' && !window.location.hash) {
+            window.history.replaceState({}, '', '/signin');
+          }
+        } else {
+          setCurrentView('patient_dashboard');
         }
       } else if (loc.view === 'app') {
         if (!isAuthenticated) {
           setCurrentView('signin');
           if (window.location.pathname !== '/signin' && !window.location.hash) {
             window.history.replaceState({}, '', '/signin');
+          }
+        } else if (currentRole === 'PATIENT') {
+          setCurrentView('patient_dashboard');
+          if (window.location.pathname !== '/patient-dashboard' && !window.location.hash) {
+            window.history.replaceState({}, '', '/patient-dashboard');
           }
         } else {
           setCurrentView('app');
@@ -179,7 +290,7 @@ export function App() {
       window.removeEventListener('popstate', handleRouteSync);
       window.removeEventListener('hashchange', handleRouteSync);
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, user?.role]);
 
   // Periodic background synchronization
   useEffect(() => {
@@ -274,9 +385,14 @@ export function App() {
 
   const handleSignIn = () => {
     if (isAuthenticated) {
-      setCurrentView('app');
-      setCurrentTab('dashboard');
-      navigateTo('/dashboard');
+      if (user?.role === 'PATIENT') {
+        setCurrentView('patient_dashboard');
+        navigateTo('/patient-dashboard');
+      } else {
+        setCurrentView('app');
+        setCurrentTab('dashboard');
+        navigateTo('/dashboard');
+      }
     } else {
       setCurrentView('signin');
       navigateTo('/signin');
@@ -285,6 +401,57 @@ export function App() {
 
   const handleGetStarted = () => {
     if (isAuthenticated) {
+      if (user?.role === 'PATIENT') {
+        setCurrentView('patient_dashboard');
+        navigateTo('/patient-dashboard');
+      } else {
+        setCurrentView('app');
+        setCurrentTab('dashboard');
+        navigateTo('/dashboard');
+      }
+    } else {
+      setCurrentView('role_selection');
+      navigateTo('/get-started');
+    }
+  };
+
+  const handleLoginSuccess = () => {
+    const savedUserStr = localStorage.getItem('rapidcheck_user');
+    let parsedRole = user?.role;
+    if (savedUserStr) {
+      try {
+        parsedRole = JSON.parse(savedUserStr)?.role;
+      } catch { /* ignore */ }
+    }
+
+    if (parsedRole === 'PATIENT') {
+      setCurrentView('patient_dashboard');
+      navigateTo('/patient-dashboard');
+    } else {
+      setCurrentView('app');
+      setCurrentTab('dashboard');
+      navigateTo('/dashboard');
+    }
+  };
+
+  const handleLogout = () => {
+    logout();
+    setCurrentView('home');
+    navigateTo('/');
+  };
+
+  const handleSelectPatient = () => {
+    if (isAuthenticated) {
+      setCurrentView('patient_dashboard');
+      navigateTo('/patient-dashboard');
+    } else {
+      setCurrentView('patient_register');
+      navigateTo('/patient-register');
+    }
+  };
+
+  const handleSelectProfessional = () => {
+    if (isAuthenticated && user?.role !== 'PATIENT') {
       setCurrentView('app');
       setCurrentTab('dashboard');
       navigateTo('/dashboard');
@@ -292,18 +459,6 @@ export function App() {
       setCurrentView('signup');
       navigateTo('/signup');
     }
-  };
-
-  const handleLoginSuccess = () => {
-    setCurrentView('app');
-    setCurrentTab('dashboard');
-    navigateTo('/dashboard');
-  };
-
-  const handleLogout = () => {
-    logout();
-    setCurrentView('home');
-    navigateTo('/');
   };
 
   // 1. PUBLIC HOMEPAGE VIEW
@@ -322,7 +477,28 @@ export function App() {
     );
   }
 
-  // 2. DEDICATED SIGN IN VIEW (/signin)
+  // 2. ROLE SELECTION VIEW (/get-started)
+  if (currentView === 'role_selection') {
+    return (
+      <>
+        <WaterDropClick />
+        <RoleSelectionPage
+          onSelectPatient={handleSelectPatient}
+          onSelectProfessional={handleSelectProfessional}
+          onNavigateHome={() => {
+            setCurrentView('home');
+            navigateTo('/');
+          }}
+          onNavigateSignIn={() => {
+            setCurrentView('signin');
+            navigateTo('/signin');
+          }}
+        />
+      </>
+    );
+  }
+
+  // 3. DEDICATED SIGN IN VIEW (/signin)
   if (currentView === 'signin') {
     return (
       <>
@@ -330,8 +506,8 @@ export function App() {
         <SignInPage
           onSuccess={handleLoginSuccess}
           onNavigateSignUp={() => {
-            setCurrentView('signup');
-            navigateTo('/signup');
+            setCurrentView('role_selection');
+            navigateTo('/get-started');
           }}
           onNavigateHome={() => {
             setCurrentView('home');
@@ -343,7 +519,7 @@ export function App() {
     );
   }
 
-  // 3. DEDICATED GET STARTED / REGISTRATION VIEW (/signup)
+  // 4. PROFESSIONAL GET STARTED / REGISTRATION VIEW (/signup)
   if (currentView === 'signup') {
     return (
       <>
@@ -366,7 +542,45 @@ export function App() {
     );
   }
 
-  // 4. PROTECTED APPLICATION DASHBOARD VIEWS
+  // 5. PATIENT REGISTRATION VIEW (/patient-register)
+  if (currentView === 'patient_register') {
+    return (
+      <>
+        <WaterDropClick />
+        <PatientRegistrationPage
+          onSuccess={() => {
+            setCurrentView('patient_dashboard');
+            navigateTo('/patient-dashboard');
+          }}
+          onNavigateSignIn={(email) => {
+            if (email) setPrefilledEmail(email);
+            setCurrentView('signin');
+            navigateTo('/signin');
+          }}
+          onNavigateBack={() => {
+            setCurrentView('role_selection');
+            navigateTo('/get-started');
+          }}
+          onNavigateHome={() => {
+            setCurrentView('home');
+            navigateTo('/');
+          }}
+        />
+      </>
+    );
+  }
+
+  // 6. PATIENT DASHBOARD VIEW (/patient-dashboard)
+  if (currentView === 'patient_dashboard') {
+    return (
+      <>
+        <WaterDropClick />
+        <PatientDashboard onLogout={handleLogout} />
+      </>
+    );
+  }
+
+  // 7. PROTECTED APPLICATION DASHBOARD VIEWS
   // Guard check: if unauthenticated in app view, redirect to signin
   if (!isAuthenticated) {
     return (
@@ -375,8 +589,8 @@ export function App() {
         <SignInPage
           onSuccess={handleLoginSuccess}
           onNavigateSignUp={() => {
-            setCurrentView('signup');
-            navigateTo('/signup');
+            setCurrentView('role_selection');
+            navigateTo('/get-started');
           }}
           onNavigateHome={() => {
             setCurrentView('home');

@@ -36,7 +36,7 @@ python generate_offline_validation_report.py
 ```
 
 For complete system architecture and documentation, see:
-- [**Project Architecture (`docs/PROJECT.md`)**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/PROJECT.md)
-- [**Database Specification (`docs/DATABASE.md`)**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/DATABASE.md)
-- [**Authentication & RBAC (`docs/AUTH.md`)**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/AUTH.md)
-- [**Features & Engine Specification (`docs/FEATURE.md`)**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/FEATURE.md)
+- [**Project Architecture (`docs/PROJECT.md`)**](../../docs/PROJECT.md)
+- [**Database Specification (`docs/DATABASE.md`)**](../../docs/DATABASE.md)
+- [**Authentication & RBAC (`docs/AUTH.md`)**](../../docs/AUTH.md)
+- [**Features & Engine Specification (`docs/FEATURE.md`)**](../../docs/FEATURE.md)

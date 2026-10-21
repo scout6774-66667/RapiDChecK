@@ -47,7 +47,7 @@ RuralHealth AI implements a **dual-database architecture** designed to balance r
 
 ## 2. Centralized Backend-Only Configuration
 
-All Snowflake connection parameters are managed exclusively via environment variables and loaded in [Health-AI-main/backend/snowflake_client.py](file:///Users/sohamghosh/RapiDChecK/Health-AI-main/backend/snowflake_client.py) and [Health-AI-main/backend/config.py](file:///Users/sohamghosh/RapiDChecK/Health-AI-main/backend/config.py).
+All Snowflake connection parameters are managed exclusively via environment variables and loaded in [Health-AI-main/backend/snowflake_client.py](../Health-AI-main/backend/snowflake_client.py) and [Health-AI-main/backend/config.py](../Health-AI-main/backend/config.py).
 
 ### Environment Variables
 
@@ -65,9 +65,9 @@ All Snowflake connection parameters are managed exclusively via environment vari
 
 ### Credential Protection & Secret Governance
 1. **Zero Client Exposure:** Snowflake variables are never prefixed with `VITE_` or returned through client API bundles.
-2. **Git Exclusion:** `.env`, `.env.*`, and private keys are strictly excluded in both [/.gitignore](file:///Users/sohamghosh/RapiDChecK/.gitignore) and [/Health-AI-main/.gitignore](file:///Users/sohamghosh/RapiDChecK/Health-AI-main/.gitignore).
-3. **Empty Template:** Blank configuration placeholders are provided in [.env.example](file:///Users/sohamghosh/RapiDChecK/.env.example) and [Health-AI-main/backend/.env.example](file:///Users/sohamghosh/RapiDChecK/Health-AI-main/backend/.env.example).
-4. **Credential Masking:** [snowflake_client.py](file:///Users/sohamghosh/RapiDChecK/Health-AI-main/backend/snowflake_client.py) automatically strips passwords and tokens from string representations, logs, and sanitized error messages using regex redaction.
+2. **Git Exclusion:** `.env`, `.env.*`, and private keys are strictly excluded in both [/.gitignore](../.gitignore) and [/Health-AI-main/.gitignore](../Health-AI-main/.gitignore).
+3. **Empty Template:** Blank configuration placeholders are provided in [.env.example](../.env.example) and [Health-AI-main/backend/.env.example](../Health-AI-main/backend/.env.example).
+4. **Credential Masking:** [snowflake_client.py](../Health-AI-main/backend/snowflake_client.py) automatically strips passwords and tokens from string representations, logs, and sanitized error messages using regex redaction.
 
 ---
 
@@ -92,7 +92,7 @@ pip install -r requirements.txt
 Administrative role setup must be performed once by an administrator in Snowflake Web Worksheet before the application connects.
 
 The setup script is located at:
-[scripts/snowflake_setup_least_privilege.sql](file:///Users/sohamghosh/RapiDChecK/scripts/snowflake_setup_least_privilege.sql)
+[scripts/snowflake_setup_least_privilege.sql](../scripts/snowflake_setup_least_privilege.sql)
 
 ### Step-by-Step Setup SQL
 

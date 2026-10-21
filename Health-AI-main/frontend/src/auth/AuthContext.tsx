@@ -22,6 +22,7 @@ export type UserRole =
   | 'PHC_DOCTOR'
   | 'DISTRICT_OFFICER'
   | 'SYSTEM_ADMIN'
+  | 'PATIENT'
   | string;
 
 export interface ClinicSummary {
@@ -50,6 +51,7 @@ export interface UserProfile {
   email: string;
   full_name: string;
   role: UserRole;
+  phone?: string | null;
   license_number?: string | null;
   facility_id?: string | null;
   assigned_villages: string[];
@@ -149,6 +151,18 @@ const DEFAULT_ADMIN: UserProfile = {
   role: 'SYSTEM_ADMIN',
   facility_id: 'CENTRAL_OPS',
   assigned_villages: [],
+  is_active: 1,
+  created_at: new Date().toISOString()
+};
+
+const DEFAULT_PATIENT: UserProfile = {
+  id: 'usr_patient_ramesh',
+  username: 'ramesh.kumar',
+  email: 'ramesh.patient@ruralhealth.org',
+  full_name: 'Ramesh Kumar (Patient)',
+  role: 'PATIENT',
+  facility_id: 'PHC_SONPUR',
+  assigned_villages: ['Sonpur'],
   is_active: 1,
   created_at: new Date().toISOString()
 };
@@ -332,6 +346,14 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           'reviews:view_queue', 'reviews:perform', 'reviews:override',
           'referrals:create', 'referrals:read', 'referrals:update',
           'appointments:manage', 'analytics:view', 'sync:push', 'sync:pull'
+        ];
+      } else if (normalizedUser === 'ramesh.kumar' || normalizedUser === 'patient' || normalizedUser === 'ramesh') {
+        matchedUser = DEFAULT_PATIENT;
+        matchedPerms = [
+          'patients:read',
+          'assessments:create', 'assessments:read',
+          'appointments:create', 'appointments:read',
+          'resources:read'
         ];
       }
 
@@ -546,6 +568,18 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           'referrals:update', 'appointments:manage', 'sync:push', 'sync:pull'
         ]);
         localStorage.setItem('rapidcheck_user', JSON.stringify(DEFAULT_ADMIN));
+      }
+    } else if (targetRole === 'PATIENT') {
+      const success = await login('ramesh.kumar', 'patient123');
+      if (!success) {
+        setUser(DEFAULT_PATIENT);
+        setPermissions([
+          'patients:read',
+          'assessments:create', 'assessments:read',
+          'appointments:create', 'appointments:read',
+          'resources:read'
+        ]);
+        localStorage.setItem('rapidcheck_user', JSON.stringify(DEFAULT_PATIENT));
       }
     } else {
       const success = await login('dr.sharma', 'doctor123');
