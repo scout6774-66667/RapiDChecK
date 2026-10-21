@@ -3,25 +3,31 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from ml.predictor import disease_predictor
 
-print("=== Test 1: fever, cough, fatigue ===")
-r = disease_predictor.predict_disease(['fever', 'cough', 'fatigue'])
-for p in r['predictions']:
-    print(f"  #{p['rank']} {p['condition']} score={p['score']} contributing={p['contributingSymptoms']}")
+def test_disease_predictor_standard_symptoms():
+    r = disease_predictor.predict_disease(['fever', 'cough', 'fatigue'])
+    assert 'predictions' in r
+    assert len(r['predictions']) > 0
 
-print("\n=== Test 2: shortness of breath, chest pain, dizziness ===")
-r2 = disease_predictor.predict_disease(['shortness of breath', 'chest pain', 'dizziness'])
-for p in r2['predictions']:
-    print(f"  #{p['rank']} {p['condition']} score={p['score']}")
+def test_disease_predictor_cardiac_symptoms():
+    r2 = disease_predictor.predict_disease(['shortness of breath', 'chest pain', 'dizziness'])
+    assert 'predictions' in r2
 
-print("\n=== Test 3: fever + unknown symptom ===")
-r3 = disease_predictor.predict_disease(['fever', 'UNKNOWNSYM12345'])
-print(f"  Unknown: {r3.get('unknownSymptoms')}")
-print(f"  Top-1: {r3['predictions'][0]['condition'] if r3['predictions'] else 'none'}")
+def test_disease_predictor_unknown_symptom():
+    r3 = disease_predictor.predict_disease(['fever', 'UNKNOWNSYM12345'])
+    assert 'UNKNOWNSYM12345' in r3.get('unknownSymptoms', [])
 
-print("\n=== Test 4: All unknown symptoms ===")
-r4 = disease_predictor.predict_disease(['TOTALLY_BOGUS'])
-print(f"  Predictions: {'empty (correct)' if not r4['predictions'] else r4['predictions']}")
+def test_disease_predictor_all_unknown():
+    r4 = disease_predictor.predict_disease(['TOTALLY_BOGUS'])
+    assert r4['predictions'] == []
 
-print("\n=== Test 5: Empty list ===")
-r5 = disease_predictor.predict_disease([])
-print(f"  Predictions: {'empty (correct)' if not r5['predictions'] else r5['predictions']}")
+def test_disease_predictor_empty():
+    r5 = disease_predictor.predict_disease([])
+    assert r5['predictions'] == []
+
+if __name__ == '__main__':
+    test_disease_predictor_standard_symptoms()
+    test_disease_predictor_cardiac_symptoms()
+    test_disease_predictor_unknown_symptom()
+    test_disease_predictor_all_unknown()
+    test_disease_predictor_empty()
+    print("All ML predictor tests passed!")

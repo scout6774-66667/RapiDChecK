@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowRight, Check } from 'lucide-react';
 import type { TaskItem } from './types';
+import { useLanguage } from '../../i18n';
 
 interface TodayTasksCardProps {
   tasks: TaskItem[];
@@ -13,6 +14,7 @@ export const TodayTasksCard: React.FC<TodayTasksCardProps> = ({
   onViewAll,
   onToggleTask,
 }) => {
+  const { strings } = useLanguage();
   const [tasks, setTasks] = useState(initialTasks);
 
   useEffect(() => {
@@ -31,26 +33,26 @@ export const TodayTasksCard: React.FC<TodayTasksCardProps> = ({
       case 'In Progress':
         return (
           <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-[#FFFBEB] text-[#F59E0B] border border-amber-200">
-            ● In Progress
+            ● {strings?.dashboard?.inProgress || 'In Progress'}
           </span>
         );
       case 'High Priority':
         return (
           <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-[#FEF2F2] text-[#EF4444] border border-red-200">
-            ● High Priority
+            ● {strings?.dashboard?.highPriority || 'High Priority'}
           </span>
         );
       case 'Pending':
         return (
           <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-[#EFF6FF] text-[#3B82F6] border border-blue-200">
-            Pending
+            {strings?.dashboard?.pending || 'Pending'}
           </span>
         );
       case 'Reminder':
       default:
         return (
           <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-[#EFF6FF] text-[#3B82F6] border border-blue-200">
-            Reminder
+            {strings?.dashboard?.reminder || 'Reminder'}
           </span>
         );
     }
@@ -60,12 +62,12 @@ export const TodayTasksCard: React.FC<TodayTasksCardProps> = ({
     <div className="health-card p-4 sm:p-5 flex flex-col justify-between">
       {/* Header */}
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-bold text-[#102A56]">Today's Tasks</h3>
+        <h3 className="text-sm font-bold text-[#102A56]">{strings?.dashboard?.todayTasks || "Today's Tasks"}</h3>
         <button
           onClick={onViewAll}
           className="text-xs font-bold text-[#0A9F68] hover:text-[#088758] flex items-center gap-1 transition-all"
         >
-          <span>View All</span>
+          <span>{strings?.common?.viewAll || 'View All'}</span>
           <ArrowRight className="w-3.5 h-3.5" />
         </button>
       </div>
@@ -73,9 +75,9 @@ export const TodayTasksCard: React.FC<TodayTasksCardProps> = ({
       {/* Task List or Empty State */}
       {tasks.length === 0 ? (
         <div className="py-7 flex flex-col items-center justify-center text-center">
-          <p className="text-xs font-bold text-[#102A56]">No tasks for today.</p>
+          <p className="text-xs font-bold text-[#102A56]">{strings?.dashboard?.noTasks || 'No tasks for today.'}</p>
           <p className="text-[11px] text-slate-500 mt-1 max-w-xs">
-            Offline sync reminders, high-risk follow-ups, and scheduled teleconsultations will appear here.
+            {strings?.dashboard?.noTasksSub || 'Offline sync reminders, high-risk follow-ups, and scheduled teleconsultations will appear here.'}
           </p>
         </div>
       ) : (

@@ -55,10 +55,18 @@ export const PatientDetailsModal: React.FC<PatientDetailsModalProps> = ({
                     ? 'text-[#EF4444]'
                     : patient.riskLevel === 'MODERATE'
                     ? 'text-[#F59E0B]'
-                    : 'text-[#0A9F68]'
+                    : patient.riskLevel === 'LOW'
+                    ? 'text-[#0A9F68]'
+                    : patient.riskLevel === 'UNASSESSED'
+                    ? 'text-slate-500'
+                    : 'text-amber-600'
                 }`}
               >
-                {patient.riskLevel} RISK
+                {patient.riskLevel === 'UNASSESSED'
+                  ? 'UNASSESSED'
+                  : patient.riskLevel === 'NEEDS_REVIEW'
+                  ? 'NEEDS REVIEW'
+                  : `${patient.riskLevel} RISK`}
               </p>
             </div>
             <div>

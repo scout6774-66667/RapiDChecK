@@ -33,6 +33,7 @@ export const LanguageProvider: React.FC<{ children: ReactNode; initialLang?: Lan
     setLanguageState(newLang);
     try {
       localStorage.setItem(STORAGE_KEY, newLang);
+      window.dispatchEvent(new CustomEvent('ruralhealth-language-change', { detail: newLang }));
     } catch {
       // ignore localStorage errors
     }
@@ -47,7 +48,27 @@ export const LanguageProvider: React.FC<{ children: ReactNode; initialLang?: Lan
     } catch {
       // ignore
     }
-  }, []);
+
+    const handleCustomChange = (e: Event) => {
+      const custom = e as CustomEvent<Language>;
+      if (custom.detail && (custom.detail === 'en' || custom.detail === 'hi' || custom.detail === 'bn')) {
+        setLanguageState(custom.detail);
+      }
+    };
+
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY && e.newValue && (e.newValue === 'en' || e.newValue === 'hi' || e.newValue === 'bn')) {
+        setLanguageState(e.newValue as Language);
+      }
+    };
+
+    window.addEventListener('ruralhealth-language-change', handleCustomChange);
+    window.addEventListener('storage', handleStorageChange);
+    return () => {
+      window.removeEventListener('ruralhealth-language-change', handleCustomChange);
+      window.removeEventListener('storage', handleStorageChange);
+    };
+  }, [language]);
 
   const strings = useMemo(() => {
     return translations[language] || translations.en;
@@ -108,11 +129,27 @@ export const useLanguage = (): LanguageContextType => {
   const context = useContext(LanguageContext);
   if (!context) {
     // Graceful fallback if rendered outside provider
-    const fallbackLang: Language = 'en';
-    const current = translations[fallbackLang];
+    let fallbackLang: Language = 'en';
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY) as Language;
+      if (saved === 'en' || saved === 'hi' || saved === 'bn') {
+        fallbackLang = saved;
+      }
+    } catch {
+      // ignore
+    }
+    const current = translations[fallbackLang] || translations.en;
     return {
       language: fallbackLang,
-      setLanguage: () => {},
+      setLanguage: (newLang: Language) => {
+        try {
+          localStorage.setItem(STORAGE_KEY, newLang);
+          window.dispatchEvent(new CustomEvent('ruralhealth-language-change', { detail: newLang }));
+        } catch {
+          // ignore
+        }
+        console.warn(`[i18n] setLanguage called outside LanguageProvider. Updated localStorage to '${newLang}' and notified listeners.`);
+      },
       strings: current,
       t: (key: string, fallback?: string) => {
         const keys = key.split('.');

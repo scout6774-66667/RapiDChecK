@@ -265,27 +265,30 @@ class OllamaService:
                 "source": "National Health Mission & Clinical Guidelines"
             }
 
-        # 4. If Ollama is offline or model is not ready, return safe rule-based guidance
+        # 4. If Ollama is offline or model is not ready, return clear error without fabricating data
         if health.get("status") != "connected" or not health.get("models_available"):
-            fallback_text = get_rule_based_fallback(last_user_query, target_lang)
             return {
-                "success": True,
-                "response": fallback_text,
-                "model": "rule-based-fallback",
-                "provider": "ruralhealth-offline-engine",
+                "success": False,
+                "response": "",
+                "error": f"Local AI model is unavailable. Ensure Ollama is running at {base_url} with model '{configured_model}'.",
+                "status": "unavailable",
+                "model": configured_model,
+                "provider": "ollama",
                 "local": True,
-                "badge": "📋 WORKFLOW GUIDANCE",
-                "note": "Local Ollama runtime unavailable; served via offline clinical decision support."
+                "retryable": True
             }
 
         # 5. Formulate language-specific system prompt and message payload for Gemma 3 270M
         system_prompt = build_system_prompt_for_language(target_lang, last_user_query)
 
+        # Bounded conversation history (last 10 messages) with strict PII sanitization
         payload_messages = [{"role": "system", "content": system_prompt}]
-        for msg in messages[-15:]:  # Keep last 15 messages for multi-turn context
+        for msg in messages[-10:]:
             role = "user" if msg.get("role") == "user" else "assistant"
             content = sanitize_user_input(msg.get("content", ""))
             payload_messages.append({"role": role, "content": content})
+
+        logger.info("Dispatching chat request to local Ollama (model=%s, context_len=%d)", active_model, len(payload_messages))
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -309,9 +312,17 @@ class OllamaService:
                     msg_obj = data.get("message", {})
                     reply = msg_obj.get("content", "").strip()
 
-                    # If model returned empty, generic greeting, or loop, enhance with verified clinical guidance
-                    if is_generic_or_empty_response(reply):
-                        reply = get_rule_based_fallback(last_user_query, target_lang)
+                    if not reply:
+                        return {
+                            "success": False,
+                            "response": "",
+                            "error": "Local AI model generated an empty response. Please rephrase or retry.",
+                            "status": "empty_response",
+                            "model": active_model,
+                            "provider": "ollama",
+                            "local": True,
+                            "retryable": True
+                        }
 
                     return {
                         "success": True,
@@ -320,44 +331,44 @@ class OllamaService:
                         "provider": "ollama",
                         "local": True,
                         "badge": "🩺 HEALTH EDUCATION",
-                        "source": "Gemma 3 270M (Local)"
+                        "source": f"Gemma 3 270M ({active_model})"
                     }
                 else:
-                    logger.warning(f"Ollama error {res.status_code}: {res.text}")
-                    fallback_text = get_rule_based_fallback(last_user_query, target_lang)
+                    logger.warning("Ollama returned HTTP error status %s", res.status_code)
                     return {
-                        "success": True,
-                        "response": fallback_text,
+                        "success": False,
+                        "response": "",
+                        "error": f"Local Ollama returned HTTP error {res.status_code}. Please retry.",
+                        "status": "error",
                         "model": active_model,
-                        "provider": "ruralhealth-offline-engine",
+                        "provider": "ollama",
                         "local": True,
-                        "badge": "📋 WORKFLOW GUIDANCE",
-                        "note": f"Ollama error {res.status_code}; fallback activated."
+                        "retryable": True
                     }
 
         except httpx.TimeoutException:
-            logger.warning("Ollama request timed out; falling back to rule-based guidance.")
-            fallback_text = get_rule_based_fallback(last_user_query, target_lang)
+            logger.warning("Ollama request timed out after %s seconds", self.timeout)
             return {
-                "success": True,
-                "response": fallback_text,
-                "model": "rule-based-fallback",
-                "provider": "ruralhealth-offline-engine",
+                "success": False,
+                "response": "",
+                "error": f"Local AI model timed out after {int(self.timeout)}s. Please try again.",
+                "status": "timeout",
+                "model": active_model,
+                "provider": "ollama",
                 "local": True,
-                "badge": "📋 WORKFLOW GUIDANCE",
-                "note": "Request timed out; fallback activated."
+                "retryable": True
             }
         except Exception as e:
-            logger.error(f"Ollama chat error: {e}")
-            fallback_text = get_rule_based_fallback(last_user_query, target_lang)
+            logger.error("Ollama connection error: %s", type(e).__name__)
             return {
-                "success": True,
-                "response": fallback_text,
-                "model": "rule-based-fallback",
-                "provider": "ruralhealth-offline-engine",
+                "success": False,
+                "response": "",
+                "error": f"Failed to connect to local Ollama service: {str(e)}",
+                "status": "unavailable",
+                "model": active_model,
+                "provider": "ollama",
                 "local": True,
-                "badge": "📋 WORKFLOW GUIDANCE",
-                "note": f"Ollama communication error ({str(e)})."
+                "retryable": True
             }
 
     async def chat_stream(
@@ -419,20 +430,22 @@ class OllamaService:
             return
 
         if health.get("status") != "connected" or not health.get("models_available"):
-            fallback_text = get_rule_based_fallback(last_user_query, target_lang)
             yield json.dumps({
-                "token": fallback_text,
+                "token": "",
                 "done": True,
-                "provider": "ruralhealth-offline-engine",
-                "badge": "📋 WORKFLOW GUIDANCE"
+                "success": False,
+                "error": f"Local AI model is unavailable. Ensure Ollama is running at {base_url} with model '{self.get_configured_model()}'.",
+                "status": "unavailable",
+                "retryable": True
             }) + "\n"
             return
 
         active_model = health.get("model", self.get_configured_model())
         system_prompt = build_system_prompt_for_language(target_lang, last_user_query)
 
+        # Bounded conversation history (last 10 messages) with strict PII sanitization
         payload_messages = [{"role": "system", "content": system_prompt}]
-        for msg in messages[-15:]:
+        for msg in messages[-10:]:
             role = "user" if msg.get("role") == "user" else "assistant"
             content = sanitize_user_input(msg.get("content", ""))
             payload_messages.append({"role": role, "content": content})
@@ -455,8 +468,14 @@ class OllamaService:
                     }
                 ) as response:
                     if response.status_code != 200:
-                        fallback_text = get_rule_based_fallback(last_user_query, target_lang)
-                        yield json.dumps({"token": fallback_text, "done": True, "provider": "ruralhealth-offline-engine"}) + "\n"
+                        yield json.dumps({
+                            "token": "",
+                            "done": True,
+                            "success": False,
+                            "error": f"Local Ollama returned HTTP error {response.status_code}.",
+                            "status": "error",
+                            "retryable": True
+                        }) + "\n"
                         return
 
                     async for line in response.aiter_lines():
@@ -476,9 +495,15 @@ class OllamaService:
                             except json.JSONDecodeError:
                                 continue
         except Exception as e:
-            logger.error(f"Streaming error: {e}")
-            fallback_text = get_rule_based_fallback(last_user_query, target_lang)
-            yield json.dumps({"token": fallback_text, "done": True, "provider": "ruralhealth-offline-engine"}) + "\n"
+            logger.error("Streaming error: %s", type(e).__name__)
+            yield json.dumps({
+                "token": "",
+                "done": True,
+                "success": False,
+                "error": f"Streaming connection error: {str(e)}",
+                "status": "error",
+                "retryable": True
+            }) + "\n"
 
 
 # Singleton instance

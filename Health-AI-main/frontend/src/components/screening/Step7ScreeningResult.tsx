@@ -14,6 +14,7 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import type { ScreeningResultData } from './types';
+import { useLanguage } from '../../i18n/LanguageContext';
 
 interface Step7ScreeningResultProps {
   result: ScreeningResultData;
@@ -30,6 +31,7 @@ export const Step7ScreeningResult: React.FC<Step7ScreeningResultProps> = ({
   onReviewAgain,
   onFinish,
 }) => {
+  const { strings } = useLanguage();
   const [showModelInfo, setShowModelInfo] = useState(false);
 
   // Styling based on risk level
@@ -108,7 +110,14 @@ export const Step7ScreeningResult: React.FC<Step7ScreeningResultProps> = ({
   const theme = getRiskTheme();
   const RiskIcon = theme.icon;
   const isCritical = result.riskScore > 70 || result.riskLevel === 'CRITICAL';
-  const displayLevel = result.riskLevel === 'CRITICAL' ? 'Critical' : result.riskLevel === 'HIGH' ? 'High' : result.riskLevel === 'MODERATE' ? 'Moderate' : 'Low';
+  const isInsufficient = result.riskLevel === 'INSUFFICIENT_DATA';
+  const displayLevel =
+    result.riskLevel === 'CRITICAL' ? 'Critical'
+    : result.riskLevel === 'HIGH' ? 'High'
+    : result.riskLevel === 'MODERATE' ? 'Moderate'
+    : result.riskLevel === 'INSUFFICIENT_DATA' ? 'Insufficient Data'
+    : result.riskLevel === 'NEEDS_REVIEW' ? 'Needs Review'
+    : 'Low';
 
   return (
     <div className="space-y-5">
@@ -136,6 +145,30 @@ export const Step7ScreeningResult: React.FC<Step7ScreeningResultProps> = ({
         </div>
       )}
 
+      {/* Insufficient Data Banner */}
+      {isInsufficient && (
+        <div className="bg-amber-500 text-white p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-md border-2 border-amber-300">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+              <Info className="w-6 h-6 text-amber-100" />
+            </div>
+            <div>
+              <p className="font-black text-sm uppercase tracking-wide">Insufficient Clinical Data Recorded</p>
+              <p className="text-xs text-amber-100 font-medium mt-0.5">
+                Key vital signs (Blood Pressure, Glucose, or Temperature) were not recorded. Risk score cannot be safely computed without baseline vitals.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onReviewAgain}
+            className="px-4 py-2 bg-white text-amber-800 font-black text-xs rounded-xl hover:bg-amber-50 shadow-sm shrink-0 transition-all flex items-center justify-center gap-1.5"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>Record Vital Signs</span>
+          </button>
+        </div>
+      )}
+
       {/* 1. Primary Risk Card */}
       <div className={`rounded-2xl border ${theme.border} ${theme.bg} p-5 sm:p-6 shadow-xs`}>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-black/5">
@@ -153,7 +186,9 @@ export const Step7ScreeningResult: React.FC<Step7ScreeningResultProps> = ({
                   {theme.title}
                 </span>
                 <span className="text-xs font-black px-2.5 py-0.5 rounded bg-white text-[#102A56] border border-black/10 shadow-2xs">
-                  Risk Score: {result.riskScore}/100 — {displayLevel}
+                  {isInsufficient
+                    ? 'Triage: Incomplete Intake (Vitals Required)'
+                    : `Risk Score: ${result.riskScore}/100 — ${displayLevel}`}
                 </span>
                 <span className="text-xs text-slate-500 font-semibold">
                   Patient: {result.patientName}
@@ -240,7 +275,7 @@ export const Step7ScreeningResult: React.FC<Step7ScreeningResultProps> = ({
             className="p-3.5 rounded-2xl bg-[#0A9F68] hover:bg-[#088758] text-white font-bold text-xs transition-all shadow-md shadow-[#0A9F68]/20 flex items-center justify-center gap-2 group"
           >
             <Share2 className="w-4 h-4" />
-            <span>Refer to PHC</span>
+            <span>{strings.screening.initiatePhcReferralBtn}</span>
             <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" />
           </button>
 
@@ -251,7 +286,7 @@ export const Step7ScreeningResult: React.FC<Step7ScreeningResultProps> = ({
             className="p-3.5 rounded-2xl bg-[#F5F3FF] hover:bg-[#EDE9FE] text-[#8B5CF6] border border-purple-200 font-bold text-xs transition-all flex items-center justify-center gap-2"
           >
             <Calendar className="w-4 h-4" />
-            <span>Book Consultation</span>
+            <span>{strings.screening.bookTeleconsultBtn}</span>
           </button>
 
           {/* Action 3: Review Assessment */}
@@ -261,7 +296,7 @@ export const Step7ScreeningResult: React.FC<Step7ScreeningResultProps> = ({
             className="p-3.5 rounded-2xl bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-bold text-xs transition-all flex items-center justify-center gap-2"
           >
             <RotateCcw className="w-4 h-4 text-slate-500" />
-            <span>Review Assessment</span>
+            <span>{strings.screening.printSummaryBtn || 'Review Assessment'}</span>
           </button>
 
           {/* Action 4: Finish */}
@@ -271,7 +306,7 @@ export const Step7ScreeningResult: React.FC<Step7ScreeningResultProps> = ({
             className="p-3.5 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition-all flex items-center justify-center gap-2"
           >
             <Check className="w-4 h-4 text-[#0A9F68]" />
-            <span>Save & Dashboard</span>
+            <span>{strings.screening.saveLocallyBtn || 'Save & Dashboard'}</span>
           </button>
         </div>
       </div>

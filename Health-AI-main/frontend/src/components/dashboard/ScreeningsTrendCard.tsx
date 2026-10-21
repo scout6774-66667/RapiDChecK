@@ -10,6 +10,7 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 import type { ScreeningTrendItem } from './types';
+import { useLanguage } from '../../i18n';
 
 interface ScreeningsTrendCardProps {
   data: ScreeningTrendItem[];
@@ -20,38 +21,47 @@ export const ScreeningsTrendCard: React.FC<ScreeningsTrendCardProps> = ({
   data,
   onPeriodChange,
 }) => {
+  const { strings } = useLanguage();
   const [period, setPeriod] = useState('Last 7 Days');
   const [showDropdown, setShowDropdown] = useState(false);
+
+  const periodOptions = [
+    { key: 'Last 7 Days', label: strings?.dashboard?.last7Days || 'Last 7 Days' },
+    { key: 'Last 14 Days', label: strings?.dashboard?.last14Days || 'Last 14 Days' },
+    { key: 'Last 30 Days', label: strings?.dashboard?.last30Days || 'Last 30 Days' },
+  ];
 
   return (
     <div className="health-card p-4 sm:p-5 flex flex-col justify-between h-full">
       {/* Header */}
       <div className="flex items-center justify-between mb-2">
-        <h3 className="text-sm font-bold text-[#102A56]">Screenings Trend</h3>
+        <h3 className="text-sm font-bold text-[#102A56]">
+          {strings?.dashboard?.screeningsTrend || 'Screenings Trend'}
+        </h3>
 
         {/* Timeframe Dropdown */}
         <div className="relative">
           <button
             onClick={() => setShowDropdown(!showDropdown)}
-            className="flex items-center gap-1 text-[11px] font-semibold text-slate-600 hover:text-[#102A56] bg-slate-50 hover:bg-slate-100 border border-slate-200 px-2 py-1 rounded-lg transition-all"
+            className="flex items-center gap-1 text-[11px] font-semibold text-slate-600 hover:text-[#102A56] bg-slate-50 hover:bg-slate-100 border border-slate-200 px-2 py-1 rounded-lg transition-all cursor-pointer"
           >
-            <span>{period}</span>
+            <span>{periodOptions.find(p => p.key === period)?.label || period}</span>
             <ChevronDown className="w-3 h-3 text-slate-400" />
           </button>
 
           {showDropdown && (
             <div className="absolute right-0 mt-1 w-32 bg-white rounded-xl shadow-lg border border-slate-100 py-1 z-20 text-[11px]">
-              {['Last 7 Days', 'Last 14 Days', 'Last 30 Days'].map((opt) => (
+              {periodOptions.map((opt) => (
                 <button
-                  key={opt}
+                  key={opt.key}
                   onClick={() => {
-                    setPeriod(opt);
+                    setPeriod(opt.key);
                     setShowDropdown(false);
-                    onPeriodChange?.(opt);
+                    onPeriodChange?.(opt.key);
                   }}
-                  className="w-full text-left px-3 py-1.5 hover:bg-slate-50 text-slate-700 font-medium"
+                  className="w-full text-left px-3 py-1.5 hover:bg-slate-50 text-slate-700 font-medium cursor-pointer"
                 >
-                  {opt}
+                  {opt.label}
                 </button>
               ))}
             </div>
@@ -63,15 +73,15 @@ export const ScreeningsTrendCard: React.FC<ScreeningsTrendCardProps> = ({
       <div className="flex items-center gap-4 mb-2 text-[11px]">
         <div className="flex items-center gap-1.5">
           <span className="w-2 h-2 rounded-full bg-[#0A9F68]"></span>
-          <span className="text-slate-600 font-medium">Total</span>
+          <span className="text-slate-600 font-medium">{strings?.dashboard?.total || 'Total'}</span>
         </div>
         <div className="flex items-center gap-1.5">
           <span className="w-2 h-2 rounded-full bg-[#EF4444]"></span>
-          <span className="text-slate-600 font-medium">High Risk</span>
+          <span className="text-slate-600 font-medium">{strings?.dashboard?.highRisk || 'High Risk'}</span>
         </div>
         <div className="flex items-center gap-1.5">
           <span className="w-2 h-2 rounded-full bg-[#F59E0B]"></span>
-          <span className="text-slate-600 font-medium">Moderate Risk</span>
+          <span className="text-slate-600 font-medium">{strings?.dashboard?.moderateRisk || 'Moderate Risk'}</span>
         </div>
       </div>
 

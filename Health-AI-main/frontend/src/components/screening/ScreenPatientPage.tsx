@@ -18,8 +18,7 @@ import type {
   RiskFactorsFormData,
   ScreeningResultData,
 } from './types';
-import { evaluateClinicalScreening } from './clinicalRules';
-import { db, type LocalPatient, type LocalAssessment } from '../../db/offlineDb';
+import { savePatientAtomic, saveAssessmentAtomic, updateReferralAtomic, db, type LocalPatient } from '../../db/offlineDb';
 import type { Language } from '../../i18n/translations';
 import { Wifi, WifiOff, LogOut, CheckCircle2 } from 'lucide-react';
 
@@ -153,123 +152,109 @@ export const ScreenPatientPage: React.FC<ScreenPatientPageProps> = ({
   };
 
   const handleAnalysisCompleted = async () => {
-    // 1. Evaluate locally via clinical decision support rules
-    const res = evaluateClinicalScreening(
-      patientData,
-      symptomsData,
-      vitalsData,
-      riskFactorsData,
-      !isOnline
-    );
-
-    // 2. Save Patient & Assessment to Dexie IndexedDB
     try {
-      const pRecord: LocalPatient = {
-        id: patientData.id,
-        name: patientData.name,
-        age: Number(patientData.age) || 30,
-        gender: patientData.gender || 'Other',
-        village: patientData.village,
-        phone: patientData.phone,
-        patient_id: patientData.customId,
-        server_version: 1,
-        local_version: 1,
-        is_deleted: false,
-        sync_state: 'LOCAL',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        synced: false,
-      };
-      await db.patients.put(pRecord);
+      // 1. Atomically save patient with outbox operation
+      const pRecord = await savePatientAtomic(
+        {
+          id: patientData.id,
+          name: patientData.name.trim(),
+          age: Number(patientData.age) || 30,
+          gender: patientData.gender || 'Other',
+          village: patientData.village.trim(),
+          phone: patientData.phone.trim(),
+          patient_id: patientData.customId,
+        },
+        !patientData.isExisting
+      );
 
-      const aRecord: LocalAssessment = {
-        id: res.assessmentId,
-        patient_id: patientData.id,
-        patient_name: patientData.name,
-        village: patientData.village,
+      // 2. Parse vitals strictly as nullable numbers (do not default missing vitals to normal)
+      const tempF = vitalsData.temperatureF !== '' && !isNaN(Number(vitalsData.temperatureF)) ? Number(vitalsData.temperatureF) : null;
+      const sysBp = vitalsData.systolicBp !== '' && !isNaN(Number(vitalsData.systolicBp)) ? Number(vitalsData.systolicBp) : null;
+      const diaBp = vitalsData.diastolicBp !== '' && !isNaN(Number(vitalsData.diastolicBp)) ? Number(vitalsData.diastolicBp) : null;
+      const gluc = vitalsData.glucoseMeasured && vitalsData.glucoseMgDl !== '' && !isNaN(Number(vitalsData.glucoseMgDl)) ? Number(vitalsData.glucoseMgDl) : null;
+      const hr = vitalsData.heartRateBpm !== '' && !isNaN(Number(vitalsData.heartRateBpm)) ? Number(vitalsData.heartRateBpm) : null;
+      const hCm = vitalsData.heightCm !== '' && !isNaN(Number(vitalsData.heightCm)) ? Number(vitalsData.heightCm) : null;
+      const wKg = vitalsData.weightKg !== '' && !isNaN(Number(vitalsData.weightKg)) ? Number(vitalsData.weightKg) : null;
+
+      let durationDays: number | null = null;
+      if (symptomsData.duration.includes('week') || symptomsData.duration.includes('>2')) durationDays = 14;
+      else if (symptomsData.duration.includes('4–7')) durationDays = 5;
+      else if (symptomsData.duration.includes('1–3')) durationDays = 2;
+      else if (symptomsData.duration.includes('Today')) durationDays = 1;
+
+      // 3. Atomically evaluate clinical risk and save assessment + outbox queue
+      const aRecord = await saveAssessmentAtomic({
+        patient_id: pRecord.id,
+        patient_name: pRecord.name,
+        village: pRecord.village,
         symptoms: symptomsData.symptoms,
-        symptom_duration_days: symptomsData.duration.includes('week') ? 14 : 3,
-        temperature_f: Number(vitalsData.temperatureF) || 98.6,
-        systolic_bp: Number(vitalsData.systolicBp) || 120,
-        diastolic_bp: Number(vitalsData.diastolicBp) || 80,
-        glucose_mg_dl: Number(vitalsData.glucoseMgDl) || 100,
-        heart_rate_bpm: Number(vitalsData.heartRateBpm) || 72,
-        height_cm: Number(vitalsData.heightCm) || 165,
-        weight_kg: Number(vitalsData.weightKg) || 65,
-        bmi: vitalsData.bmi || 23.9,
+        symptom_duration_days: durationDays,
+        temperature_f: tempF,
+        systolic_bp: sysBp,
+        diastolic_bp: diaBp,
+        glucose_mg_dl: gluc,
+        heart_rate_bpm: hr,
+        height_cm: hCm,
+        weight_kg: wKg,
+        bmi: vitalsData.bmi ?? null,
         smoking_status: riskFactorsData.lifestyle.smoking,
         alcohol_status: riskFactorsData.lifestyle.alcohol,
         physical_activity: riskFactorsData.lifestyle.physicalActivity,
         family_history: Object.entries(riskFactorsData.familyHistory)
           .filter(([_, v]) => v === 'Yes')
           .map(([k]) => k),
-        risk_level: res.riskLevel === 'NEEDS_REVIEW' || res.riskLevel === 'INSUFFICIENT_DATA' ? 'LOW' : (res.riskLevel === 'CRITICAL' ? 'HIGH' : res.riskLevel),
-        triage_state: res.riskLevel === 'CRITICAL' ? 'EMERGENCY' : 'LOW_RISK',
-        is_emergency: res.riskLevel === 'CRITICAL',
-        short_circuit: false,
-        red_flags: [],
-        uncertainty_state: 'COMPLETE',
-        risk_score: res.riskScore,
-        likely_conditions: res.likelyConditions,
-        contributing_factors: res.contributingFactors,
-        recommended_action: res.recommendedAction,
-        referral_status: (res.riskLevel === 'HIGH' || res.riskLevel === 'CRITICAL' || res.riskScore > 70) ? 'REFERRED' : 'NOT_REFERRED',
-        server_version: 1,
-        local_version: 1,
-        is_deleted: false,
-        sync_state: 'LOCAL',
-        workflow_version: '2.0.0',
-        ruleset_version: '2.0.0',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        synced: false,
-      };
-      await db.assessments.put(aRecord);
+      });
 
-      // 3. Attempt backend sync if online
+      // 4. Transform canonical LocalAssessment to UI ScreeningResultData
+      const uiRiskLevel: ScreeningResultData['riskLevel'] =
+        aRecord.is_emergency || aRecord.risk_level === 'EMERGENCY'
+          ? 'CRITICAL'
+          : aRecord.risk_level === 'INSUFFICIENT_DATA'
+          ? 'INSUFFICIENT_DATA'
+          : aRecord.risk_level === 'HIGH'
+          ? 'HIGH'
+          : aRecord.risk_level === 'MODERATE'
+          ? 'MODERATE'
+          : 'LOW';
+
+      const res: ScreeningResultData = {
+        assessmentId: aRecord.id,
+        patientId: pRecord.id,
+        patientName: pRecord.name,
+        riskLevel: uiRiskLevel,
+        riskScore: aRecord.risk_score != null ? Math.round(aRecord.risk_score * 100) : 0,
+        likelyConditions: aRecord.likely_conditions,
+        contributingFactors: aRecord.contributing_factors,
+        recommendedAction: aRecord.recommended_action,
+        potentialRiskIndicators: aRecord.red_flags.length > 0 ? aRecord.red_flags : (aRecord.risk_level === 'HIGH' ? ['Elevated Clinical Risk Profile'] : []),
+        completenessScore: aRecord.uncertainty_state === 'COMPLETE' ? 100 : (aRecord.uncertainty_state === 'UNCERTAIN' ? 70 : 30),
+        missingFields: aRecord.uncertainty_state === 'INSUFFICIENT_DATA' ? ['Vital Signs (BP / Glucose / Temp)'] : [],
+        isOffline: !isOnline,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        rulesVersion: aRecord.ruleset_version,
+        modelVersion: aRecord.workflow_version,
+      };
+
+      setScreeningResult(res);
+
+      // 5. Trigger sync if online
       if (isOnline) {
-        try {
-          await fetch('http://127.0.0.1:8000/api/assess', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              id: aRecord.id,
-              patient_id: aRecord.patient_id,
-              symptoms: aRecord.symptoms,
-              symptom_duration_days: aRecord.symptom_duration_days,
-              temperature_f: aRecord.temperature_f,
-              systolic_bp: aRecord.systolic_bp,
-              diastolic_bp: aRecord.diastolic_bp,
-              glucose_mg_dl: aRecord.glucose_mg_dl,
-              heart_rate_bpm: aRecord.heart_rate_bpm,
-              height_cm: aRecord.height_cm,
-              weight_kg: aRecord.weight_kg,
-              bmi: aRecord.bmi,
-              smoking_status: aRecord.smoking_status,
-              alcohol_status: aRecord.alcohol_status,
-              physical_activity: aRecord.physical_activity,
-              family_history: aRecord.family_history,
-            }),
-          });
-          await db.assessments.update(aRecord.id, { synced: true });
-        } catch {
-          // offline queue handles it
-        }
+        onSyncTrigger();
       }
-    } catch {
-      // offline storage fallback
+    } catch (err) {
+      console.error('Failed to save assessment atomically:', err);
     }
 
-    setScreeningResult(res);
     goToStep(7);
   };
 
   const handleReferralSaved = async () => {
     try {
       if (screeningResult) {
-        await db.assessments.update(screeningResult.assessmentId, {
-          referral_status: 'REFERRED',
-        });
+        await updateReferralAtomic(screeningResult.assessmentId, 'REFERRED');
+        if (isOnline) {
+          onSyncTrigger();
+        }
       }
       setSaveToast('IDRC Referral Created & Queued');
       setTimeout(() => {

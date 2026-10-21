@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Search, UserPlus, Users, ArrowRight, CheckCircle2, Phone, MapPin } from 'lucide-react';
+import { Search, UserPlus, Users, ArrowRight, CheckCircle2, Phone, MapPin, AlertTriangle } from 'lucide-react';
 import type { PatientFormData } from './types';
 import { db, type LocalPatient } from '../../db/offlineDb';
 import { useLiveQuery } from 'dexie-react-hooks';
@@ -43,6 +43,22 @@ export const Step1PatientInfo: React.FC<Step1PatientInfoProps> = ({ data, onChan
         p.village.toLowerCase().includes(q)
     );
   }, [searchablePatients, searchTerm]);
+
+  // Transparent duplicate candidate detection for new patient registration
+  const potentialDuplicates = useMemo(() => {
+    if (tab !== 'new') return [];
+    const nameQ = data.name.trim().toLowerCase();
+    const phoneQ = data.phone.trim().replace(/\D/g, '');
+    if (nameQ.length < 3 && phoneQ.length < 6) return [];
+
+    return searchablePatients.filter((p) => {
+      const pName = p.name.trim().toLowerCase();
+      const pPhone = p.phone.replace(/\D/g, '');
+      const matchName = nameQ.length >= 3 && pName.includes(nameQ);
+      const matchPhone = phoneQ.length >= 6 && pPhone.length >= 6 && (pPhone.includes(phoneQ) || phoneQ.includes(pPhone));
+      return matchName || matchPhone;
+    });
+  }, [tab, data.name, data.phone, searchablePatients]);
 
   const handleSelectExisting = (patient: typeof searchablePatients[0]) => {
     onChange({
@@ -219,6 +235,42 @@ export const Step1PatientInfo: React.FC<Step1PatientInfoProps> = ({ data, onChan
         {/* Tab 2: New Patient Registration Form */}
         {tab === 'new' && (
           <div className="pt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 text-xs">
+            {potentialDuplicates.length > 0 && (
+              <div className="col-span-full p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs space-y-2.5">
+                <div className="flex items-center gap-2 font-bold text-amber-900">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>Potential Duplicate Patient Record Detected</span>
+                </div>
+                <p className="text-amber-800 leading-relaxed">
+                  We found existing registered patient(s) with matching name or phone. To prevent duplicate patient records, you can select the existing patient or continue registering as a new record:
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                  {potentialDuplicates.slice(0, 2).map((dup) => (
+                    <div
+                      key={dup.id}
+                      className="p-3 rounded-xl bg-white border border-amber-200 flex items-center justify-between gap-2 shadow-2xs"
+                    >
+                      <div>
+                        <span className="font-bold text-slate-800 text-xs">{dup.name}</span>
+                        <span className="text-[11px] text-slate-500 block mt-0.5">
+                          {dup.age} yrs • {dup.gender} • {dup.village} {dup.phone ? `• ${dup.phone}` : ''}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleSelectExisting(dup);
+                          setTab('existing');
+                        }}
+                        className="px-3 py-1.5 bg-[#0A9F68] text-white rounded-lg font-bold text-[11px] hover:bg-[#088758] shrink-0 transition-colors shadow-xs"
+                      >
+                        Use Existing
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {/* Full Name */}
             <div>
               <label className="block text-slate-700 font-bold mb-1">

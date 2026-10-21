@@ -14,8 +14,10 @@ import {
   deleteAppointmentAtomic,
   generateUUID
 } from '../db/offlineDb';
+import { apiFetch } from '../api/apiConfig';
 import { useLiveQuery } from 'dexie-react-hooks';
 import type { Language } from '../i18n/translations';
+import { useLanguage } from '../i18n/LanguageContext';
 
 // ─── TYPES ─────────────────────────────────────────────────────────────────────
 
@@ -250,6 +252,7 @@ async function fetchNearbyHospitals(lat: number, lng: number, radiusM = 15000): 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 
 export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline }) => {
+  const { strings } = useLanguage();
   const mapRef     = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mapObjRef  = useRef<any>(null);
@@ -300,7 +303,10 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
     // 2. Also attempt online delete if connected
     if (isOnline) {
       try {
-        await fetch(`http://127.0.0.1:8000/api/appointments/${apptId}`, { method: 'DELETE' });
+        await apiFetch(`/api/appointments/${encodeURIComponent(apptId)}`, {
+          method: 'DELETE',
+          timeoutMs: 8000,
+        });
       } catch { /* queued in outbox for automatic push */ }
     }
     setDeleteConfirm(null);
@@ -339,9 +345,8 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
     // Sync to backend if online
     if (isOnline) {
       try {
-        await fetch(`http://127.0.0.1:8000/api/appointments/${editModal.appointment.id}`, {
+        await apiFetch(`/api/appointments/${encodeURIComponent(editModal.appointment.id)}`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             patient_name: savedAppt.patient_name,
             patient_phone: savedAppt.patient_phone,
@@ -349,7 +354,8 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
             appointment_time: savedAppt.appointment_time,
             notes: savedAppt.notes,
             status: savedAppt.status
-          })
+          }),
+          timeoutMs: 8000,
         });
         await db.appointments.update(editModal.appointment.id, { sync_state: 'SYNCED', synced: true });
       } catch { /* queued in outbox */ }
@@ -555,7 +561,9 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
       setResolvedLocationName(villageStr);
 
       // Fast backend search
-      const res = await fetch(`http://127.0.0.1:8000/api/hospitals/search?location=${encodeURIComponent(villageStr)}`);
+      const res = await apiFetch(`/api/hospitals/search?location=${encodeURIComponent(villageStr)}`, {
+        timeoutMs: 10000,
+      });
       
       if (!res.ok) {
         throw new Error('Backend error');
@@ -670,9 +678,8 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
 
     if (isOnline) {
       try {
-        await fetch('http://127.0.0.1:8000/api/appointments', {
+        await apiFetch('/api/appointments', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             id: savedAppt.id,
             patient_name: savedAppt.patient_name,
@@ -709,17 +716,17 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
               <div className="w-10 h-10 rounded-xl bg-white/15 flex items-center justify-center backdrop-blur">
                 <Video className="w-5 h-5 text-violet-200" />
               </div>
-              <span className="text-xs font-bold text-violet-300 uppercase tracking-widest">Teleconsultation Hub</span>
+              <span className="text-xs font-bold text-violet-300 uppercase tracking-widest">{strings.appointments.title}</span>
             </div>
-            <h2 className="text-2xl sm:text-3xl font-black">Find Nearby Hospital / Doctor</h2>
+            <h2 className="text-2xl sm:text-3xl font-black">{strings.appointments.title}</h2>
             <p className="text-violet-200 text-sm font-medium mt-1">
-              GPS-powered real hospital search · Instant booking · Works offline
+              {strings.appointments.subtitle}
             </p>
           </div>
           <div className="flex flex-col gap-2 shrink-0">
             <div className="flex items-center gap-2 bg-white/10 px-4 py-2 rounded-2xl border border-white/20 backdrop-blur">
               <div className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
-              <span className="text-xs font-bold">{isOnline ? 'Online — Live Sync' : 'Offline — IndexedDB'}</span>
+              <span className="text-xs font-bold">{isOnline ? `${strings.common.online}` : `${strings.common.offline}`}</span>
             </div>
           </div>
         </div>
@@ -1144,9 +1151,9 @@ export const TeleconsultBooking: React.FC<TeleconsultBookingProps> = ({ isOnline
                   )}
                 </div>
                 <div className="sticky bottom-0 bg-white dark:bg-slate-800 border-t border-slate-100 dark:border-slate-700 px-6 py-4 flex gap-3">
-                  <button onClick={() => setModal({ isOpen: false, doctor: null })} className="flex-1 px-4 py-3.5 rounded-2xl border border-slate-300 dark:border-slate-600 font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 text-sm flex items-center justify-center gap-2"><XCircle className="w-4 h-4" /> Cancel</button>
+                  <button onClick={() => setModal({ isOpen: false, doctor: null })} className="flex-1 px-4 py-3.5 rounded-2xl border border-slate-300 dark:border-slate-600 font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 text-sm flex items-center justify-center gap-2"><XCircle className="w-4 h-4" /> {strings.common.cancel}</button>
                   <button onClick={confirmBooking} disabled={!selectedDate || !selectedTime || !patientName.trim() || isBooking} className="flex-1 px-4 py-3.5 rounded-2xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white font-extrabold text-sm shadow-lg shadow-indigo-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 active:scale-95 transition-all">
-                    {isBooking ? <><Loader2 className="w-4 h-4 animate-spin" /> Booking…</> : <><CalendarCheck className="w-4 h-4" /> Confirm Booking</>}
+                    {isBooking ? <><Loader2 className="w-4 h-4 animate-spin" /> {strings.common.loading}</> : <><CalendarCheck className="w-4 h-4" /> {strings.appointments.confirmBookingBtn}</>}
                   </button>
                 </div>
               </div>

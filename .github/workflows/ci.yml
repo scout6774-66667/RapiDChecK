@@ -1,0 +1,76 @@
+name: RapiDChecK Continuous Integration
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  security-audit:
+    name: Repository Security & Secret Hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify No Tracked Secrets
+        run: |
+          echo "Verifying no private .env or database binaries are tracked by Git..."
+          TRACKED_SECRETS=$(git ls-files | grep -E "(\.env$|\.env\.local|\.db$|\.sqlite|private\.key)" || true)
+          if [ -n "$TRACKED_SECRETS" ]; then
+            echo "❌ ERROR: Sensitive files detected in Git index:"
+            echo "$TRACKED_SECRETS"
+            exit 1
+          fi
+          echo "✅ Security hygiene check passed: Zero tracked secrets."
+
+  backend-tests:
+    name: Backend Pytest & RBAC Suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r Health-AI-main/backend/requirements.txt
+          pip install pytest httpx
+      - name: Run Backend Pytest Suite
+        run: |
+          cd Health-AI-main/backend
+          pytest test_auth_signin_signup.py test_clinical_safety.py test_adversarial_security.py test_sync_v2.py test_patient_deletion.py
+
+  frontend-tests:
+    name: Frontend Typecheck, i18n & Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: Health-AI-main/frontend/package-lock.json
+      - name: Install Frontend Dependencies
+        run: |
+          cd Health-AI-main/frontend
+          npm ci
+      - name: TypeScript Strict Typecheck
+        run: |
+          cd Health-AI-main/frontend
+          npm run typecheck
+      - name: Run i18n Key Parity Test (EN, HI, BN)
+        run: |
+          cd Health-AI-main/frontend
+          npm run test:i18n
+      - name: Run Role Selection & Get Started Test
+        run: |
+          cd Health-AI-main/frontend
+          npm run test:role-selection
+      - name: Production Vite Build
+        run: |
+          cd Health-AI-main/frontend
+          npm run build

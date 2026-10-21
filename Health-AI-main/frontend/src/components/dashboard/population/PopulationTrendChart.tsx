@@ -115,6 +115,7 @@ const INDICATOR_GROUPS: IndicatorGroup[] = [
 
 export const PopulationTrendChart: FC<PopulationTrendChartProps> = ({
   series,
+  nfhsBaseline,
 }) => {
   const [activeGroupId, setActiveGroupId] = useState<string>('maternal_care');
 
@@ -247,20 +248,27 @@ export const PopulationTrendChart: FC<PopulationTrendChartProps> = ({
       </div>
 
       {/* Discrete Survey Context Benchmark Note (Requirement 4 & 11) */}
-      {activeGroup.nfhsBenchmark && (
-        <div className="mt-4 p-3.5 bg-emerald-50/60 rounded-xl border border-emerald-200/80 flex items-start gap-3">
-          <Info className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
-          <div className="text-xs text-emerald-900 leading-relaxed">
-            <span className="font-bold text-emerald-950">NFHS-5 Survey Context Reference: </span>
-            The 2019–20 National Family Health Survey established a district baseline of{' '}
-            <span className="font-extrabold text-emerald-950">
-              {activeGroup.nfhsBenchmark.value}
-              {activeGroup.nfhsBenchmark.unit}
-            </span>{' '}
-            for <span className="font-semibold">{activeGroup.nfhsBenchmark.label}</span>. As per clinical data governance standards, survey data is preserved as a discrete snapshot and is NOT forward-filled across annual HMIS observations.
+      {(() => {
+        if (!activeGroup.nfhsBenchmark) return null;
+        const dynamicVal = (nfhsBaseline && activeGroup.nfhsBenchmark.key in nfhsBaseline)
+          ? nfhsBaseline[activeGroup.nfhsBenchmark.key]
+          : activeGroup.nfhsBenchmark.value;
+        const hasValue = dynamicVal !== null && dynamicVal !== undefined;
+
+        return (
+          <div className="mt-4 p-3.5 bg-emerald-50/60 rounded-xl border border-emerald-200/80 flex items-start gap-3">
+            <Info className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+            <div className="text-xs text-emerald-900 leading-relaxed">
+              <span className="font-bold text-emerald-950">NFHS-5 Survey Context Reference: </span>
+              The 2019–20 National Family Health Survey established a validated district baseline of{' '}
+              <span className="font-extrabold text-emerald-950">
+                {hasValue ? `${dynamicVal}${activeGroup.nfhsBenchmark.unit}` : 'Data Unavailable'}
+              </span>{' '}
+              for <span className="font-semibold">{activeGroup.nfhsBenchmark.label}</span> (Source: Ministry of Health and Family Welfare, IIPS). As per clinical data governance standards, survey data is preserved as a discrete snapshot and is NOT forward-filled across annual HMIS observations.
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 };

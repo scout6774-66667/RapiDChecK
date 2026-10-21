@@ -39,7 +39,7 @@ export interface PatientTableRow {
   name: string;
   age: number;
   gender: 'M' | 'F' | 'Other';
-  riskLevel: 'HIGH' | 'MODERATE' | 'LOW' | 'NEEDS_REVIEW';
+  riskLevel: 'HIGH' | 'MODERATE' | 'LOW' | 'NEEDS_REVIEW' | 'UNASSESSED';
   keySymptoms: string;
   status: 'REFERRED' | 'APPOINTMENT' | 'PENDING' | 'COMPLETED' | 'UNDER_REVIEW';
   avatarUrl?: string;

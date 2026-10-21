@@ -9,7 +9,7 @@
   "failed_operations": 0,
   "average_sync_latency_ms": 12.4,
   "maximum_sync_latency_ms": 38.6,
-  "pulled_journal_entries": 4,
+  "pulled_journal_entries": 3,
   "convergence_status": "CONVERGED",
   "data_integrity_status": "VERIFIED_CORRECT",
   "scenarios": [

@@ -1,0 +1,23 @@
+# Root Docker Ignore
+.git
+.github
+.agents
+.vscode
+.idea
+*.log
+.DS_Store
+node_modules/
+**/node_modules/
+venv/
+**/venv/
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+*.db
+*.sqlite
+*.sqlite3
+**/ruralhealth.db
+.env
+.env.*
+!.env.example

@@ -1,17 +1,24 @@
 import uuid
+import json
 import os
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 from sqlalchemy.orm import Session
+from sqlalchemy import func, or_, and_
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
 # Load .env from the same directory as this file
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
 
-from database import init_db, get_db, PatientModel, AssessmentModel, AppointmentModel, SyncJournalModel, IdempotencyModel, UserModel, ClinicalReviewModel, AuditEventModel
+from config import CORS_ORIGINS, ENVIRONMENT, validate_security_configuration
+from database import init_db, get_db, PatientModel, AssessmentModel, AppointmentModel, ReferralModel, SyncJournalModel, IdempotencyModel, UserModel, ClinicalReviewModel, AuditEventModel, ClinicModel, ClinicMembershipModel
 from schemas import (
     PatientCreate, PatientResponse,
     AssessmentCreate, AssessmentResponse,
@@ -20,12 +27,17 @@ from schemas import (
     SyncPushRequest, SyncPushResponse,
     SyncPullRequest, SyncPullResponse,
     UserLoginRequest, UserRegisterRequest, UserResponse, TokenResponse, UserProfileResponse,
-    ClinicalReviewSubmitRequest, ClinicalReviewResponse, PendingReviewItem, ReviewHistoryItem
+    ClinicalReviewSubmitRequest, ClinicalReviewResponse, PendingReviewItem, ReviewHistoryItem,
+    ReferralCreate, ReferralStatusUpdate, ReferralResponse,
+    AnalysisOverviewResponse, ScreeningTrendPoint, RiskDistributionResponse, RiskDistributionItem, ReferralStatisticsResponse,
+    ClinicSummary, ClinicResponse, ClinicStaffMemberResponse, AddStaffRequest, UpdateStaffRequest
 )
 from sync_service import process_push_batch, process_pull_request, record_journal_entry
 from auth_service import (
     hash_password, verify_password, create_access_token, decode_access_token,
-    get_current_user, require_roles, require_permissions, seed_default_users, ROLE_PERMISSIONS
+    get_current_user, require_roles, require_permissions, seed_default_users, ROLE_PERMISSIONS,
+    check_brute_force_lockout, record_login_failure, clear_login_failures, security_bearer,
+    get_current_clinic, require_clinic_permission
 )
 from review_service import (
     evaluate_review_requirement, list_pending_reviews, assign_review_to_doctor,
@@ -55,8 +67,37 @@ except Exception as _gemini_err:
     _GEMINI = None
     print(f"[main] Gemini client not loaded: {_gemini_err}")
 
+from hospital_recommender import recommend_hospitals
+from risk_scoring import classify_risk_level, get_condition_profile
+from schemas import (
+    HospitalRecommendationItem,
+    HospitalRecommendationRequest,
+    HospitalRecommendationResponse
+)
+try:
+    from ml.population_health import population_health_engine as _pop_health, SAFETY_DISCLAIMER as _POP_DISCLAIMER
+    _POPULATION_HEALTH = _pop_health
+except Exception as _pop_err:
+    _POPULATION_HEALTH = None
+    _POP_DISCLAIMER = "Population health intelligence layer"
+    print(f"[main] Population health engine not loaded: {_pop_err}")
+
 from health_resources_service import seed_default_health_resources
 from health_resource_routes import router as health_resource_router
+from snowflake_client import get_snowflake_health_summary, verify_snowflake_connection
+from snowflake_patient_pipeline import sync_governed_patient_analytics, get_governance_policy
+
+def clinic_scope_filter(model_column, clinic_id: str, facility_column=None):
+    """
+    Returns SQL filter ensuring strict clinic boundary isolation:
+    - Dedicated clinic workspaces match model_column == clinic_id, or if model_column is NULL (legacy), match facility_column == clinic_id.
+    - Legacy clinic ('clinic-sonpur-legacy') also includes unbackfilled historical records (clinic_id IS NULL).
+    """
+    if clinic_id == "clinic-sonpur-legacy":
+        return or_(model_column == clinic_id, model_column.is_(None))
+    if facility_column is not None:
+        return or_(model_column == clinic_id, and_(model_column.is_(None), facility_column == clinic_id))
+    return model_column == clinic_id
 
 app = FastAPI(
     title="RuralHealth AI Backend",
@@ -67,49 +108,183 @@ app = FastAPI(
 # Mount Health Resources Router (v2)
 app.include_router(health_resource_router)
 
-# Enable CORS for local Vite dev server and mobile devices
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/api/"):
+            # Prevent caching of sensitive healthcare data, reviews, and tokens
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+            response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+# Enable CORS with explicit allowlist to prevent arbitrary origin token exfiltration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    if isinstance(exc, HTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=getattr(exc, "headers", None)
+        )
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "An internal server error occurred. Please contact system administrator."}
+    )
+
 @app.on_event("startup")
 def startup_event():
+    validate_security_configuration()
     init_db()
-    # Seed default frontline & clinician accounts
-    from database import SessionLocal
-    db = SessionLocal()
-    try:
-        seed_default_users(db)
-        seed_default_health_resources(db)
-    finally:
-        db.close()
+    # Seed default frontline & clinician accounts strictly in development or testing environments
+    if ENVIRONMENT in ("development", "testing"):
+        from database import SessionLocal
+        db = SessionLocal()
+        try:
+            seed_default_users(db)
+            seed_default_health_resources(db)
+        finally:
+            db.close()
+    else:
+        logger.info("[startup] Production environment active: default development accounts are not seeded.")
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "online", "system": "RuralHealth AI Backend", "version": "1.0.0"}
+    return {
+        "status": "online",
+        "system": "RuralHealth AI Backend",
+        "version": "2.0.0",
+        "database": "online",
+        "snowflake": get_snowflake_health_summary()
+    }
+
+
+@app.get("/api/admin/snowflake/test-connection")
+def admin_snowflake_test_connection(
+    current_user: UserModel = Depends(require_roles("SYSTEM_ADMIN"))
+):
+    """
+    Diagnostic endpoint to test Snowflake cloud data warehouse connectivity.
+    Restricted exclusively to SYSTEM_ADMIN accounts.
+    Executes a read-only query on the synthetic verification table
+    (RURALHEALTH_DB.ANALYTICS.CONNECTION_TEST).
+    """
+    return verify_snowflake_connection()
+
+
+@app.post("/api/admin/snowflake/sync-governed-analytics")
+def admin_snowflake_sync_analytics(
+    max_records: int = 100,
+    current_user: UserModel = Depends(require_roles("SYSTEM_ADMIN", "DISTRICT_OFFICER")),
+    db: Session = Depends(get_db)
+):
+    """
+    Executes the governed de-identified patient synchronization pipeline to Snowflake.
+    Strictly strips all direct PII (names, phones, ABHA, notes) and applies HMAC pseudonymization.
+    Restricted to SYSTEM_ADMIN and DISTRICT_OFFICER roles.
+    """
+    return sync_governed_patient_analytics(db=db, max_records=max_records)
+
+
+@app.get("/api/admin/snowflake/governance-policy")
+def admin_snowflake_governance_policy(
+    current_user: UserModel = Depends(require_roles("SYSTEM_ADMIN", "DISTRICT_OFFICER"))
+):
+    """
+    Returns the documented, audited field allowlist and privacy policy for Snowflake analytics.
+    """
+    return get_governance_policy()
 
 # --- PATIENTS ENDPOINTS ---
 
 @app.post("/api/patients", response_model=PatientResponse)
-def create_patient(patient: PatientCreate, db: Session = Depends(get_db)):
+def create_patient(
+    patient: PatientCreate,
+    current_user: UserModel = Depends(require_permissions("patients:create")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    # Reject cross-clinic creation attempts
+    if patient.clinic_id and patient.clinic_id != current_clinic.id and current_user.role != "SYSTEM_ADMIN":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access denied: cannot register patient for foreign clinic '{patient.clinic_id}'. Authorized for '{current_clinic.id}'."
+        )
+
     p_id = patient.id or str(uuid.uuid4())
     existing = db.query(PatientModel).filter(PatientModel.id == p_id).first()
     if existing:
+        if existing.clinic_id and existing.clinic_id != current_clinic.id and current_user.role != "SYSTEM_ADMIN":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: patient belongs to another clinic workspace."
+            )
         return existing
+
+    # Enforce facility isolation: non-admin clinicians/workers can only register for their assigned facility
+    target_facility = current_user.facility_id
+    if current_user.role != "SYSTEM_ADMIN" and current_user.facility_id:
+        if patient.facility_id and patient.facility_id != current_user.facility_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied: cannot register patient for facility '{patient.facility_id}'. Assigned to '{current_user.facility_id}'."
+            )
+        target_facility = current_user.facility_id
+    else:
+        target_facility = patient.facility_id or current_user.facility_id or "PHC-DEFAULT"
+
+    # Transparent duplicate detection within the current clinic: National Health ID
+    if patient.national_health_id and patient.national_health_id.strip():
+        nhid_match = db.query(PatientModel).filter(
+            PatientModel.national_health_id == patient.national_health_id.strip(),
+            PatientModel.clinic_id == current_clinic.id,
+            PatientModel.is_deleted == 0
+        ).first()
+        if nhid_match:
+            return nhid_match
+
+    # Transparent duplicate detection within current clinic: Demographics (matching name, phone, clinic)
+    norm_name = patient.name.strip()
+    norm_phone = (patient.phone or "").strip()
+    norm_village = patient.village.strip()
+    if norm_name and norm_phone:
+        demo_match = db.query(PatientModel).filter(
+            func.lower(PatientModel.name) == norm_name.lower(),
+            PatientModel.phone == norm_phone,
+            PatientModel.clinic_id == current_clinic.id,
+            PatientModel.is_deleted == 0
+        ).first()
+        if demo_match:
+            return demo_match
 
     db_patient = PatientModel(
         id=p_id,
-        national_health_id=patient.national_health_id,
-        name=patient.name,
+        clinic_id=current_clinic.id,
+        national_health_id=patient.national_health_id.strip() if patient.national_health_id else None,
+        name=norm_name,
         age=patient.age,
-        gender=patient.gender,
-        village=patient.village,
-        phone=patient.phone,
+        gender=patient.gender.strip(),
+        village=norm_village,
+        phone=norm_phone,
         patient_id=patient.patient_id or f"RH-{p_id[:6].upper()}",
+        facility_id=target_facility,
+        record_origin=patient.record_origin or "MANUAL_CLINICAL",
+        is_synthetic=1 if patient.is_synthetic else 0,
+        sync_status="SYNCED",
         server_version=1,
         is_deleted=0,
         created_at=datetime.utcnow().isoformat(),
@@ -126,6 +301,7 @@ def create_patient(patient: PatientCreate, db: Session = Depends(get_db)):
         operation_type='CREATE',
         payload={
             "id": db_patient.id,
+            "clinic_id": db_patient.clinic_id,
             "national_health_id": db_patient.national_health_id,
             "name": db_patient.name,
             "age": db_patient.age,
@@ -133,11 +309,13 @@ def create_patient(patient: PatientCreate, db: Session = Depends(get_db)):
             "village": db_patient.village,
             "phone": db_patient.phone,
             "patient_id": db_patient.patient_id,
+            "facility_id": db_patient.facility_id,
             "server_version": 1,
             "is_deleted": 0,
             "created_at": db_patient.created_at
         },
-        server_version=1
+        server_version=1,
+        clinic_id=current_clinic.id
     )
 
     db.commit()
@@ -145,16 +323,73 @@ def create_patient(patient: PatientCreate, db: Session = Depends(get_db)):
     return db_patient
 
 @app.get("/api/patients", response_model=List[PatientResponse])
-def get_patients(db: Session = Depends(get_db)):
-    return db.query(PatientModel).filter(PatientModel.is_deleted == 0).order_by(PatientModel.created_at.desc()).all()
+def get_patients(
+    include_synthetic: bool = True,
+    current_user: UserModel = Depends(require_permissions("patients:read")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    query = db.query(PatientModel).filter(PatientModel.is_deleted == 0)
+    if not include_synthetic:
+        query = query.filter(PatientModel.is_synthetic == 0)
+    # Clinic boundary: restrict exclusively to the caller's active clinic workspace
+    if current_user.role != "SYSTEM_ADMIN" or current_clinic:
+        query = query.filter(clinic_scope_filter(PatientModel.clinic_id, current_clinic.id, PatientModel.facility_id))
+    return query.order_by(PatientModel.created_at.desc()).all()
+
+
+@app.get("/api/patients/{patient_id}", response_model=PatientResponse)
+def get_patient_by_id(
+    patient_id: str,
+    current_user: UserModel = Depends(require_permissions("patients:read")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    existing = db.query(PatientModel).filter(PatientModel.id == patient_id).first()
+    if not existing or existing.is_deleted:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    if current_user.role != "SYSTEM_ADMIN":
+        if existing.clinic_id and existing.clinic_id != current_clinic.id and not (existing.clinic_id is None and current_clinic.id == "clinic-sonpur-legacy"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Patient not found"
+            )
+        target_fac = existing.clinic_id or existing.facility_id
+        if target_fac and target_fac != current_clinic.id and target_fac != getattr(current_user, "facility_id", None):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied: Patient belongs to facility {target_fac}."
+            )
+    return existing
 
 
 @app.put("/api/patients/{patient_id}", response_model=PatientResponse)
-def update_patient(patient_id: str, patient: PatientCreate, db: Session = Depends(get_db)):
+def update_patient(
+    patient_id: str,
+    patient: PatientCreate,
+    current_user: UserModel = Depends(require_permissions("patients:update")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
     """Edit patient demographic details (name, age, gender, village, phone)."""
     existing = db.query(PatientModel).filter(PatientModel.id == patient_id).first()
     if not existing or existing.is_deleted:
         raise HTTPException(status_code=404, detail="Patient not found")
+
+    if current_user.role != "SYSTEM_ADMIN":
+        if existing.clinic_id and existing.clinic_id != current_clinic.id and not (existing.clinic_id is None and current_clinic.id == "clinic-sonpur-legacy"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Patient not found"
+            )
+        target_fac = existing.clinic_id or existing.facility_id
+        if target_fac and target_fac != current_clinic.id and target_fac != getattr(current_user, "facility_id", None):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied: Patient belongs to facility {target_fac}."
+            )
+
     existing.name    = patient.name
     existing.age     = patient.age
     existing.gender  = patient.gender
@@ -173,14 +408,17 @@ def update_patient(patient_id: str, patient: PatientCreate, db: Session = Depend
         operation_type='UPDATE',
         payload={
             "id": existing.id,
+            "clinic_id": existing.clinic_id,
             "name": existing.name,
             "age": existing.age,
             "gender": existing.gender,
             "village": existing.village,
             "phone": existing.phone,
+            "facility_id": existing.facility_id,
             "server_version": existing.server_version
         },
-        server_version=existing.server_version
+        server_version=existing.server_version,
+        clinic_id=current_clinic.id
     )
 
     db.commit()
@@ -189,15 +427,36 @@ def update_patient(patient_id: str, patient: PatientCreate, db: Session = Depend
 
 
 @app.delete("/api/patients/{patient_id}")
-def delete_patient(patient_id: str, db: Session = Depends(get_db)):
-    """Soft delete a patient and record tombstone in sync journal."""
-    existing = db.query(PatientModel).filter(PatientModel.id == patient_id).first()
+def delete_patient(
+    patient_id: str,
+    current_user: UserModel = Depends(require_permissions("patients:delete")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    """Soft delete a patient, cascade soft-delete assessments, and record tombstones in sync journal."""
+    existing = db.query(PatientModel).filter(
+        or_(PatientModel.id == patient_id, PatientModel.patient_id == patient_id)
+    ).first()
     if not existing or existing.is_deleted:
         raise HTTPException(status_code=404, detail="Patient not found")
 
+    if current_user.role != "SYSTEM_ADMIN":
+        if existing.clinic_id and existing.clinic_id != current_clinic.id and not (existing.clinic_id is None and current_clinic.id == "clinic-sonpur-legacy"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Patient not found"
+            )
+        target_fac = existing.clinic_id or existing.facility_id
+        if target_fac and target_fac != current_clinic.id and target_fac != getattr(current_user, "facility_id", None):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied: Patient belongs to facility {target_fac}."
+            )
+
+    now_iso = datetime.utcnow().isoformat()
     existing.is_deleted = 1
     existing.server_version += 1
-    existing.updated_at = datetime.utcnow().isoformat()
+    existing.updated_at = now_iso
 
     record_journal_entry(
         db=db,
@@ -205,21 +464,111 @@ def delete_patient(patient_id: str, db: Session = Depends(get_db)):
         entity_type='patient',
         entity_id=existing.id,
         operation_type='DELETE',
-        payload={"id": existing.id, "is_deleted": 1, "server_version": existing.server_version},
-        server_version=existing.server_version
+        payload={"id": existing.id, "clinic_id": existing.clinic_id, "is_deleted": 1, "server_version": existing.server_version},
+        server_version=existing.server_version,
+        clinic_id=current_clinic.id
     )
 
+    # Cascade soft-delete associated assessments and record tombstones
+    for ass in (existing.assessments or []):
+        if not ass.is_deleted:
+            ass.is_deleted = 1
+            ass.server_version += 1
+            ass.updated_at = now_iso
+            record_journal_entry(
+                db=db,
+                device_id=None,
+                entity_type='assessment',
+                entity_id=ass.id,
+                operation_type='DELETE',
+                payload={"id": ass.id, "clinic_id": ass.clinic_id, "is_deleted": 1, "server_version": ass.server_version},
+                server_version=ass.server_version,
+                clinic_id=current_clinic.id
+            )
+
+    # Cascade cancel/soft-delete associated appointments
+    if existing.phone:
+        linked_appts = db.query(AppointmentModel).filter(
+            AppointmentModel.patient_phone == existing.phone,
+            or_(
+                AppointmentModel.clinic_id == current_clinic.id,
+                AppointmentModel.facility_id == current_clinic.id,
+                AppointmentModel.facility_id == getattr(current_user, "facility_id", None)
+            ),
+            AppointmentModel.is_deleted == 0
+        ).all()
+        for appt in linked_appts:
+            appt.is_deleted = 1
+            appt.status = "CANCELLED"
+            appt.server_version += 1
+            appt.updated_at = now_iso
+            record_journal_entry(
+                db=db,
+                device_id=None,
+                entity_type='appointment',
+                entity_id=appt.id,
+                operation_type='DELETE',
+                payload={"id": appt.id, "clinic_id": appt.clinic_id, "is_deleted": 1, "status": "CANCELLED", "server_version": appt.server_version},
+                server_version=appt.server_version,
+                clinic_id=current_clinic.id
+            )
+
+    # Record immutable audit event for patient deletion
+    audit_event = AuditEventModel(
+        event_id=str(uuid.uuid4()),
+        event_type="PATIENT_DELETED",
+        entity_type="patient",
+        entity_id=existing.id,
+        user_id=current_user.id if current_user else "system",
+        user_role=current_user.role if current_user else "SYSTEM",
+        device_id=None,
+        action="ARCHIVE_AND_DELETE",
+        previous_state_json=json.dumps({
+            "id": existing.id,
+            "patient_id": existing.patient_id,
+            "name": existing.name,
+            "facility_id": existing.facility_id,
+            "clinic_id": existing.clinic_id,
+            "is_deleted": 0
+        }),
+        new_state_json=json.dumps({
+            "id": existing.id,
+            "patient_id": existing.patient_id,
+            "clinic_id": existing.clinic_id,
+            "is_deleted": 1,
+            "server_version": existing.server_version
+        }),
+        workflow_version="2.0.0",
+        ruleset_version="2.0.0",
+        timestamp=now_iso
+    )
+    db.add(audit_event)
+
     db.commit()
-    return {"message": "Patient soft deleted and tombstone recorded", "id": patient_id}
+    return {"status": "success", "message": "Patient and associated clinical records soft deleted and archived", "id": existing.id, "server_version": existing.server_version}
 
 # --- ASSESSMENTS & AI RISK ENDPOINTS ---
 
 @app.post("/api/assess", response_model=AssessmentResponse)
-def create_assessment(assessment: AssessmentCreate, db: Session = Depends(get_db)):
-    # 1. Fetch or verify patient
+def create_assessment(
+    assessment: AssessmentCreate,
+    current_user: UserModel = Depends(require_permissions("assessments:create")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    # 1. Fetch or verify patient & enforce clinic tenancy
     patient = db.query(PatientModel).filter(PatientModel.id == assessment.patient_id).first()
+    if patient and current_user.role != "SYSTEM_ADMIN":
+        target_fac = patient.clinic_id or patient.facility_id
+        if target_fac and target_fac != current_clinic.id and target_fac != getattr(current_user, "facility_id", None):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied: cannot perform assessment on patient from foreign clinic workspace."
+            )
+
     patient_name = patient.name if patient else "Unknown Patient"
     village = patient.village if patient else "Unknown Village"
+    target_facility = current_user.facility_id or (patient.facility_id if patient else None) or "PHC-DEFAULT"
 
     # 2. Run Governed Clinical Screening Engine (TASK-001 & TASK-002)
     eval_result = screening_engine.evaluate(assessment.model_dump())
@@ -231,7 +580,9 @@ def create_assessment(assessment: AssessmentCreate, db: Session = Depends(get_db
     if not existing:
         db_ass = AssessmentModel(
             id=ass_id,
+            clinic_id=current_clinic.id,
             patient_id=assessment.patient_id,
+            facility_id=target_facility,
             symptom_duration_days=assessment.symptom_duration_days,
             temperature_f=assessment.temperature_f,
             systolic_bp=assessment.systolic_bp,
@@ -282,7 +633,9 @@ def create_assessment(assessment: AssessmentCreate, db: Session = Depends(get_db
             operation_type='CREATE',
             payload={
                 "id": db_ass.id,
+                "clinic_id": db_ass.clinic_id,
                 "patient_id": db_ass.patient_id,
+                "facility_id": db_ass.facility_id,
                 "risk_level": db_ass.risk_level,
                 "triage_state": db_ass.triage_state,
                 "is_emergency": db_ass.is_emergency,
@@ -296,7 +649,8 @@ def create_assessment(assessment: AssessmentCreate, db: Session = Depends(get_db
                 "is_deleted": 0,
                 "created_at": db_ass.created_at
             },
-            server_version=1
+            server_version=1,
+            clinic_id=current_clinic.id
         )
 
         db.commit()
@@ -307,6 +661,7 @@ def create_assessment(assessment: AssessmentCreate, db: Session = Depends(get_db
 
     return AssessmentResponse(
         id=target_ass.id,
+        clinic_id=getattr(target_ass, 'clinic_id', current_clinic.id),
         patient_id=target_ass.patient_id,
         patient_name=patient_name,
         village=village,
@@ -345,8 +700,15 @@ def create_assessment(assessment: AssessmentCreate, db: Session = Depends(get_db
     )
 
 @app.get("/api/assessments", response_model=List[AssessmentResponse])
-def list_assessments(db: Session = Depends(get_db)):
-    assessments = db.query(AssessmentModel).filter(AssessmentModel.is_deleted == 0).order_by(AssessmentModel.created_at.desc()).all()
+def list_assessments(
+    current_user: UserModel = Depends(require_permissions("assessments:read")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    query = db.query(AssessmentModel).filter(AssessmentModel.is_deleted == 0)
+    if current_user.role != "SYSTEM_ADMIN" or current_clinic:
+        query = query.filter(clinic_scope_filter(AssessmentModel.clinic_id, current_clinic.id))
+    assessments = query.order_by(AssessmentModel.created_at.desc()).all()
     results = []
     for ass in assessments:
         patient = db.query(PatientModel).filter(PatientModel.id == ass.patient_id).first()
@@ -355,6 +717,7 @@ def list_assessments(db: Session = Depends(get_db)):
         results.append(
             AssessmentResponse(
                 id=ass.id,
+                clinic_id=getattr(ass, 'clinic_id', current_clinic.id),
                 patient_id=ass.patient_id,
                 patient_name=p_name,
                 village=p_village,
@@ -394,11 +757,85 @@ def list_assessments(db: Session = Depends(get_db)):
         )
     return results
 
-@app.put("/api/assessments/{assessment_id}/referral")
-def update_referral_status(assessment_id: str, body: ReferralUpdate, db: Session = Depends(get_db)):
+@app.get("/api/assessments/{assessment_id}", response_model=AssessmentResponse)
+def get_assessment_by_id(
+    assessment_id: str,
+    current_user: UserModel = Depends(require_permissions("assessments:read")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
     ass = db.query(AssessmentModel).filter(AssessmentModel.id == assessment_id).first()
     if not ass or ass.is_deleted:
         raise HTTPException(status_code=404, detail="Assessment not found")
+
+    if current_user.role != "SYSTEM_ADMIN":
+        if ass.clinic_id and ass.clinic_id != current_clinic.id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Assessment not found"
+            )
+
+    patient = db.query(PatientModel).filter(PatientModel.id == ass.patient_id).first()
+    p_name = patient.name if patient else "Unknown Patient"
+    p_village = patient.village if patient else "Unknown Village"
+    return AssessmentResponse(
+        id=ass.id,
+        clinic_id=getattr(ass, 'clinic_id', current_clinic.id),
+        patient_id=ass.patient_id,
+        patient_name=p_name,
+        village=p_village,
+        symptoms=ass.symptoms,
+        symptom_duration_days=ass.symptom_duration_days,
+        temperature_f=ass.temperature_f,
+        systolic_bp=ass.systolic_bp,
+        diastolic_bp=ass.diastolic_bp,
+        glucose_mg_dl=ass.glucose_mg_dl,
+        heart_rate_bpm=ass.heart_rate_bpm,
+        height_cm=ass.height_cm,
+        weight_kg=ass.weight_kg,
+        bmi=ass.bmi,
+        smoking_status=ass.smoking_status,
+        alcohol_status=ass.alcohol_status,
+        physical_activity=ass.physical_activity or "Moderate",
+        family_history=ass.family_history,
+        risk_level=ass.risk_level,
+        triage_state=getattr(ass, 'triage_state', 'LOW_RISK') or 'LOW_RISK',
+        is_emergency=bool(getattr(ass, 'is_emergency', 0)),
+        short_circuit=bool(getattr(ass, 'is_emergency', 0)),
+        red_flags=getattr(ass, 'red_flags', []) or [],
+        uncertainty_state=getattr(ass, 'uncertainty_state', 'COMPLETE') or 'COMPLETE',
+        risk_score=ass.risk_score,
+        likely_conditions=ass.likely_conditions,
+        contributing_factors=ass.contributing_factors,
+        recommended_action=ass.recommended_action,
+        referral_status=ass.referral_status,
+        workflow_version=getattr(ass, 'workflow_version', '2.0.0') or '2.0.0',
+        ruleset_version=getattr(ass, 'ruleset_version', '2.0.0') or '2.0.0',
+        review_state=getattr(ass, 'review_state', 'NOT_REQUIRED') or 'NOT_REQUIRED',
+        reviewed_by=ass.reviewed_by,
+        reviewed_at=ass.reviewed_at,
+        created_at=ass.created_at,
+        disclaimer=MEDICAL_DISCLAIMER
+    )
+
+@app.put("/api/assessments/{assessment_id}/referral")
+def update_referral_status(
+    assessment_id: str,
+    body: ReferralUpdate,
+    current_user: UserModel = Depends(require_permissions("referrals:update")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    ass = db.query(AssessmentModel).filter(AssessmentModel.id == assessment_id).first()
+    if not ass or ass.is_deleted:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+
+    if current_user.role != "SYSTEM_ADMIN":
+        if ass.clinic_id and ass.clinic_id != current_clinic.id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Assessment not found"
+            )
 
     valid_statuses = ["NOT_REFERRED", "REFERRED", "APPOINTMENT_REQUESTED", "CONSULTATION_COMPLETED"]
     if body.referral_status not in valid_statuses:
@@ -416,22 +853,737 @@ def update_referral_status(assessment_id: str, body: ReferralUpdate, db: Session
         operation_type='UPDATE',
         payload={
             "id": ass.id,
+            "clinic_id": ass.clinic_id,
             "referral_status": ass.referral_status,
+            "facility_id": ass.facility_id,
             "server_version": ass.server_version,
             "updated_at": ass.updated_at
         },
-        server_version=ass.server_version
+        server_version=ass.server_version,
+        clinic_id=current_clinic.id
     )
 
     db.commit()
     return {"message": "Referral status updated successfully", "assessment_id": assessment_id, "referral_status": ass.referral_status}
 
+
+# ─── OPERATIONAL IDRC REFERRAL MANAGEMENT ENDPOINTS ──────────────────────────
+
+@app.get("/api/referrals", response_model=List[ReferralResponse])
+def list_referrals(
+    status: Optional[str] = None,
+    priority: Optional[str] = None,
+    facility_id: Optional[str] = None,
+    patient_id: Optional[str] = None,
+    search: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user: UserModel = Depends(require_permissions("referrals:read")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    """
+    List operational IDRC referrals.
+    Enforces role-based permissions and clinic-level access filtering.
+    """
+    query = db.query(ReferralModel).filter(ReferralModel.is_deleted == 0)
+
+    # Clinic workspace isolation
+    if current_user.role != "SYSTEM_ADMIN" or current_clinic:
+        query = query.filter(clinic_scope_filter(ReferralModel.clinic_id, current_clinic.id))
+
+    if status and status.upper() != "ALL":
+        query = query.filter(ReferralModel.status == status.upper())
+    if priority and priority.upper() != "ALL":
+        query = query.filter(ReferralModel.priority == priority.upper())
+    if facility_id and facility_id.upper() != "ALL":
+        query = query.filter(or_(ReferralModel.facility_id == facility_id, ReferralModel.destination_facility == facility_id))
+    if patient_id:
+        query = query.filter(ReferralModel.patient_id == patient_id)
+    if start_date:
+        query = query.filter(ReferralModel.created_at >= start_date)
+    if end_date:
+        query = query.filter(ReferralModel.created_at <= end_date)
+
+    referrals = query.order_by(ReferralModel.created_at.desc()).all()
+
+    # Pre-fetch patients to enrich response
+    patient_ids = list({r.patient_id for r in referrals})
+    patients = {p.id: p for p in db.query(PatientModel).filter(PatientModel.id.in_(patient_ids)).all()} if patient_ids else {}
+
+    results = []
+    for r in referrals:
+        p = patients.get(r.patient_id)
+        if search:
+            s_lower = search.lower()
+            p_name = (p.name if p else "").lower()
+            p_phone = (p.phone if p else "").lower()
+            p_village = (p.village if p else "").lower()
+            ref_id = r.id.lower()
+            ref_reason = (r.referral_reason or "").lower()
+            dest = (r.destination_facility or "").lower()
+            if not (s_lower in ref_id or s_lower in p_name or s_lower in p_phone or s_lower in p_village or s_lower in ref_reason or s_lower in dest):
+                continue
+
+        results.append(ReferralResponse(
+            id=r.id,
+            clinic_id=getattr(r, 'clinic_id', current_clinic.id),
+            patient_id=r.patient_id,
+            patient_name=p.name if p else "Unknown Patient",
+            patient_phone=p.phone if p else "",
+            patient_village=p.village if p else "",
+            patient_age=p.age if p else None,
+            patient_gender=p.gender if p else None,
+            assessment_id=r.assessment_id,
+            referral_reason=r.referral_reason,
+            priority=r.priority,
+            destination_facility=r.destination_facility,
+            facility_id=r.facility_id,
+            status=r.status,
+            notes=r.notes or "",
+            outcome_notes=r.outcome_notes or "",
+            created_by=r.created_by,
+            updated_by=r.updated_by,
+            server_version=r.server_version,
+            is_deleted=r.is_deleted,
+            created_at=r.created_at,
+            updated_at=r.updated_at
+        ))
+    return results
+
+
+@app.post("/api/referrals", response_model=ReferralResponse, status_code=status.HTTP_201_CREATED)
+def create_referral(
+    body: ReferralCreate,
+    current_user: UserModel = Depends(require_permissions("referrals:create")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    """
+    Creates an operational referral for an eligible patient within the authorized clinic workspace.
+    Prevents duplicate active referrals and validates existence of patient and assessment.
+    """
+    patient = db.query(PatientModel).filter(PatientModel.id == body.patient_id, PatientModel.is_deleted == 0).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail=f"Patient {body.patient_id} not found")
+
+    if current_user.role != "SYSTEM_ADMIN" and patient.clinic_id and patient.clinic_id != current_clinic.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: patient belongs to another clinic workspace."
+        )
+
+    if body.assessment_id:
+        ass = db.query(AssessmentModel).filter(AssessmentModel.id == body.assessment_id, AssessmentModel.is_deleted == 0).first()
+        if not ass:
+            raise HTTPException(status_code=404, detail=f"Assessment {body.assessment_id} not found")
+        if current_user.role != "SYSTEM_ADMIN" and ass.clinic_id and ass.clinic_id != current_clinic.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: assessment belongs to another clinic workspace."
+            )
+
+    # Idempotency check via client_operation_id
+    if body.client_operation_id:
+        existing_op = db.query(IdempotencyModel).filter(IdempotencyModel.operation_id == body.client_operation_id).first()
+        if existing_op and existing_op.entity_type == "referral":
+            existing_ref = db.query(ReferralModel).filter(ReferralModel.id == existing_op.entity_id).first()
+            if existing_ref:
+                return ReferralResponse(
+                    id=existing_ref.id,
+                    clinic_id=getattr(existing_ref, 'clinic_id', current_clinic.id),
+                    patient_id=existing_ref.patient_id,
+                    patient_name=patient.name,
+                    patient_phone=patient.phone,
+                    patient_village=patient.village,
+                    patient_age=patient.age,
+                    patient_gender=patient.gender,
+                    assessment_id=existing_ref.assessment_id,
+                    referral_reason=existing_ref.referral_reason,
+                    priority=existing_ref.priority,
+                    destination_facility=existing_ref.destination_facility,
+                    facility_id=existing_ref.facility_id,
+                    status=existing_ref.status,
+                    notes=existing_ref.notes or "",
+                    outcome_notes=existing_ref.outcome_notes or "",
+                    created_by=existing_ref.created_by,
+                    updated_by=existing_ref.updated_by,
+                    server_version=existing_ref.server_version,
+                    is_deleted=existing_ref.is_deleted,
+                    created_at=existing_ref.created_at,
+                    updated_at=existing_ref.updated_at
+                )
+
+    # Check for active duplicate referral within the clinic
+    active_statuses = ["REQUESTED", "APPROVED", "REFERRED", "IN_PROGRESS"]
+    duplicate_query = db.query(ReferralModel).filter(
+        ReferralModel.patient_id == body.patient_id,
+        ReferralModel.clinic_id == current_clinic.id,
+        ReferralModel.status.in_(active_statuses),
+        ReferralModel.is_deleted == 0
+    )
+    if body.assessment_id:
+        duplicate_query = duplicate_query.filter(ReferralModel.assessment_id == body.assessment_id)
+    else:
+        duplicate_query = duplicate_query.filter(ReferralModel.destination_facility == body.destination_facility)
+
+    active_duplicate = duplicate_query.first()
+    if active_duplicate:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"An active referral ({active_duplicate.id}) already exists for this patient with status '{active_duplicate.status}'"
+        )
+
+    if not body.referral_reason or len(body.referral_reason.strip()) < 3:
+        raise HTTPException(status_code=400, detail="Referral reason is required and must be at least 3 characters")
+
+    ref_id = f"REF-{uuid.uuid4().hex[:8].upper()}"
+    now_iso = datetime.utcnow().isoformat()
+    facility_id = body.facility_id or current_user.facility_id or patient.facility_id
+
+    referral = ReferralModel(
+        id=ref_id,
+        clinic_id=current_clinic.id,
+        patient_id=body.patient_id,
+        assessment_id=body.assessment_id,
+        referral_reason=body.referral_reason.strip(),
+        priority=body.priority or "ROUTINE",
+        destination_facility=body.destination_facility.strip(),
+        facility_id=facility_id,
+        status="REQUESTED",
+        notes=body.notes or "",
+        outcome_notes="",
+        created_by=current_user.username,
+        updated_by=None,
+        client_operation_id=body.client_operation_id,
+        server_version=1,
+        is_deleted=0,
+        created_at=now_iso,
+        updated_at=now_iso
+    )
+    db.add(referral)
+
+    record_journal_entry(
+        db=db,
+        device_id=None,
+        entity_type="referral",
+        entity_id=ref_id,
+        operation_type="CREATE",
+        payload={
+            "id": ref_id,
+            "clinic_id": current_clinic.id,
+            "patient_id": body.patient_id,
+            "status": "REQUESTED",
+            "priority": referral.priority,
+            "destination_facility": referral.destination_facility,
+            "server_version": 1
+        },
+        server_version=1,
+        clinic_id=current_clinic.id
+    )
+
+    if body.client_operation_id:
+        idemp = IdempotencyModel(
+            operation_id=body.client_operation_id,
+            device_id="api",
+            client_sequence=1,
+            entity_type="referral",
+            entity_id=ref_id,
+            status="APPLIED",
+            server_version=1,
+            response_json=json.dumps({"id": ref_id, "status": "REQUESTED"}),
+            created_at=now_iso
+        )
+        db.add(idemp)
+
+    audit = AuditEventModel(
+        event_id=f"AUDIT-{uuid.uuid4().hex[:12].upper()}",
+        event_type="REFERRAL_CREATED",
+        entity_type="referral",
+        entity_id=ref_id,
+        user_id=current_user.id,
+        user_role=current_user.role,
+        device_id="api",
+        action=f"Referral created for patient {body.patient_id} to {body.destination_facility}",
+        previous_state_json=None,
+        new_state_json=json.dumps({"status": "REQUESTED", "priority": referral.priority, "reason": referral.referral_reason}),
+        timestamp=now_iso
+    )
+    db.add(audit)
+
+    db.commit()
+    db.refresh(referral)
+
+    return ReferralResponse(
+        id=referral.id,
+        clinic_id=referral.clinic_id,
+        patient_id=referral.patient_id,
+        patient_name=patient.name,
+        patient_phone=patient.phone,
+        patient_village=patient.village,
+        patient_age=patient.age,
+        patient_gender=patient.gender,
+        assessment_id=referral.assessment_id,
+        referral_reason=referral.referral_reason,
+        priority=referral.priority,
+        destination_facility=referral.destination_facility,
+        facility_id=referral.facility_id,
+        status=referral.status,
+        notes=referral.notes or "",
+        outcome_notes=referral.outcome_notes or "",
+        created_by=referral.created_by,
+        updated_by=referral.updated_by,
+        server_version=referral.server_version,
+        is_deleted=referral.is_deleted,
+        created_at=referral.created_at,
+        updated_at=referral.updated_at
+    )
+
+
+@app.get("/api/referrals/{referral_id}", response_model=ReferralResponse)
+def get_referral(
+    referral_id: str,
+    current_user: UserModel = Depends(require_permissions("referrals:read")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    """Fetch single operational referral details with patient and linked screening details."""
+    ref = db.query(ReferralModel).filter(ReferralModel.id == referral_id, ReferralModel.is_deleted == 0).first()
+    if not ref:
+        raise HTTPException(status_code=404, detail="Referral not found")
+
+    if current_user.role != "SYSTEM_ADMIN":
+        if ref.clinic_id != current_clinic.id and not (ref.clinic_id is None and current_clinic.id == "clinic-sonpur-legacy"):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Referral not found")
+
+    patient = db.query(PatientModel).filter(PatientModel.id == ref.patient_id).first()
+
+    return ReferralResponse(
+        id=ref.id,
+        clinic_id=getattr(ref, 'clinic_id', current_clinic.id),
+        patient_id=ref.patient_id,
+        patient_name=patient.name if patient else "Unknown Patient",
+        patient_phone=patient.phone if patient else "",
+        patient_village=patient.village if patient else "",
+        patient_age=patient.age if patient else None,
+        patient_gender=patient.gender if patient else None,
+        assessment_id=ref.assessment_id,
+        referral_reason=ref.referral_reason,
+        priority=ref.priority,
+        destination_facility=ref.destination_facility,
+        facility_id=ref.facility_id,
+        status=ref.status,
+        notes=ref.notes or "",
+        outcome_notes=ref.outcome_notes or "",
+        created_by=ref.created_by,
+        updated_by=ref.updated_by,
+        server_version=ref.server_version,
+        is_deleted=ref.is_deleted,
+        created_at=ref.created_at,
+        updated_at=ref.updated_at
+    )
+
+
+@app.patch("/api/referrals/{referral_id}/status", response_model=ReferralResponse)
+@app.put("/api/referrals/{referral_id}/status", response_model=ReferralResponse)
+def update_operational_referral_status(
+    referral_id: str,
+    body: ReferralStatusUpdate,
+    current_user: UserModel = Depends(require_permissions("referrals:update")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    """
+    Update referral status and record clinical outcomes.
+    Enforces validated state transitions and records audit trail.
+    """
+    ref = db.query(ReferralModel).filter(ReferralModel.id == referral_id, ReferralModel.is_deleted == 0).first()
+    if not ref:
+        raise HTTPException(status_code=404, detail="Referral not found")
+
+    if current_user.role != "SYSTEM_ADMIN":
+        if ref.clinic_id and ref.clinic_id != current_clinic.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Referral not found")
+
+    # Valid status transitions
+    ALLOWED_TRANSITIONS = {
+        "REQUESTED": ["APPROVED", "REFERRED", "CANCELLED"],
+        "APPROVED": ["REFERRED", "IN_PROGRESS", "CANCELLED"],
+        "REFERRED": ["IN_PROGRESS", "COMPLETED", "CANCELLED"],
+        "IN_PROGRESS": ["COMPLETED", "CANCELLED"],
+        "COMPLETED": [],
+        "CANCELLED": []
+    }
+
+    current_status = ref.status
+    target_status = body.status
+
+    if current_status in ["COMPLETED", "CANCELLED"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot transition from terminal referral status '{current_status}'"
+        )
+
+    allowed = ALLOWED_TRANSITIONS.get(current_status, [])
+    if target_status not in allowed and target_status != current_status:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid referral status transition from '{current_status}' to '{target_status}'. Allowed transitions: {allowed}"
+        )
+
+    old_status = ref.status
+    ref.status = target_status
+    if body.outcome_notes is not None:
+        ref.outcome_notes = body.outcome_notes
+    if body.notes is not None:
+        ref.notes = body.notes
+
+    ref.updated_by = current_user.username
+    ref.server_version += 1
+    ref.updated_at = datetime.utcnow().isoformat()
+
+    record_journal_entry(
+        db=db,
+        device_id=None,
+        entity_type="referral",
+        entity_id=ref.id,
+        operation_type="UPDATE",
+        payload={
+            "id": ref.id,
+            "clinic_id": ref.clinic_id,
+            "status": ref.status,
+            "outcome_notes": ref.outcome_notes,
+            "server_version": ref.server_version
+        },
+        server_version=ref.server_version,
+        clinic_id=current_clinic.id
+    )
+
+    audit = AuditEventModel(
+        event_id=f"AUDIT-{uuid.uuid4().hex[:12].upper()}",
+        event_type="REFERRAL_STATUS_UPDATED",
+        entity_type="referral",
+        entity_id=ref.id,
+        user_id=current_user.id,
+        user_role=current_user.role,
+        device_id="api",
+        action=f"Referral {ref.id} status updated from {old_status} to {ref.status}",
+        previous_state_json=json.dumps({"status": old_status}),
+        new_state_json=json.dumps({"status": ref.status, "outcome_notes": ref.outcome_notes, "updated_by": current_user.username}),
+        timestamp=ref.updated_at
+    )
+    db.add(audit)
+
+    db.commit()
+    db.refresh(ref)
+
+    patient = db.query(PatientModel).filter(PatientModel.id == ref.patient_id).first()
+
+    return ReferralResponse(
+        id=ref.id,
+        clinic_id=getattr(ref, 'clinic_id', current_clinic.id),
+        patient_id=ref.patient_id,
+        patient_name=patient.name if patient else "Unknown Patient",
+        patient_phone=patient.phone if patient else "",
+        patient_village=patient.village if patient else "",
+        patient_age=patient.age if patient else None,
+        patient_gender=patient.gender if patient else None,
+        assessment_id=ref.assessment_id,
+        referral_reason=ref.referral_reason,
+        priority=ref.priority,
+        destination_facility=ref.destination_facility,
+        facility_id=ref.facility_id,
+        status=ref.status,
+        notes=ref.notes or "",
+        outcome_notes=ref.outcome_notes or "",
+        created_by=ref.created_by,
+        updated_by=ref.updated_by,
+        server_version=ref.server_version,
+        is_deleted=ref.is_deleted,
+        created_at=ref.created_at,
+        updated_at=ref.updated_at
+    )
+
+
+# ─── CLINICAL ANALYSIS & INSIGHTS ENDPOINTS ──────────────────────────────────
+
+@app.get("/api/analysis/overview", response_model=AnalysisOverviewResponse)
+def get_analysis_overview(
+    facility_id: Optional[str] = None,
+    village: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user: UserModel = Depends(require_permissions("analytics:view")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    """
+    Clinical Analysis Overview KPI metrics.
+    Derived strictly from persisted database records belonging to current clinic workspace:
+    - Encounters vs Unique Patients are accurately distinguished
+    - High-Risk unique patients vs encounters
+    - Referral metrics computed directly from real ReferralModel records
+    """
+    ass_query = db.query(AssessmentModel).filter(AssessmentModel.is_deleted == 0)
+    ref_query = db.query(ReferralModel).filter(ReferralModel.is_deleted == 0)
+
+    if current_user.role != "SYSTEM_ADMIN" or current_clinic:
+        ass_query = ass_query.filter(clinic_scope_filter(AssessmentModel.clinic_id, current_clinic.id))
+        ref_query = ref_query.filter(clinic_scope_filter(ReferralModel.clinic_id, current_clinic.id))
+
+    if facility_id and facility_id.upper() != "ALL":
+        ass_query = ass_query.filter(AssessmentModel.facility_id == facility_id)
+        ref_query = ref_query.filter(or_(ReferralModel.facility_id == facility_id, ReferralModel.destination_facility == facility_id))
+
+    if start_date:
+        ass_query = ass_query.filter(AssessmentModel.created_at >= start_date)
+        ref_query = ref_query.filter(ReferralModel.created_at >= start_date)
+    if end_date:
+        ass_query = ass_query.filter(AssessmentModel.created_at <= end_date)
+        ref_query = ref_query.filter(ReferralModel.created_at <= end_date)
+
+    assessments = ass_query.all()
+
+    if village and village.upper() != "ALL":
+        patient_ids_in_village = {
+            p.id for p in db.query(PatientModel.id).filter(
+                PatientModel.village == village,
+                PatientModel.clinic_id == current_clinic.id,
+                PatientModel.is_deleted == 0
+            ).all()
+        }
+        assessments = [a for a in assessments if a.patient_id in patient_ids_in_village]
+
+    total_encounters = len(assessments)
+    unique_patients = len({a.patient_id for a in assessments})
+
+    high_risk_ass = [a for a in assessments if a.risk_level in ["HIGH", "EMERGENCY"] or a.is_emergency]
+    unique_high_risk = len({a.patient_id for a in high_risk_ass})
+    high_count = len(high_risk_ass)
+    mod_count = sum(1 for a in assessments if a.risk_level == "MODERATE" and not a.is_emergency)
+    low_count = sum(1 for a in assessments if a.risk_level == "LOW" and not a.is_emergency)
+    insufficient_count = sum(1 for a in assessments if a.risk_level in ["INSUFFICIENT_DATA", "NEEDS_REVIEW"])
+
+    referrals = ref_query.all()
+    total_referrals = len(referrals)
+    pending_referrals = sum(1 for r in referrals if r.status in ["REQUESTED", "APPROVED"])
+    in_prog_referrals = sum(1 for r in referrals if r.status in ["REFERRED", "IN_PROGRESS"])
+    comp_referrals = sum(1 for r in referrals if r.status == "COMPLETED")
+    cancelled_referrals = sum(1 for r in referrals if r.status == "CANCELLED")
+
+    denom = total_referrals - cancelled_referrals
+    completion_rate = round((comp_referrals / denom * 100), 1) if denom > 0 else 0.0
+
+    return AnalysisOverviewResponse(
+        total_screening_encounters=total_encounters,
+        unique_patients_screened=unique_patients,
+        unique_high_risk_patients=unique_high_risk,
+        high_risk_encounters=high_count,
+        moderate_risk_encounters=mod_count,
+        low_risk_encounters=low_count,
+        insufficient_data_encounters=insufficient_count,
+        total_operational_referrals=total_referrals,
+        pending_referrals=pending_referrals,
+        in_progress_referrals=in_prog_referrals,
+        completed_referrals=comp_referrals,
+        cancelled_referrals=cancelled_referrals,
+        completion_rate_percent=completion_rate
+    )
+
+
+@app.get("/api/analysis/screening-trends", response_model=List[ScreeningTrendPoint])
+def get_screening_trends(
+    days: int = 30,
+    facility_id: Optional[str] = None,
+    village: Optional[str] = None,
+    current_user: UserModel = Depends(require_permissions("analytics:view")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    """Returns real screening encounter trends grouped by date for current clinic."""
+    ass_query = db.query(AssessmentModel).filter(AssessmentModel.is_deleted == 0)
+    if current_user.role != "SYSTEM_ADMIN" or current_clinic:
+        ass_query = ass_query.filter(clinic_scope_filter(AssessmentModel.clinic_id, current_clinic.id))
+    if facility_id and facility_id.upper() != "ALL":
+        ass_query = ass_query.filter(AssessmentModel.facility_id == facility_id)
+
+    assessments = ass_query.all()
+
+    if village and village.upper() != "ALL":
+        patient_ids_in_village = {
+            p.id for p in db.query(PatientModel.id).filter(
+                PatientModel.village == village,
+                PatientModel.clinic_id == current_clinic.id,
+                PatientModel.is_deleted == 0
+            ).all()
+        }
+        assessments = [a for a in assessments if a.patient_id in patient_ids_in_village]
+
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for a in assessments:
+        date_str = (a.created_at or "")[:10]
+        if not date_str:
+            continue
+        if date_str not in grouped:
+            grouped[date_str] = {"encounters": 0, "patients": set()}
+        grouped[date_str]["encounters"] += 1
+        grouped[date_str]["patients"].add(a.patient_id)
+
+    sorted_dates = sorted(grouped.keys())
+    return [
+        ScreeningTrendPoint(
+            date=d,
+            encounters=grouped[d]["encounters"],
+            unique_patients=len(grouped[d]["patients"])
+        )
+        for d in sorted_dates
+    ]
+
+
+@app.get("/api/analysis/risk-distribution", response_model=RiskDistributionResponse)
+def get_risk_distribution(
+    facility_id: Optional[str] = None,
+    village: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user: UserModel = Depends(require_permissions("analytics:view")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    """Clinical risk distribution breakdown across verified tiers for current clinic."""
+    ass_query = db.query(AssessmentModel).filter(AssessmentModel.is_deleted == 0)
+    if current_user.role != "SYSTEM_ADMIN" or current_clinic:
+        ass_query = ass_query.filter(clinic_scope_filter(AssessmentModel.clinic_id, current_clinic.id))
+    if facility_id and facility_id.upper() != "ALL":
+        ass_query = ass_query.filter(AssessmentModel.facility_id == facility_id)
+    if start_date:
+        ass_query = ass_query.filter(AssessmentModel.created_at >= start_date)
+    if end_date:
+        ass_query = ass_query.filter(AssessmentModel.created_at <= end_date)
+
+    assessments = ass_query.all()
+    if village and village.upper() != "ALL":
+        patient_ids_in_village = {
+            p.id for p in db.query(PatientModel.id).filter(
+                PatientModel.village == village,
+                PatientModel.clinic_id == current_clinic.id,
+                PatientModel.is_deleted == 0
+            ).all()
+        }
+        assessments = [a for a in assessments if a.patient_id in patient_ids_in_village]
+
+    total = len(assessments)
+    unique_patients = len({a.patient_id for a in assessments})
+
+    high_or_emergency = sum(1 for a in assessments if a.risk_level in ["HIGH", "EMERGENCY"] or a.is_emergency)
+    mod = sum(1 for a in assessments if a.risk_level == "MODERATE" and not a.is_emergency)
+    low = sum(1 for a in assessments if a.risk_level == "LOW" and not a.is_emergency)
+    insufficient = sum(1 for a in assessments if a.risk_level in ["INSUFFICIENT_DATA", "NEEDS_REVIEW"])
+
+    pct = lambda c: round((c / total * 100), 1) if total > 0 else 0.0
+
+    items = [
+        RiskDistributionItem(tier="HIGH_EMERGENCY", label="High / Emergency", count=high_or_emergency, percentage=pct(high_or_emergency), color="#f43f5e"),
+        RiskDistributionItem(tier="MODERATE", label="Moderate Risk", count=mod, percentage=pct(mod), color="#f59e0b"),
+        RiskDistributionItem(tier="LOW", label="Low Risk", count=low, percentage=pct(low), color="#10b981"),
+        RiskDistributionItem(tier="INSUFFICIENT_DATA", label="Needs Review / Incomplete", count=insufficient, percentage=pct(insufficient), color="#8b5cf6")
+    ]
+
+    return RiskDistributionResponse(
+        total_encounters=total,
+        unique_screened_patients=unique_patients,
+        high_or_emergency=high_or_emergency,
+        moderate=mod,
+        low=low,
+        insufficient_data=insufficient,
+        distribution=items
+    )
+
+
+@app.get("/api/analysis/referral-statistics", response_model=ReferralStatisticsResponse)
+def get_referral_statistics(
+    facility_id: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user: UserModel = Depends(require_permissions("analytics:view")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    """Aggregated referral statistics computed directly from clinic-owned ReferralModel entities."""
+    ref_query = db.query(ReferralModel).filter(ReferralModel.is_deleted == 0)
+    if current_user.role != "SYSTEM_ADMIN" or current_clinic:
+        ref_query = ref_query.filter(clinic_scope_filter(ReferralModel.clinic_id, current_clinic.id))
+    if facility_id and facility_id.upper() != "ALL":
+        ref_query = ref_query.filter(or_(ReferralModel.facility_id == facility_id, ReferralModel.destination_facility == facility_id))
+    if start_date:
+        ref_query = ref_query.filter(ReferralModel.created_at >= start_date)
+    if end_date:
+        ref_query = ref_query.filter(ReferralModel.created_at <= end_date)
+
+    referrals = ref_query.all()
+    total = len(referrals)
+
+    by_status: Dict[str, int] = {
+        "REQUESTED": 0,
+        "APPROVED": 0,
+        "REFERRED": 0,
+        "IN_PROGRESS": 0,
+        "COMPLETED": 0,
+        "CANCELLED": 0
+    }
+    by_priority: Dict[str, int] = {
+        "ROUTINE": 0,
+        "URGENT": 0,
+        "EMERGENCY": 0
+    }
+    by_facility: Dict[str, int] = {}
+
+    completed = 0
+    cancelled = 0
+    for r in referrals:
+        st = r.status or "REQUESTED"
+        by_status[st] = by_status.get(st, 0) + 1
+        if st == "COMPLETED":
+            completed += 1
+        elif st == "CANCELLED":
+            cancelled += 1
+
+        pr = r.priority or "ROUTINE"
+        by_priority[pr] = by_priority.get(pr, 0) + 1
+
+        dest = r.destination_facility or "Unknown Facility"
+        by_facility[dest] = by_facility.get(dest, 0) + 1
+
+    denom = total - cancelled
+    completion_rate = round((completed / denom * 100), 1) if denom > 0 else 0.0
+
+    return ReferralStatisticsResponse(
+        total_referrals=total,
+        by_status=by_status,
+        by_priority=by_priority,
+        by_facility=by_facility,
+        completion_rate_percent=completion_rate
+    )
+
+
 # --- OFFLINE SYNC ENDPOINT ---
 
 @app.post("/api/sync", response_model=SyncResponse)
-def batch_sync(payload: SyncPayload, db: Session = Depends(get_db)):
+def batch_sync(
+    payload: SyncPayload,
+    current_user: UserModel = Depends(require_permissions("sync:push")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    if len(payload.patients) + len(payload.assessments) > 100:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Batch size exceeds maximum limit of 100 operations."
+        )
+
     p_synced = 0
     a_synced = 0
+    target_facility = current_user.facility_id or "PHC-DEFAULT"
 
     # 1. Sync Patients
     for p in payload.patients:
@@ -440,12 +1592,17 @@ def batch_sync(payload: SyncPayload, db: Session = Depends(get_db)):
         if not existing_p:
             new_p = PatientModel(
                 id=p_id,
+                clinic_id=current_clinic.id,
                 name=p.name,
                 age=p.age,
                 gender=p.gender,
                 village=p.village,
                 phone=p.phone,
+                facility_id=target_facility,
                 patient_id=p.patient_id or f"RH-{p_id[:6].upper()}",
+                record_origin=getattr(p, 'record_origin', None) or "OFFLINE_SYNC",
+                is_synthetic=1 if getattr(p, 'is_synthetic', 0) else 0,
+                sync_status="SYNCED",
                 created_at=datetime.utcnow().isoformat()
             )
             db.add(new_p)
@@ -461,7 +1618,9 @@ def batch_sync(payload: SyncPayload, db: Session = Depends(get_db)):
             eval_res = screening_engine.evaluate(a.model_dump())
             new_a = AssessmentModel(
                 id=ass_id,
+                clinic_id=current_clinic.id,
                 patient_id=a.patient_id,
+                facility_id=target_facility,
                 symptom_duration_days=a.symptom_duration_days,
                 temperature_f=a.temperature_f,
                 systolic_bp=a.systolic_bp,
@@ -508,12 +1667,23 @@ def get_dashboard_stats(
     facility_id: Optional[str] = None,
     village: Optional[str] = None,
     date_range: Optional[str] = "all",
+    current_user: UserModel = Depends(require_roles("PHC_DOCTOR", "DISTRICT_OFFICER", "SYSTEM_ADMIN", "CLINIC_OWNER", "DOCTOR", "HEALTH_WORKER")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
     db: Session = Depends(get_db)
 ):
-    # Base query for non-deleted assessments
+    # Base query for non-deleted assessments scoped strictly to current clinic workspace
     query = db.query(AssessmentModel).filter(AssessmentModel.is_deleted == 0)
+    if current_user.role != "SYSTEM_ADMIN" or current_clinic:
+        query = query.filter(AssessmentModel.clinic_id == current_clinic.id)
 
     if facility_id and facility_id != "ALL":
+        if current_user.role not in ("SYSTEM_ADMIN", "DISTRICT_OFFICER"):
+            target_fac = current_clinic.id if current_clinic else current_user.facility_id
+            if facility_id != target_fac and facility_id != getattr(current_user, "facility_id", None):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Access denied: cannot query stats for foreign facility '{facility_id}'."
+                )
         query = query.filter(AssessmentModel.facility_id == facility_id)
 
     # Date range filtering
@@ -530,29 +1700,53 @@ def get_dashboard_stats(
 
     assessments = query.order_by(AssessmentModel.created_at.desc()).all()
 
-    # Filter by village if specified
+    # Filter by village if specified within current clinic
     if village and village != "ALL":
         filtered_ass = []
         for a in assessments:
-            p = db.query(PatientModel).filter(PatientModel.id == a.patient_id).first()
+            p = db.query(PatientModel).filter(
+                PatientModel.id == a.patient_id,
+                PatientModel.clinic_id == current_clinic.id
+            ).first()
             if p and (p.village == village or getattr(a, 'village', None) == village):
                 filtered_ass.append(a)
         assessments = filtered_ass
 
     total_assessments = len(assessments)
-    unique_patient_ids = set(a.patient_id for a in assessments)
-    total_patients = len(unique_patient_ids)
+    unique_patient_ids = set(a.patient_id for a in assessments if a.patient_id)
+    unique_screened_patients = len(unique_patient_ids)
 
-    high_risk_count = sum(1 for a in assessments if a.risk_level == "HIGH")
+    # Query active registered patients within the clinic scope
+    pt_base_query = db.query(PatientModel).filter(PatientModel.is_deleted == 0)
+    if current_user.role != "SYSTEM_ADMIN" or current_clinic:
+        pt_base_query = pt_base_query.filter(PatientModel.clinic_id == current_clinic.id)
+    if facility_id and facility_id != "ALL":
+        pt_base_query = pt_base_query.filter(PatientModel.facility_id == facility_id)
+    if village and village != "ALL":
+        pt_base_query = pt_base_query.filter(PatientModel.village == village)
+    total_registered_patients = pt_base_query.count()
+    total_patients = total_registered_patients
+
+    high_risk_count = sum(1 for a in assessments if a.risk_level in ["HIGH", "EMERGENCY"])
     moderate_risk_count = sum(1 for a in assessments if a.risk_level == "MODERATE")
     low_risk_count = sum(1 for a in assessments if a.risk_level == "LOW")
     emergency_count = sum(1 for a in assessments if bool(a.is_emergency) or a.triage_state == "EMERGENCY")
+
+    # Latest assessment per patient to compute unique patients at high risk
+    latest_by_patient = {}
+    for a in sorted(assessments, key=lambda x: (x.created_at or '', str(x.id))):
+        if a.patient_id:
+            latest_by_patient[a.patient_id] = a
+    unique_patients_at_high_risk = sum(
+        1 for a in latest_by_patient.values()
+        if a.risk_level in ["HIGH", "EMERGENCY"]
+    )
 
     pending_doctor_review = sum(
         1 for a in assessments
         if getattr(a, 'review_state', 'NOT_REQUIRED') in ["REVIEW_REQUIRED", "ASSIGNED", "IN_REVIEW"]
         or (
-            (bool(a.is_emergency) or a.risk_level == "HIGH" or (a.red_flags and len(a.red_flags) > 0))
+            (bool(a.is_emergency) or a.risk_level in ["HIGH", "EMERGENCY"] or (a.red_flags and len(a.red_flags) > 0))
             and getattr(a, 'review_state', 'NOT_REQUIRED') not in ["APPROVED", "MODIFIED", "REJECTED"]
         )
     )
@@ -574,22 +1768,33 @@ def get_dashboard_stats(
     # Village distribution from actual patient records
     village_counts: dict = {}
     for a in assessments:
-        p = db.query(PatientModel).filter(PatientModel.id == a.patient_id).first()
+        p = db.query(PatientModel).filter(
+            PatientModel.id == a.patient_id,
+            PatientModel.clinic_id == current_clinic.id
+        ).first()
         v = p.village if p and p.village else "Unknown"
         if v and v.strip():
             village_counts[v] = village_counts.get(v, 0) + 1
 
     village_data = [{"village": k, "count": v} for k, v in sorted(village_counts.items(), key=lambda x: x[1], reverse=True)]
 
-    # Available distinct facilities & villages
-    all_patients = db.query(PatientModel).filter(PatientModel.is_deleted == 0).all()
+    # Available distinct facilities & villages within current clinic
+    patient_query = db.query(PatientModel).filter(PatientModel.is_deleted == 0)
+    if current_user.role != "SYSTEM_ADMIN" or current_clinic:
+        patient_query = patient_query.filter(PatientModel.clinic_id == current_clinic.id)
+    all_patients = patient_query.all()
     available_villages = sorted(list(set(p.village for p in all_patients if p.village and p.village.strip())))
     available_facilities = sorted(list(set(p.facility_id for p in all_patients if p.facility_id and p.facility_id.strip())))
 
     return {
         "total_patients": total_patients,
+        "total_registered_patients": total_registered_patients,
+        "unique_screened_patients": unique_screened_patients,
         "total_assessments": total_assessments,
+        "total_screenings": total_assessments,
         "high_risk_count": high_risk_count,
+        "high_risk_screenings": high_risk_count,
+        "unique_patients_at_high_risk": unique_patients_at_high_risk,
         "moderate_risk_count": moderate_risk_count,
         "low_risk_count": low_risk_count,
         "emergency_count": emergency_count,
@@ -609,13 +1814,15 @@ def get_phc_dashboard_data(
     facility_id: Optional[str] = None,
     village: Optional[str] = None,
     date_range: Optional[str] = "all",
+    current_user: UserModel = Depends(require_roles("PHC_DOCTOR", "DISTRICT_OFFICER", "SYSTEM_ADMIN", "CLINIC_OWNER", "DOCTOR", "HEALTH_WORKER")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
     db: Session = Depends(get_db)
 ):
     """
-    Dedicated endpoint for PHC Doctor & District Health Dashboard.
-    Returns complete real analytics, KPI metrics, and clinical review status.
+    Dedicated endpoint for Clinic / PHC Doctor Dashboard.
+    Returns complete real analytics, KPI metrics, and clinical review status scoped to active clinic.
     """
-    return get_dashboard_stats(facility_id=facility_id, village=village, date_range=date_range, db=db)
+    return get_dashboard_stats(facility_id=facility_id, village=village, date_range=date_range, current_user=current_user, current_clinic=current_clinic, db=db)
 
 
 # ─── HEALTH CHATBOT ENDPOINT ─────────────────────────────────────────────────
@@ -661,80 +1868,20 @@ class ChatResponse(BaseModel):
 @app.post("/api/chat", response_model=ChatResponse)
 async def health_chat(request: ChatRequest):
     """
-    Health chatbot endpoint powered by OpenAI GPT.
-    The API key is read server-side from .env — never exposed to the browser.
+    Consolidated health chatbot endpoint powered by local Ollama (Gemma 3 270M).
+    Replaces legacy OpenAI endpoint to unify all AI workflows on local Ollama runtime.
     """
-    api_key = os.getenv("OPENAI_API_KEY", "")
-
-    if not api_key or api_key == "your_openai_api_key_here":
-        raise HTTPException(
-            status_code=503,
-            detail="OpenAI API key not configured. Please add OPENAI_API_KEY to backend/.env"
-        )
-
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
-
-        # Build message list: system prompt + conversation history
-        lang_hint = {
-            "hi": "Please respond in Hindi (हिंदी).",
-            "bn": "Please respond in Bengali (বাংলা).",
-            "en": "Please respond in English."
-        }.get(request.language or "en", "Please respond in English.")
-
-        openai_messages = [
-            {"role": "system", "content": CHAT_SYSTEM_PROMPT + f"\n\nLanguage instruction: {lang_hint}"}
-        ]
-
-        # Add conversation history (last 20 messages max to stay within token limits)
-        for msg in request.messages[-20:]:
-            openai_messages.append({"role": msg.role, "content": msg.content})
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",   # Fast and cost-effective
-            messages=openai_messages,
-            max_tokens=600,
-            temperature=0.4,        # More deterministic for medical guidance
-        )
-
-        reply = response.choices[0].message.content or "I could not generate a response. Please try again."
-        return ChatResponse(reply=reply)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        err_str = str(e)
-        if "insufficient_quota" in err_str or "credit_balance_exhausted" in err_str or "429" in err_str:
-            # Fallback response for offline / credit-exhausted state
-            user_msg = (request.messages[-1].content if request.messages else "").lower()
-
-            # Simple rule-based guidance for hackathon demo resilience
-            advice = []
-            if "fever" in user_msg or "बुखार" in user_msg or "জ্বর" in user_msg:
-                advice.append("• **Fever Management:** Stay hydrated with clean water/ORS, take adequate rest, and use a cool damp cloth on forehead to reduce temp.")
-                advice.append("• **Red Flags:** If fever >102°F lasts more than 2 days or is accompanied by severe headache, rash, or vomiting, visit the nearest PHC immediately.")
-            elif "cough" in user_msg or "cold" in user_msg or "खांसी" in user_msg:
-                advice.append("• **Cough & Cold Care:** Drink warm water or herbal tea (tulsi/ginger), practice steam inhalation, and rest.")
-                advice.append("• **Warning:** If cough persists >2 weeks or produces blood/chest pain, get tested for TB/respiratory infection at PHC.")
-            elif "sugar" in user_msg or "diabetes" in user_msg or "शुगर" in user_msg:
-                advice.append("• **Blood Sugar Management:** Avoid direct sweets, sugary tea, and refined flour. Eat whole grains, green leafy vegetables, and stay active.")
-                advice.append("• **Screening:** Regular glucose monitoring at PHC is recommended.")
-            elif "bp" in user_msg or "blood pressure" in user_msg or "बीपी" in user_msg:
-                advice.append("• **Blood Pressure Guidance:** Reduce daily salt intake, manage stress, avoid tobacco/alcohol, and exercise daily.")
-                advice.append("• **Critical:** If BP >160/100 or experiencing severe dizziness/blurred vision, seek emergency care.")
-            else:
-                advice.append("• **General Health Care:** Ensure clean drinking water, proper nutrition, adequate sleep, and hygiene.")
-                advice.append("• **Consultation:** Please visit your local ASHA worker or Primary Health Centre (PHC) for a clinical evaluation.")
-
-            fallback_reply = (
-                "⚠️ *Note: OpenAI API quota exhausted. Operating in Rule-Based Medical Decision Support Mode.*\n\n"
-                + "\n".join(advice)
-                + "\n\n⚕️ *This is AI guidance only — not a medical diagnosis. Please consult a doctor for proper evaluation.*"
-            )
-            return ChatResponse(reply=fallback_reply)
-
-        raise HTTPException(status_code=500, detail=f"Chat error: {err_str}")
+    from services.ollama_service import ollama_service
+    history = [{"role": m.role, "content": m.content} for m in request.messages]
+    result = await ollama_service.chat(
+        messages=history,
+        language=request.language or "en",
+        temperature=0.2
+    )
+    if not result.get("success", False):
+        err_msg = result.get("error", "Local AI response generation failed.")
+        return ChatResponse(reply="", error=err_msg)
+    return ChatResponse(reply=result.get("response", ""))
 
 
 # ─── ML DISEASE PREDICTION ENDPOINT ───────────────────────────────────────────
@@ -744,9 +1891,13 @@ class MLPredictRequest(BaseModel):
 
 class MLPredictionItem(BaseModel):
     rank: int
+    item_id: Optional[str] = None
     condition: str
     score: float
-    contributingSymptoms: List[str]
+    risk_score: float = 0.0
+    risk_level: str = "LOW"
+    required_specialty: Optional[str] = None
+    contributingSymptoms: List[str] = []
 
 class MLPredictResponse(BaseModel):
     predictions: List[MLPredictionItem]
@@ -1067,16 +2218,26 @@ def unified_predict(request: UnifiedPredictRequest):
 
 # ─── TELECONSULTATION APPOINTMENTS ENDPOINTS ───────────────────────────────────────
 
+# ─── TELECONSULTATION APPOINTMENTS ENDPOINTS ───────────────────────────────────────
+
 @app.post("/api/appointments", response_model=AppointmentResponse)
-def create_appointment(appt: AppointmentCreate, db: Session = Depends(get_db)):
+def create_appointment(
+    appt: AppointmentCreate,
+    current_user: UserModel = Depends(require_permissions("appointments:create")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
     """
-    Save a teleconsultation / doctor appointment booking.
+    Save a teleconsultation / doctor appointment booking within current clinic workspace.
     """
     appt_id = appt.id or str(uuid.uuid4())
     existing = db.query(AppointmentModel).filter(AppointmentModel.id == appt_id).first()
     if existing:
+        if existing.clinic_id and existing.clinic_id != current_clinic.id and current_user.role != "SYSTEM_ADMIN":
+            raise HTTPException(status_code=403, detail="Access denied: appointment belongs to another clinic.")
         return AppointmentResponse(
             id=existing.id,
+            clinic_id=getattr(existing, 'clinic_id', current_clinic.id),
             patient_name=existing.patient_name,
             patient_phone=existing.patient_phone,
             doctor_name=existing.doctor_name,
@@ -1087,12 +2248,16 @@ def create_appointment(appt: AppointmentCreate, db: Session = Depends(get_db)):
             notes=existing.notes,
             status=existing.status,
             risk_level=existing.risk_level,
+            facility_id=existing.facility_id,
             likely_conditions=existing.likely_conditions,
             created_at=existing.created_at
         )
 
+    target_facility = current_user.facility_id or "PHC-DEFAULT"
+
     db_appt = AppointmentModel(
         id=appt_id,
+        clinic_id=current_clinic.id,
         patient_name=appt.patient_name,
         patient_phone=appt.patient_phone or "",
         doctor_name=appt.doctor_name,
@@ -1103,6 +2268,7 @@ def create_appointment(appt: AppointmentCreate, db: Session = Depends(get_db)):
         notes=appt.notes or "",
         status=appt.status or "PENDING",
         risk_level=appt.risk_level,
+        facility_id=target_facility,
         server_version=1,
         is_deleted=0,
         created_at=datetime.utcnow().isoformat(),
@@ -1120,6 +2286,7 @@ def create_appointment(appt: AppointmentCreate, db: Session = Depends(get_db)):
         operation_type='CREATE',
         payload={
             "id": db_appt.id,
+            "clinic_id": current_clinic.id,
             "patient_name": db_appt.patient_name,
             "patient_phone": db_appt.patient_phone,
             "doctor_name": db_appt.doctor_name,
@@ -1130,12 +2297,14 @@ def create_appointment(appt: AppointmentCreate, db: Session = Depends(get_db)):
             "notes": db_appt.notes,
             "status": db_appt.status,
             "risk_level": db_appt.risk_level,
+            "facility_id": db_appt.facility_id,
             "likely_conditions": db_appt.likely_conditions,
             "server_version": 1,
             "is_deleted": 0,
             "created_at": db_appt.created_at
         },
-        server_version=1
+        server_version=1,
+        clinic_id=current_clinic.id
     )
 
     db.commit()
@@ -1143,6 +2312,7 @@ def create_appointment(appt: AppointmentCreate, db: Session = Depends(get_db)):
 
     return AppointmentResponse(
         id=db_appt.id,
+        clinic_id=db_appt.clinic_id,
         patient_name=db_appt.patient_name,
         patient_phone=db_appt.patient_phone,
         doctor_name=db_appt.doctor_name,
@@ -1153,20 +2323,29 @@ def create_appointment(appt: AppointmentCreate, db: Session = Depends(get_db)):
         notes=db_appt.notes,
         status=db_appt.status,
         risk_level=db_appt.risk_level,
+        facility_id=db_appt.facility_id,
         likely_conditions=db_appt.likely_conditions,
         created_at=db_appt.created_at
     )
 
 
 @app.get("/api/appointments", response_model=List[AppointmentResponse])
-def list_appointments(db: Session = Depends(get_db)):
+def list_appointments(
+    current_user: UserModel = Depends(require_permissions("appointments:read")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
     """
-    Retrieve all teleconsultation appointments ordered by date desc.
+    Retrieve all teleconsultation appointments for current clinic ordered by date desc.
     """
-    appts = db.query(AppointmentModel).filter(AppointmentModel.is_deleted == 0).order_by(AppointmentModel.created_at.desc()).all()
+    query = db.query(AppointmentModel).filter(AppointmentModel.is_deleted == 0)
+    if current_user.role != "SYSTEM_ADMIN" or current_clinic:
+        query = query.filter(AppointmentModel.clinic_id == current_clinic.id)
+    appts = query.order_by(AppointmentModel.created_at.desc()).all()
     return [
         AppointmentResponse(
             id=a.id,
+            clinic_id=getattr(a, 'clinic_id', current_clinic.id),
             patient_name=a.patient_name,
             patient_phone=a.patient_phone,
             doctor_name=a.doctor_name,
@@ -1177,6 +2356,7 @@ def list_appointments(db: Session = Depends(get_db)):
             notes=a.notes,
             status=a.status,
             risk_level=a.risk_level,
+            facility_id=a.facility_id,
             likely_conditions=a.likely_conditions,
             created_at=a.created_at
         )
@@ -1188,6 +2368,8 @@ def list_appointments(db: Session = Depends(get_db)):
 def update_appointment_status(
     appointment_id: str,
     body: dict,
+    current_user: UserModel = Depends(require_permissions("appointments:manage")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
     db: Session = Depends(get_db)
 ):
     """
@@ -1196,6 +2378,11 @@ def update_appointment_status(
     appt = db.query(AppointmentModel).filter(AppointmentModel.id == appointment_id).first()
     if not appt or appt.is_deleted:
         raise HTTPException(status_code=404, detail="Appointment not found")
+
+    if current_user.role != "SYSTEM_ADMIN":
+        if appt.clinic_id and appt.clinic_id != current_clinic.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Appointment not found")
+
     valid = ["PENDING", "CONFIRMED", "CANCELLED", "COMPLETED"]
     new_status = body.get("status", "")
     if new_status not in valid:
@@ -1212,11 +2399,14 @@ def update_appointment_status(
         operation_type='UPDATE',
         payload={
             "id": appt.id,
+            "clinic_id": appt.clinic_id,
             "status": appt.status,
+            "facility_id": appt.facility_id,
             "server_version": appt.server_version,
             "updated_at": appt.updated_at
         },
-        server_version=appt.server_version
+        server_version=appt.server_version,
+        clinic_id=current_clinic.id
     )
 
     db.commit()
@@ -1227,6 +2417,8 @@ def update_appointment_status(
 def update_appointment(
     appointment_id: str,
     body: dict,
+    current_user: UserModel = Depends(require_permissions("appointments:manage")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
     db: Session = Depends(get_db)
 ):
     """
@@ -1235,6 +2427,11 @@ def update_appointment(
     appt = db.query(AppointmentModel).filter(AppointmentModel.id == appointment_id).first()
     if not appt or appt.is_deleted:
         raise HTTPException(status_code=404, detail="Appointment not found")
+
+    if current_user.role != "SYSTEM_ADMIN":
+        if appt.clinic_id and appt.clinic_id != current_clinic.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Appointment not found")
+
     if "patient_name" in body:
         appt.patient_name = body["patient_name"]
     if "patient_phone" in body:
@@ -1259,16 +2456,19 @@ def update_appointment(
         operation_type='UPDATE',
         payload={
             "id": appt.id,
+            "clinic_id": appt.clinic_id,
             "patient_name": appt.patient_name,
             "patient_phone": appt.patient_phone,
             "doctor_name": appt.doctor_name,
             "appointment_date": appt.appointment_date,
             "appointment_time": appt.appointment_time,
             "status": appt.status,
+            "facility_id": appt.facility_id,
             "server_version": appt.server_version,
             "updated_at": appt.updated_at
         },
-        server_version=appt.server_version
+        server_version=appt.server_version,
+        clinic_id=current_clinic.id
     )
 
     db.commit()
@@ -1278,6 +2478,8 @@ def update_appointment(
 @app.delete("/api/appointments/{appointment_id}")
 def delete_appointment(
     appointment_id: str,
+    current_user: UserModel = Depends(require_permissions("appointments:manage")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
     db: Session = Depends(get_db)
 ):
     """
@@ -1286,6 +2488,10 @@ def delete_appointment(
     appt = db.query(AppointmentModel).filter(AppointmentModel.id == appointment_id).first()
     if not appt or appt.is_deleted:
         raise HTTPException(status_code=404, detail="Appointment not found")
+
+    if current_user.role != "SYSTEM_ADMIN":
+        if appt.clinic_id and appt.clinic_id != current_clinic.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Appointment not found")
 
     appt.is_deleted = 1
     appt.server_version += 1
@@ -1297,8 +2503,9 @@ def delete_appointment(
         entity_type='appointment',
         entity_id=appt.id,
         operation_type='DELETE',
-        payload={"id": appt.id, "is_deleted": 1, "server_version": appt.server_version},
-        server_version=appt.server_version
+        payload={"id": appt.id, "clinic_id": appt.clinic_id, "is_deleted": 1, "server_version": appt.server_version},
+        server_version=appt.server_version,
+        clinic_id=current_clinic.id
     )
 
     db.commit()
@@ -1308,20 +2515,30 @@ def delete_appointment(
 # ─── V2 RELIABLE OFFLINE SYNC ENDPOINTS (TASK-005 & TASK-006) ──────────────────────
 
 @app.post("/api/v2/sync/push", response_model=SyncPushResponse)
-def sync_push(request: SyncPushRequest, db: Session = Depends(get_db)):
+def sync_push(
+    request: SyncPushRequest,
+    current_user: UserModel = Depends(require_permissions("sync:push")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
     """
     Idempotent batch push API for frontline workers.
     Processes queued mutations with OCC conflict detection and records sync journal entries.
     """
-    return process_push_batch(db, request)
+    return process_push_batch(db, request, current_user=current_user, current_clinic=current_clinic)
 
 
 @app.post("/api/v2/sync/pull", response_model=SyncPullResponse)
-def sync_pull_post(request: SyncPullRequest, db: Session = Depends(get_db)):
+def sync_pull_post(
+    request: SyncPullRequest,
+    current_user: UserModel = Depends(require_permissions("sync:pull")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
     """
     Cursor-based pull API. Returns changes after last_server_sequence.
     """
-    return process_pull_request(db, request)
+    return process_pull_request(db, request, current_user=current_user, current_clinic=current_clinic)
 
 
 @app.get("/api/v2/sync/pull", response_model=SyncPullResponse)
@@ -1329,6 +2546,8 @@ def sync_pull_get(
     since_seq: int = 0,
     limit: int = 100,
     device_id: Optional[str] = None,
+    current_user: UserModel = Depends(require_permissions("sync:pull")),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
     db: Session = Depends(get_db)
 ):
     """
@@ -1339,7 +2558,7 @@ def sync_pull_get(
         last_server_sequence=since_seq,
         limit=limit
     )
-    return process_pull_request(db, request)
+    return process_pull_request(db, request, current_user=current_user, current_clinic=current_clinic)
 
 
 import math
@@ -1356,64 +2575,371 @@ def haversine_km(lat1, lon1, lat2, lon2):
     return R * c
 
 @app.get("/api/hospitals/search")
-def search_hospitals(location: str):
+def search_hospitals(
+    location: str = "Barasat",
+    condition: str = "General Health",
+    risk_score: float = 25.0
+):
     """
-    Searches for real hospitals using open-source OpenStreetMap / Nominatim mapping data.
+    Unified hospital search endpoint. Returns capability-rich hospital records
+    ranked by multi-factor suitability, maintaining backward compatibility.
     """
-    geocode_url = f"https://nominatim.openstreetmap.org/search?format=json&q={urllib.parse.quote(location)}&limit=1"
-    req = urllib.request.Request(geocode_url, headers={'User-Agent': 'RuralHealthAI/2.0'})
+    recs = recommend_hospitals(
+        condition=condition,
+        risk_score=risk_score,
+        user_lat=22.723,
+        user_lng=88.483,
+        max_results=8
+    )
 
-    base_lat = 22.723
-    base_lng = 88.483
+    formatted_hospitals = []
+    for h in recs:
+        formatted_hospitals.append({
+            "id": h["id"],
+            "name": h["name"],
+            "specialty": h["specialty"],
+            "category": h["category"],
+            "address": h["address"],
+            "phone": h["phone"],
+            "rating": h["rating"],
+            "distance": h["distance"],
+            "distance_km": h["distance_km"],
+            "travel_time": h["travel_time"],
+            "travel_time_min": h["travel_time_min"],
+            "isOpen": True,
+            "lat": h["lat"],
+            "lng": h["lng"],
+            "amenity": "hospital" if "Hospital" in h["category"] else "clinic",
+            "is_emergency_24x7": h["is_emergency_24x7"],
+            "icu_beds_available": h["icu_beds_available"],
+            "recommendation_priority": h["recommendation_priority"],
+            "suitability_score": h["suitability_score"],
+            "specialty_match": h["specialty_match"],
+            "capability_match": h["capability_match"],
+            "reason": h["reason"]
+        })
 
-    try:
-        with urllib.request.urlopen(req, timeout=3) as response:
-            geo_data = json.loads(response.read().decode())
-            if geo_data:
-                base_lat = float(geo_data[0]['lat'])
-                base_lng = float(geo_data[0]['lon'])
-    except Exception as e:
-        pass
+    return {
+        "center": {"lat": 22.723, "lng": 88.483},
+        "hospitals": formatted_hospitals
+    }
 
-    search_url = f"https://nominatim.openstreetmap.org/search?format=json&q=hospital+in+{urllib.parse.quote(location)}&limit=15"
-    req_hosp = urllib.request.Request(search_url, headers={'User-Agent': 'RuralHealthAI/2.0'})
 
-    try:
-        with urllib.request.urlopen(req_hosp, timeout=3) as response:
-            hosp_data = json.loads(response.read().decode())
-            results = []
-            for idx, item in enumerate(hosp_data):
-                hlat = float(item['lat'])
-                hlng = float(item['lon'])
-                dist = haversine_km(base_lat, base_lng, hlat, hlng)
-                results.append({
-                    "id": str(item.get('place_id', f"h_{idx}")),
-                    "name": item.get('name', 'Hospital / Clinic'),
-                    "specialty": "General Hospital",
-                    "address": item.get('display_name', ''),
-                    "lat": hlat,
-                    "lng": hlng,
-                    "distance": f"{dist:.1f} km",
-                    "isOpen": True
-                })
-            if results:
-                results.sort(key=lambda x: float(x['distance'].split()[0]))
-                return {"hospitals": results, "center": {"lat": base_lat, "lng": base_lng}}
-    except Exception as e:
-        pass
+# ─── IDRC CAPABILITY-AWARE HOSPITAL RECOMMENDATION ENDPOINTS ─────────────────
 
-    return {'center': {'lat': base_lat, 'lng': base_lng}, 'hospitals': []}
+@app.post("/api/hospitals/recommend", response_model=HospitalRecommendationResponse)
+def get_hospital_recommendations_post(req: HospitalRecommendationRequest):
+    """
+    IDRC Hospital Recommendation Service (POST).
+    Multi-factor ranking considering patient risk score, clinical condition,
+    required specialty, hospital emergency & ICU capabilities, travel time, and capacity.
+    """
+    r_level = req.risk_level or classify_risk_level(req.risk_score)
+    is_crit = req.risk_score > 70.0
+    prof = get_condition_profile(req.condition)
+    spec = req.specialty or prof.get("specialty", "General Medicine")
+
+    recs = recommend_hospitals(
+        condition=req.condition,
+        risk_score=req.risk_score,
+        user_lat=req.lat or 22.723,
+        user_lng=req.lng or 88.483,
+        custom_specialty=spec,
+        max_results=req.max_results or 5
+    )
+
+    banner_text = (
+        f"Risk Score: {int(req.risk_score)}/100 — Critical"
+        if is_crit else
+        f"Risk Score: {int(req.risk_score)}/100 — {r_level.title()}"
+    )
+
+    return HospitalRecommendationResponse(
+        item_id=req.item_id,
+        condition=req.condition,
+        patient_risk_score=req.risk_score,
+        patient_risk_level=r_level,
+        required_specialty=spec,
+        is_critical=is_crit,
+        recommendation_banner=banner_text,
+        hospitals=[HospitalRecommendationItem(**h) for h in recs]
+    )
+
+
+@app.get("/api/hospitals/recommend", response_model=HospitalRecommendationResponse)
+def get_hospital_recommendations_get(
+    condition: str = "General",
+    risk_score: float = 20.0,
+    risk_level: Optional[str] = None,
+    specialty: Optional[str] = None,
+    item_id: Optional[str] = None,
+    lat: float = 22.723,
+    lng: float = 88.483,
+    max_results: int = 5
+):
+    """
+    IDRC Hospital Recommendation Service (GET).
+    Allows easy query string usage from browser clients and frontends.
+    """
+    r_level = risk_level or classify_risk_level(risk_score)
+    is_crit = risk_score > 70.0
+    prof = get_condition_profile(condition)
+    spec = specialty or prof.get("specialty", "General Medicine")
+
+    recs = recommend_hospitals(
+        condition=condition,
+        risk_score=risk_score,
+        user_lat=lat,
+        user_lng=lng,
+        custom_specialty=spec,
+        max_results=max_results
+    )
+
+    banner_text = (
+        f"Risk Score: {int(risk_score)}/100 — Critical"
+        if is_crit else
+        f"Risk Score: {int(risk_score)}/100 — {r_level.title()}"
+    )
+
+    return HospitalRecommendationResponse(
+        item_id=item_id,
+        condition=condition,
+        patient_risk_score=risk_score,
+        patient_risk_level=r_level,
+        required_specialty=spec,
+        is_critical=is_crit,
+        recommendation_banner=banner_text,
+        hospitals=[HospitalRecommendationItem(**h) for h in recs]
+    )
+
+
+# ─── POPULATION HEALTH INTELLIGENCE ENDPOINTS (HMIS + NFHS-5) ─────────────────
+
+class ScreeningEnrichmentPayload(BaseModel):
+    vitals: Optional[Dict[str, Any]] = None
+    symptoms: Optional[List[str]] = None
+    risk_factors: Optional[List[str]] = None
+    risk_level: Optional[str] = "Low"
+    has_emergency_red_flags: Optional[bool] = False
+    district: Optional[str] = "Kolkata"
+
+
+@app.get("/api/ml/population-health")
+def get_population_health(
+    district: str = "Kolkata",
+    year: Optional[int] = None
+):
+    """
+    Returns population health domain summaries and context indicators for a district and year.
+    Supported domains: maternal_health, child_health, nutrition, ncd, communicable, healthcare_access.
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    summary = _POPULATION_HEALTH.get_domain_summary(district=district, year=year)
+    if "error" in summary:
+        raise HTTPException(status_code=404, detail=summary["error"])
+    return summary
+
+
+@app.get("/api/ml/population-health/trends")
+def get_population_health_trends(
+    district: str = "Kolkata",
+    indicators: Optional[str] = None
+):
+    """
+    Returns Recharts-ready annual time series of population health indicators.
+    Indicators param can be comma-separated list of indicator names.
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    ind_list = [i.strip() for i in indicators.split(",") if i.strip()] if indicators else None
+    trends = _POPULATION_HEALTH.get_population_health_trends(district=district, indicator_keys=ind_list)
+    if "error" in trends:
+        raise HTTPException(status_code=404, detail=trends["error"])
+    return trends
+
+
+@app.get("/api/ml/population-health/indicator-trend")
+def get_indicator_trend(
+    indicator: str,
+    district: str = "Kolkata"
+):
+    """
+    Returns detailed trend, direction, and CAGR for a specific HMIS/NFHS indicator.
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    trend = _POPULATION_HEALTH.get_indicator_trend(indicator_name=indicator, district=district)
+    if "error" in trend and trend.get("status") != "not_available":
+        raise HTTPException(status_code=404, detail=trend["error"])
+    return trend
+
+
+@app.get("/api/ml/population-health/ncd-context")
+def get_ncd_context(
+    district: str = "Kolkata",
+    year: Optional[int] = 2021
+):
+    """
+    Provides structured NCD population risk context response.
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    ctx = _POPULATION_HEALTH.get_ncd_context(district=district, year=year)
+    if "error" in ctx:
+        raise HTTPException(status_code=404, detail=ctx["error"])
+    return ctx
+
+
+@app.get("/api/ml/population-health/data-quality")
+def get_population_data_quality():
+    """
+    Returns the latest population health data quality monitoring report.
+    """
+    report_file = os.path.join(os.path.dirname(__file__), "data", "processed", "population_data_quality_report.json")
+    if not os.path.exists(report_file):
+        try:
+            from ml.population_data_quality import run_data_quality_audit
+            return run_data_quality_audit()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to generate quality report: {e}")
+    with open(report_file, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+@app.get("/api/ml/population-health/dictionary")
+def get_feature_dictionary():
+    """
+    Returns the curated population feature dictionary with full data provenance.
+    """
+    dict_file = os.path.join(os.path.dirname(__file__), "data", "processed", "feature_dictionary.csv")
+    if not os.path.exists(dict_file):
+        raise HTTPException(status_code=404, detail="Feature dictionary not found")
+    import pandas as pd
+    df_dict = pd.read_csv(dict_file)
+    return {
+        "total_curated_features": len(df_dict),
+        "features": df_dict.to_dict(orient="records"),
+        "disclaimer": _POP_DISCLAIMER
+    }
+
+
+@app.get("/api/ml/population-health/snowflake/metadata")
+def get_snowflake_metadata(
+    use_cloud: bool = False,
+    current_user: UserModel = Depends(require_permissions("analytics:view"))
+):
+    """
+    Returns dimensional schema architecture and statistics.
+    - use_cloud=False: returns local relational storage dimensional schema statistics.
+    - use_cloud=True: returns actual cloud Snowflake connection metadata.
+    Restricted to authorized operators with 'analytics:view' permission (DISTRICT_OFFICER, SYSTEM_ADMIN).
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    return _POPULATION_HEALTH.query_snowflake_metadata(use_cloud=use_cloud)
+
+
+@app.get("/api/ml/population-health/snowflake/query")
+def query_snowflake_schema(
+    district: str = "Kolkata",
+    year: Optional[int] = None,
+    fiscal_year: Optional[str] = None,
+    source: Optional[str] = None,
+    domain: Optional[str] = None,
+    facility_category: Optional[str] = None,
+    limit: int = 100,
+    current_user: UserModel = Depends(require_permissions("analytics:view"))
+):
+    """
+    Multidimensional query against local relational storage fact_health_indicator table.
+    Restricted to authorized operators with 'analytics:view' permission (DISTRICT_OFFICER, SYSTEM_ADMIN).
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    return _POPULATION_HEALTH.query_snowflake_facts(
+        district=district,
+        year=year,
+        fiscal_year=fiscal_year,
+        source=source,
+        domain=domain,
+        facility_category=facility_category,
+        limit=limit
+    )
+
+
+@app.get("/api/ml/population-health/snowflake/verify-cloud")
+def verify_cloud_snowflake(
+    current_user: UserModel = Depends(require_permissions("analytics:view"))
+):
+    """
+    Queries the read-only synthetic verification table in actual Snowflake
+    (RURALHEALTH_DB.ANALYTICS.CONNECTION_TEST).
+    Restricted exclusively to authorized operators with 'analytics:view' permission.
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    return _POPULATION_HEALTH.query_cloud_snowflake_verification()
+
+
+@app.get("/api/ml/population-health/snowflake/tables")
+def inspect_snowflake_tables(
+    schema: str = "ANALYTICS",
+    current_user: UserModel = Depends(require_permissions("analytics:view"))
+):
+    """
+    Inspects available tables in the specified Snowflake schema before designing queries.
+    Restricted exclusively to authorized operators with 'analytics:view' permission.
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    return _POPULATION_HEALTH.inspect_cloud_snowflake_tables(schema=schema)
+
+
+@app.post("/api/ml/population-health/enrich-screening")
+def enrich_screening(payload: ScreeningEnrichmentPayload):
+    """
+    Enriches individual patient screening with population risk context.
+    CLINICAL BOUNDARY: Population dataset never overrides patient vitals or reported symptoms.
+    """
+    if _POPULATION_HEALTH is None:
+        raise HTTPException(status_code=503, detail="Population health engine not initialized")
+    patient_data = {
+        "vitals": payload.vitals or {},
+        "symptoms": payload.symptoms or [],
+        "risk_factors": payload.risk_factors or [],
+        "risk_level": payload.risk_level or "Low",
+        "has_emergency_red_flags": payload.has_emergency_red_flags or False
+    }
+    return _POPULATION_HEALTH.enrich_screening_context(
+        patient_assessment=patient_data,
+        district=payload.district or "Kolkata"
+    )
 
 
 # ─── AUTHENTICATION & RBAC ENDPOINTS (TASK-010 & TASK-011) ─────────────────────
 
 @app.post("/api/v2/auth/login", response_model=TokenResponse)
-def login_user(login_data: UserLoginRequest, db: Session = Depends(get_db)):
+def login_user(
+    login_data: UserLoginRequest,
+    request: Request,
+    db: Session = Depends(get_db)
+):
     """
-    Authenticates a user (ASHA worker, doctor, officer, admin) and issues a JWT token.
+    Authenticates a user, loads authorized clinic workspaces, and issues a JWT token.
+    Supports login via either username or email address.
+    Enforces brute-force lockout protection (5 failed attempts locks for 15 minutes).
     """
-    user = db.query(UserModel).filter(UserModel.username == login_data.username).first()
+    raw_identifier = (login_data.username or "").strip()
+    norm_identifier = raw_identifier.lower()
+    check_brute_force_lockout(norm_identifier)
+
+    user = db.query(UserModel).filter(
+        (func.lower(UserModel.username) == norm_identifier) |
+        (func.lower(UserModel.email) == norm_identifier)
+    ).first()
     if not user or not verify_password(login_data.password, user.password_hash):
+        record_login_failure(norm_identifier)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password credentials",
@@ -1425,16 +2951,78 @@ def login_user(login_data: UserLoginRequest, db: Session = Depends(get_db)):
             detail="User account is deactivated. Contact system administrator."
         )
 
+    # Load active clinic memberships
+    memberships = db.query(ClinicMembershipModel, ClinicModel).join(
+        ClinicModel, ClinicMembershipModel.clinic_id == ClinicModel.id
+    ).filter(
+        ClinicMembershipModel.user_id == user.id,
+        ClinicMembershipModel.is_active == 1,
+        ClinicMembershipModel.status == "ACTIVE",
+        ClinicModel.is_active == 1
+    ).all()
+
+    # System admins can access system-wide, but all clinic users must have active verified membership
+    if not memberships and user.role != "SYSTEM_ADMIN":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No active clinic membership found for this account. Contact your clinic administrator."
+        )
+
+    clinics_list = [
+        ClinicSummary(
+            id=c.id,
+            name=c.name,
+            facility_code=c.facility_code,
+            role=m.role,
+            is_active=bool(c.is_active)
+        )
+        for m, c in memberships
+    ]
+
+    active_clinic_resp = None
+    active_clinic_id = None
+    if clinics_list:
+        # Check if X-Clinic-ID header requested a specific clinic
+        req_clinic_id = request.headers.get("X-Clinic-ID") or request.query_params.get("clinic_id")
+        selected_pair = None
+        if req_clinic_id:
+            for m, c in memberships:
+                if c.id == req_clinic_id:
+                    selected_pair = (m, c)
+                    break
+        if not selected_pair:
+            selected_pair = memberships[0]
+
+        sel_m, sel_c = selected_pair
+        active_clinic_id = sel_c.id
+        active_clinic_resp = ClinicResponse(
+            id=sel_c.id,
+            name=sel_c.name,
+            facility_code=sel_c.facility_code,
+            owner_user_id=sel_c.owner_user_id,
+            address=sel_c.address,
+            phone=sel_c.phone,
+            is_active=bool(sel_c.is_active),
+            created_at=sel_c.created_at,
+            role=sel_m.role
+        )
+
+    clear_login_failures(norm_identifier)
+
     user.last_login_at = datetime.utcnow().isoformat()
     db.commit()
 
     permissions = list(ROLE_PERMISSIONS.get(user.role, set()))
+    if active_clinic_resp and active_clinic_resp.role in ROLE_PERMISSIONS:
+        permissions = list(set(permissions).union(ROLE_PERMISSIONS[active_clinic_resp.role]))
+
     token_payload = {
         "sub": user.id,
         "username": user.username,
         "role": user.role,
         "full_name": user.full_name,
-        "facility_id": user.facility_id
+        "facility_id": user.facility_id,
+        "clinic_id": active_clinic_id
     }
     access_token = create_access_token(data=token_payload)
 
@@ -1457,53 +3045,232 @@ def login_user(login_data: UserLoginRequest, db: Session = Depends(get_db)):
         token_type="Bearer",
         expires_in_minutes=1440,
         user=user_resp,
-        permissions=permissions
+        permissions=permissions,
+        clinics=clinics_list,
+        active_clinic=active_clinic_resp
     )
 
 
 @app.post("/api/v2/auth/register", response_model=UserResponse)
 def register_user(
     reg_data: UserRegisterRequest,
-    current_user: UserModel = Depends(require_roles("SYSTEM_ADMIN", "PHC_DOCTOR")),
+    auth_credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_bearer),
     db: Session = Depends(get_db)
 ):
     """
-    Registers a new user account (Requires SYSTEM_ADMIN or PHC_DOCTOR role).
+    Registers a new user account with atomic tenant workspace creation.
+    - If called with an authenticated Bearer token: requires SYSTEM_ADMIN role to assign elevated roles.
+    - If called unauthenticated (Get Started registration):
+      - If clinic_name is provided: provisions Doctor/Clinic Owner account (CLINIC_OWNER role)
+        and atomically creates the clinic and ownership membership record.
+      - If clinic_name is omitted (frontline worker registration): defaults to ASHA_WORKER role
+        and provisions their workspace.
+    Guarantees atomic rollback on any failure.
     """
+    is_admin = False
+    if auth_credentials and auth_credentials.credentials:
+        caller = get_current_user(auth_credentials, db)
+        if caller.role != "SYSTEM_ADMIN":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied. Requires one of roles: ['SYSTEM_ADMIN']. Current user role: '{caller.role}'."
+            )
+        is_admin = True
+        target_role = reg_data.role or "ASHA_WORKER"
+    else:
+        # Public self-registration (unauthenticated)
+        # Prevent privileged system admin role assignment
+        requested_role = (reg_data.role or "").strip().upper()
+        if requested_role in ("SYSTEM_ADMIN", "DISTRICT_OFFICER"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Public registration cannot assign privileged roles. Standard accounts default to frontline health worker."
+            )
+        if reg_data.clinic_name and reg_data.clinic_name.strip():
+            # Clinic Owner / Doctor self-registration flow
+            target_role = "CLINIC_OWNER"
+        else:
+            if requested_role in ("CLINIC_OWNER", "DOCTOR", "HEALTH_WORKER", "ASHA_WORKER", "PATIENT"):
+                target_role = requested_role
+            else:
+                if requested_role in ("PHC_DOCTOR", "SYSTEM_ADMIN", "DISTRICT_OFFICER"):
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Public registration cannot assign privileged roles. Standard accounts default to frontline health worker."
+                    )
+                target_role = "ASHA_WORKER"
+
+    # Input validation & normalization
+    raw_email = (reg_data.email or "").strip().lower()
+    if not raw_email or "@" not in raw_email or "." not in raw_email.split("@")[-1]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid email address format."
+        )
+
+    full_name = (reg_data.full_name or "").strip()
+    if len(full_name) < 2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Full name must be at least 2 characters."
+        )
+
+    raw_password = (reg_data.password or "").strip()
+    if len(raw_password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 8 characters in length."
+        )
+
+    # Username resolution
+    if reg_data.username and reg_data.username.strip():
+        norm_username = reg_data.username.strip().lower()
+    else:
+        import re
+        base_user = raw_email.split("@")[0].lower()
+        base_user = re.sub(r"[^a-z0-9_.]", "", base_user)
+        if not base_user:
+            base_user = "user"
+        norm_username = base_user
+        collision = db.query(UserModel).filter(func.lower(UserModel.username) == norm_username).first()
+        if collision and collision.email.lower() != raw_email:
+            norm_username = f"{base_user}_{uuid.uuid4().hex[:4]}"
+
+    # Duplicate checks
     existing = db.query(UserModel).filter(
-        (UserModel.username == reg_data.username) | (UserModel.email == reg_data.email)
+        (func.lower(UserModel.username) == norm_username) | (func.lower(UserModel.email) == raw_email)
     ).first()
     if existing:
+        if existing.email.lower() == raw_email:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An account with this email address is already registered."
+            )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Username or email is already registered."
         )
 
-    new_user = UserModel(
-        id=f"usr_{uuid.uuid4()}",
-        username=reg_data.username,
-        email=reg_data.email,
-        password_hash=hash_password(reg_data.password),
-        full_name=reg_data.full_name,
-        role=reg_data.role,
-        license_number=reg_data.license_number,
-        facility_id=reg_data.facility_id,
-        assigned_villages_json=json.dumps(reg_data.assigned_villages or []),
-        is_active=1,
-        created_at=datetime.utcnow().isoformat()
-    )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    return new_user
+    try:
+        new_user = UserModel(
+            id=f"usr_{uuid.uuid4()}",
+            username=norm_username,
+            email=raw_email,
+            password_hash=hash_password(raw_password),
+            full_name=full_name,
+            role=target_role,
+            license_number=reg_data.license_number if is_admin else None,
+            facility_id=reg_data.facility_id if is_admin else "PHC_MAIN",
+            assigned_villages_json=json.dumps(reg_data.assigned_villages or []),
+            is_active=1,
+            created_at=datetime.utcnow().isoformat()
+        )
+        db.add(new_user)
+        db.flush()
+
+        # Atomic clinic creation & membership linking
+        clinic_name = (reg_data.clinic_name or "").strip()
+        if not clinic_name:
+            clinic_name = f"{full_name}'s Health Center"
+
+        import re
+        facility_code = re.sub(r'[^A-Z0-9]', '', clinic_name.upper())[:10] or "CLINIC"
+        clinic_id = f"clinic_{uuid.uuid4().hex[:12]}"
+        new_clinic = ClinicModel(
+            id=clinic_id,
+            name=clinic_name,
+            facility_code=facility_code,
+            owner_user_id=new_user.id,
+            address=reg_data.address or "",
+            phone=reg_data.phone or "",
+            is_active=1,
+            created_at=datetime.utcnow().isoformat(),
+            updated_at=datetime.utcnow().isoformat()
+        )
+        db.add(new_clinic)
+        db.flush()
+
+        membership_id = f"mem_{uuid.uuid4().hex[:12]}"
+        membership_role = "CLINIC_OWNER" if target_role in ("CLINIC_OWNER", "PHC_DOCTOR", "DOCTOR") else target_role
+        new_membership = ClinicMembershipModel(
+            id=membership_id,
+            clinic_id=clinic_id,
+            user_id=new_user.id,
+            role=membership_role,
+            status="ACTIVE",
+            is_active=1,
+            invited_by=None,
+            created_at=datetime.utcnow().isoformat(),
+            updated_at=datetime.utcnow().isoformat()
+        )
+        db.add(new_membership)
+
+        db.commit()
+        db.refresh(new_user)
+        return new_user
+    except Exception as exc:
+        db.rollback()
+        raise exc
 
 
 @app.get("/api/v2/auth/me", response_model=UserProfileResponse)
-def get_current_user_profile(current_user: UserModel = Depends(get_current_user)):
+def get_current_user_profile(
+    request: Request,
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """
-    Returns the authenticated user profile and active permissions.
+    Returns the authenticated user profile, active permissions, authorized clinics, and active workspace.
     """
     permissions = list(ROLE_PERMISSIONS.get(current_user.role, set()))
+
+    memberships = db.query(ClinicMembershipModel, ClinicModel).join(
+        ClinicModel, ClinicMembershipModel.clinic_id == ClinicModel.id
+    ).filter(
+        ClinicMembershipModel.user_id == current_user.id,
+        ClinicMembershipModel.is_active == 1,
+        ClinicMembershipModel.status == "ACTIVE",
+        ClinicModel.is_active == 1
+    ).all()
+
+    clinics_list = [
+        ClinicSummary(
+            id=c.id,
+            name=c.name,
+            facility_code=c.facility_code,
+            role=m.role,
+            is_active=bool(c.is_active)
+        )
+        for m, c in memberships
+    ]
+
+    active_clinic_resp = None
+    if clinics_list:
+        req_clinic_id = request.headers.get("X-Clinic-ID") or request.query_params.get("clinic_id")
+        selected_pair = None
+        if req_clinic_id:
+            for m, c in memberships:
+                if c.id == req_clinic_id:
+                    selected_pair = (m, c)
+                    break
+        if not selected_pair:
+            selected_pair = memberships[0]
+
+        sel_m, sel_c = selected_pair
+        active_clinic_resp = ClinicResponse(
+            id=sel_c.id,
+            name=sel_c.name,
+            facility_code=sel_c.facility_code,
+            owner_user_id=sel_c.owner_user_id,
+            address=sel_c.address,
+            phone=sel_c.phone,
+            is_active=bool(sel_c.is_active),
+            created_at=sel_c.created_at,
+            role=sel_m.role
+        )
+        if sel_m.role in ROLE_PERMISSIONS:
+            permissions = list(set(permissions).union(ROLE_PERMISSIONS[sel_m.role]))
+
     user_resp = UserResponse(
         id=current_user.id,
         username=current_user.username,
@@ -1517,16 +3284,358 @@ def get_current_user_profile(current_user: UserModel = Depends(get_current_user)
         created_at=current_user.created_at,
         last_login_at=current_user.last_login_at
     )
-    return UserProfileResponse(user=user_resp, permissions=permissions)
+    return UserProfileResponse(
+        user=user_resp,
+        permissions=permissions,
+        clinics=clinics_list,
+        active_clinic=active_clinic_resp
+    )
 
 
-@app.get("/api/v2/auth/users", response_model=List[UserResponse])
-def get_all_users(
+@app.get("/api/v2/auth/clinics", response_model=List[ClinicSummary])
+def get_user_clinics(
     current_user: UserModel = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Returns all active system accounts (available for quick switching during field & clinic pilot).
+    Returns list of authorized clinic workspaces for the current user.
+    """
+    memberships = db.query(ClinicMembershipModel, ClinicModel).join(
+        ClinicModel, ClinicMembershipModel.clinic_id == ClinicModel.id
+    ).filter(
+        ClinicMembershipModel.user_id == current_user.id,
+        ClinicMembershipModel.is_active == 1,
+        ClinicMembershipModel.status == "ACTIVE",
+        ClinicModel.is_active == 1
+    ).all()
+
+    return [
+        ClinicSummary(
+            id=c.id,
+            name=c.name,
+            facility_code=c.facility_code,
+            role=m.role,
+            is_active=bool(c.is_active)
+        )
+        for m, c in memberships
+    ]
+
+
+@app.get("/api/v2/clinics/current", response_model=ClinicResponse)
+def get_current_clinic_workspace(
+    current_user: UserModel = Depends(get_current_user),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    """
+    Returns active resolved clinic workspace details and caller's role in it.
+    """
+    membership = db.query(ClinicMembershipModel).filter(
+        ClinicMembershipModel.clinic_id == current_clinic.id,
+        ClinicMembershipModel.user_id == current_user.id,
+        ClinicMembershipModel.is_active == 1
+    ).first()
+    role = membership.role if membership else current_user.role
+
+    return ClinicResponse(
+        id=current_clinic.id,
+        name=current_clinic.name,
+        facility_code=current_clinic.facility_code,
+        owner_user_id=current_clinic.owner_user_id,
+        address=current_clinic.address,
+        phone=current_clinic.phone,
+        is_active=bool(current_clinic.is_active),
+        created_at=current_clinic.created_at,
+        role=role
+    )
+
+
+# ─── CLINIC STAFF MANAGEMENT ENDPOINTS ───────────────────────────────────────
+
+@app.get("/api/v2/clinics/current/staff", response_model=List[ClinicStaffMemberResponse])
+def get_clinic_staff(
+    current_user: UserModel = Depends(get_current_user),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    """
+    Lists all staff members belonging to the current authorized clinic workspace.
+    Restricted to clinic owners, authorized doctors, or system admins.
+    """
+    mem = db.query(ClinicMembershipModel).filter(
+        ClinicMembershipModel.clinic_id == current_clinic.id,
+        ClinicMembershipModel.user_id == current_user.id,
+        ClinicMembershipModel.is_active == 1
+    ).first()
+
+    caller_role = mem.role if mem else current_user.role
+    if caller_role not in ("CLINIC_OWNER", "SYSTEM_ADMIN", "DOCTOR", "PHC_DOCTOR"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: only clinic administrators and doctors can view staff directory."
+        )
+
+    rows = db.query(ClinicMembershipModel, UserModel).join(
+        UserModel, ClinicMembershipModel.user_id == UserModel.id
+    ).filter(
+        ClinicMembershipModel.clinic_id == current_clinic.id
+    ).all()
+
+    results = []
+    for m, u in rows:
+        results.append(ClinicStaffMemberResponse(
+            membership_id=m.id,
+            clinic_id=m.clinic_id,
+            user_id=u.id,
+            full_name=u.full_name,
+            email=u.email,
+            username=u.username,
+            role=m.role,
+            status=m.status,
+            is_active=1 if m.is_active else 0,
+            created_at=m.created_at,
+            invited_by=m.invited_by
+        ))
+    return results
+
+
+@app.post("/api/v2/clinics/current/staff", response_model=ClinicStaffMemberResponse, status_code=status.HTTP_201_CREATED)
+def add_clinic_staff(
+    staff_data: AddStaffRequest,
+    current_user: UserModel = Depends(get_current_user),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    """
+    Adds or invites a staff member to the current clinic.
+    Enforces that caller is clinic owner or system admin.
+    """
+    mem = db.query(ClinicMembershipModel).filter(
+        ClinicMembershipModel.clinic_id == current_clinic.id,
+        ClinicMembershipModel.user_id == current_user.id,
+        ClinicMembershipModel.is_active == 1
+    ).first()
+
+    caller_role = mem.role if mem else current_user.role
+    if caller_role not in ("CLINIC_OWNER", "SYSTEM_ADMIN"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: only the clinic owner can manage or add staff members."
+        )
+
+    allowed_roles = {"CLINIC_OWNER", "DOCTOR", "HEALTH_WORKER", "COUNSELOR", "PHC_DOCTOR", "ASHA_WORKER"}
+    target_role = (staff_data.role or "HEALTH_WORKER").strip().upper()
+    if target_role not in allowed_roles:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid staff role '{target_role}'. Allowed roles: {list(allowed_roles)}"
+        )
+
+    norm_email = staff_data.email.strip().lower()
+    if not norm_email or "@" not in norm_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Valid staff email address is required."
+        )
+
+    user = db.query(UserModel).filter(func.lower(UserModel.email) == norm_email).first()
+    if user:
+        existing_mem = db.query(ClinicMembershipModel).filter(
+            ClinicMembershipModel.clinic_id == current_clinic.id,
+            ClinicMembershipModel.user_id == user.id
+        ).first()
+
+        if existing_mem and existing_mem.is_active == 1:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"User with email '{norm_email}' is already an active member of this clinic."
+            )
+        elif existing_mem:
+            existing_mem.is_active = 1
+            existing_mem.status = "ACTIVE"
+            existing_mem.role = target_role
+            existing_mem.updated_at = datetime.utcnow().isoformat()
+            db.commit()
+            db.refresh(existing_mem)
+            return ClinicStaffMemberResponse(
+                membership_id=existing_mem.id,
+                clinic_id=existing_mem.clinic_id,
+                user_id=user.id,
+                full_name=user.full_name,
+                email=user.email,
+                username=user.username,
+                role=existing_mem.role,
+                status=existing_mem.status,
+                is_active=1 if existing_mem.is_active else 0,
+                created_at=existing_mem.created_at,
+                invited_by=existing_mem.invited_by
+            )
+    else:
+        temp_pwd = staff_data.temporary_password or staff_data.password or "Staff@12345"
+        base_username = norm_email.split("@")[0].lower()
+        import re
+        base_username = re.sub(r"[^a-z0-9_.]", "", base_username) or "staff"
+        collision = db.query(UserModel).filter(func.lower(UserModel.username) == base_username).first()
+        username = base_username if not collision else f"{base_username}_{uuid.uuid4().hex[:4]}"
+
+        user = UserModel(
+            id=f"usr_{uuid.uuid4()}",
+            username=username,
+            email=norm_email,
+            password_hash=hash_password(temp_pwd),
+            full_name=staff_data.full_name.strip(),
+            role=target_role,
+            facility_id=current_clinic.facility_code or current_clinic.id,
+            is_active=1,
+            created_at=datetime.utcnow().isoformat()
+        )
+        db.add(user)
+        db.flush()
+
+    new_mem = ClinicMembershipModel(
+        id=f"mem_{uuid.uuid4().hex[:12]}",
+        clinic_id=current_clinic.id,
+        user_id=user.id,
+        role=target_role,
+        status="ACTIVE",
+        is_active=1,
+        invited_by=current_user.id,
+        created_at=datetime.utcnow().isoformat(),
+        updated_at=datetime.utcnow().isoformat()
+    )
+    db.add(new_mem)
+    db.commit()
+    db.refresh(new_mem)
+
+    return ClinicStaffMemberResponse(
+        membership_id=new_mem.id,
+        clinic_id=new_mem.clinic_id,
+        user_id=user.id,
+        full_name=user.full_name,
+        email=user.email,
+        username=user.username,
+        role=new_mem.role,
+        status=new_mem.status,
+        is_active=1 if new_mem.is_active else 0,
+        created_at=new_mem.created_at,
+        invited_by=new_mem.invited_by
+    )
+
+
+@app.patch("/api/v2/clinics/current/staff/{membership_id}", response_model=ClinicStaffMemberResponse)
+def update_clinic_staff(
+    membership_id: str,
+    update_data: UpdateStaffRequest,
+    current_user: UserModel = Depends(get_current_user),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    """
+    Updates role, active status, or status of a clinic staff member.
+    Enforces that the membership belongs to current clinic and caller has owner permission.
+    """
+    mem_caller = db.query(ClinicMembershipModel).filter(
+        ClinicMembershipModel.clinic_id == current_clinic.id,
+        ClinicMembershipModel.user_id == current_user.id,
+        ClinicMembershipModel.is_active == 1
+    ).first()
+
+    caller_role = mem_caller.role if mem_caller else current_user.role
+    if caller_role not in ("CLINIC_OWNER", "SYSTEM_ADMIN"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: only clinic owner can modify staff permissions."
+        )
+
+    target_mem = db.query(ClinicMembershipModel).filter(
+        ClinicMembershipModel.id == membership_id,
+        ClinicMembershipModel.clinic_id == current_clinic.id
+    ).first()
+    if not target_mem:
+        raise HTTPException(status_code=404, detail="Staff membership record not found in this clinic.")
+
+    # Prevent owner from demoting or deactivating themselves if they are the sole owner
+    if target_mem.user_id == current_user.id and (update_data.is_active is False or (update_data.role and update_data.role != "CLINIC_OWNER")):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot demote or deactivate your own owner access."
+        )
+
+    if update_data.role:
+        target_mem.role = update_data.role.strip().upper()
+    if update_data.is_active is not None:
+        target_mem.is_active = 1 if update_data.is_active else 0
+    if update_data.status:
+        target_mem.status = update_data.status.strip().upper()
+
+    target_mem.updated_at = datetime.utcnow().isoformat()
+    db.commit()
+    db.refresh(target_mem)
+
+    user = db.query(UserModel).filter(UserModel.id == target_mem.user_id).first()
+    return ClinicStaffMemberResponse(
+        membership_id=target_mem.id,
+        clinic_id=target_mem.clinic_id,
+        user_id=target_mem.user_id,
+        full_name=user.full_name if user else "Unknown Staff",
+        email=user.email if user else "",
+        username=user.username if user else "",
+        role=target_mem.role,
+        status=target_mem.status,
+        is_active=1 if target_mem.is_active else 0,
+        created_at=target_mem.created_at,
+        invited_by=target_mem.invited_by
+    )
+
+
+@app.delete("/api/v2/clinics/current/staff/{membership_id}")
+def remove_clinic_staff(
+    membership_id: str,
+    current_user: UserModel = Depends(get_current_user),
+    current_clinic: ClinicModel = Depends(get_current_clinic),
+    db: Session = Depends(get_db)
+):
+    """
+    Revokes staff access to the current clinic.
+    """
+    mem_caller = db.query(ClinicMembershipModel).filter(
+        ClinicMembershipModel.clinic_id == current_clinic.id,
+        ClinicMembershipModel.user_id == current_user.id,
+        ClinicMembershipModel.is_active == 1
+    ).first()
+
+    caller_role = mem_caller.role if mem_caller else current_user.role
+    if caller_role not in ("CLINIC_OWNER", "SYSTEM_ADMIN"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: only clinic owner can revoke staff access."
+        )
+
+    target_mem = db.query(ClinicMembershipModel).filter(
+        ClinicMembershipModel.id == membership_id,
+        ClinicMembershipModel.clinic_id == current_clinic.id
+    ).first()
+    if not target_mem:
+        raise HTTPException(status_code=404, detail="Staff membership record not found in this clinic.")
+
+    if target_mem.user_id == current_user.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot revoke your own clinic owner membership.")
+
+    target_mem.is_active = 0
+    target_mem.status = "DEACTIVATED"
+    target_mem.updated_at = datetime.utcnow().isoformat()
+    db.commit()
+
+    return {"status": "success", "message": "Staff member access revoked successfully."}
+
+
+@app.get("/api/v2/auth/users", response_model=List[UserResponse])
+def get_all_users(
+    current_user: UserModel = Depends(require_roles("SYSTEM_ADMIN")),
+    db: Session = Depends(get_db)
+):
+    """
+    Returns all active system accounts (Restricted exclusively to SYSTEM_ADMIN).
     """
     users = db.query(UserModel).filter(UserModel.is_active == 1).all()
     results = []
@@ -1616,7 +3725,7 @@ def get_assessment_review_history(
     """
     Retrieves the complete immutable audit trail of clinical reviews and attestations for an assessment.
     """
-    return get_review_history(db=db, assessment_id=assessment_id)
+    return get_review_history(db=db, assessment_id=assessment_id, current_user=current_user)
 
 
 # ─── LOCAL AI ASSISTANT & KOLKATA HEALTH DATA INTELLIGENCE ROUTES ──────────────

@@ -2,12 +2,13 @@
 > **Clinically Governed, Offline-First Disease Triage & Rural Health Access Platform**
 
 Please refer to the comprehensive project documentation in the root directory:
-- [**Main Project README**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/README.md)
-- [**Project Architecture Guide (`docs/PROJECT.md`)**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/PROJECT.md)
-- [**Database Architecture & Schema (`docs/DATABASE.md`)**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/DATABASE.md)
-- [**Authentication, RBAC & Attestation (`docs/AUTH.md`)**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/AUTH.md)
-- [**Feature & Clinical Engine Specification (`docs/FEATURE.md`)**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/FEATURE.md)
-- [**System Validation Records (`docs/validation/`)**](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docs/validation/)
+- [**Main Project README**](../README.md)
+- [**Project Architecture Guide (`docs/PROJECT.md`)**](../docs/PROJECT.md)
+- [**Database Architecture & Schema (`docs/DATABASE.md`)**](../docs/DATABASE.md)
+- [**Authentication, RBAC & Attestation (`docs/AUTH.md`)**](../docs/AUTH.md)
+- [**Feature & Clinical Engine Specification (`docs/FEATURE.md`)**](../docs/FEATURE.md)
+- [**Snowflake Data Warehouse Integration (`docs/SNOWFLAKE_INTEGRATION.md`)**](../docs/SNOWFLAKE_INTEGRATION.md)
+- [**System Validation Records (`docs/validation/`)**](../docs/validation/)
 
 ---
 

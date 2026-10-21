@@ -10,20 +10,21 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg', 'mascots/*.png'],
+      includeAssets: ['favicon.ico', 'favicon.png', 'logo.png', 'mascots/*.png'],
       manifest: {
         name: 'RuralHealth AI — Disease Risk Prediction',
         short_name: 'RuralHealth AI',
         description: 'AI-powered early disease risk prediction and rural health access system',
-        theme_color: '#4f46e5',
+        theme_color: '#0A9F68',
         background_color: '#f8fafc',
         display: 'standalone',
         orientation: 'portrait-primary',
         start_url: '/',
         scope: '/',
         icons: [
-          { src: '/favicon.svg', sizes: '192x192', type: 'image/svg+xml' },
-          { src: '/favicon.svg', sizes: '512x512', type: 'image/svg+xml', purpose: 'any maskable' }
+          { src: '/favicon-192x192.png', sizes: '192x192', type: 'image/png' },
+          { src: '/favicon-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+          { src: '/logo.png', sizes: '1254x1254', type: 'image/png' }
         ]
       },
       workbox: {
@@ -48,12 +49,11 @@ export default defineConfig({
             urlPattern: new RegExp('^https://overpass-api\\.de/.*$'),
             handler: 'NetworkFirst',
             options: { cacheName: 'overpass-hospitals', networkTimeoutSeconds: 8, expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 } }
-          },
-          {
-            urlPattern: new RegExp('/api/'),
-            handler: 'NetworkFirst',
-            options: { cacheName: 'api-cache', networkTimeoutSeconds: 3, expiration: { maxEntries: 30, maxAgeSeconds: 60 * 60 } }
           }
+          // Note: /api/ runtime caching is intentionally disabled to prevent
+          // sensitive patient records, assessments, and auth tokens from persisting
+          // in unencrypted browser Cache Storage. Explicit offline storage is
+          // handled via the isolated Dexie/IndexedDB database.
         ]
       }
     })

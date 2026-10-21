@@ -9,8 +9,14 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
+    "test": "npm run test:i18n && npm run test:role-selection && npm run test:golden",
     "test:outbox": "npx tsx test_task004_outbox.js",
-    "test:golden": "node test_golden_vectors.js"
+    "test:golden": "node test_golden_vectors.js",
+    "test:phase2": "node test_phase2_frontend.js",
+    "test:phase3": "node test_phase3_frontend.js",
+    "test:phase4": "node test_phase4_frontend.js",
+    "test:i18n": "node test_i18n_coverage.mjs",
+    "test:role-selection": "node test_role_selection_e2e.js"
   },
   "dependencies": {
     "@types/leaflet": "^1.9.22",

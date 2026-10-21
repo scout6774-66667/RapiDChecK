@@ -373,16 +373,26 @@ def test_existing_api_compatibility():
     assert res6.status_code == 200
     assert res6.json()["total_curated_features"] == 70
 
-    # 12g. /api/ml/population-health/snowflake/metadata (New Endpoint)
-    res7 = client.get("/api/ml/population-health/snowflake/metadata")
+    # 12g. /api/ml/population-health/snowflake/metadata (Requires analytics:view permission)
+    from auth_service import create_access_token
+    do_token = create_access_token({
+        "sub": "usr_officer_patel",
+        "username": "officer.patel",
+        "role": "DISTRICT_OFFICER",
+        "facility_id": "DH_DISTRICT_HQ"
+    })
+    auth_headers = {"Authorization": f"Bearer {do_token}"}
+
+    res7 = client.get("/api/ml/population-health/snowflake/metadata", headers=auth_headers)
     assert res7.status_code == 200
     json7 = res7.json()
     assert json7["total_facts"] == 8275
     assert json7["total_indicators"] == 1955
 
-    # 12h. /api/ml/population-health/snowflake/query (New Endpoint)
-    res8 = client.get("/api/ml/population-health/snowflake/query?district=Kolkata&year=2021&domain=ncd&limit=5")
+    # 12h. /api/ml/population-health/snowflake/query (Requires analytics:view permission)
+    res8 = client.get("/api/ml/population-health/snowflake/query?district=Kolkata&year=2021&domain=ncd&limit=5", headers=auth_headers)
     assert res8.status_code == 200
     json8 = res8.json()
     assert json8["returned_count"] > 0
     assert json8["observations"][0]["domain"] == "ncd"
+

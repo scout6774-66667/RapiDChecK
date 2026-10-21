@@ -32,6 +32,9 @@ class DiseasePredictor:
         self._load_error: str | None = None
         try:
             self.model         = joblib.load(_MODEL_PATH)
+            # Scikit-learn compatibility: ensure multi_class attribute exists on unpickled LogisticRegression
+            if hasattr(self.model, '__dict__') and not hasattr(self.model, 'multi_class'):
+                self.model.multi_class = 'auto'
             self.label_encoder = joblib.load(_ENCODER_PATH)
             with open(_FEATURES_PATH, 'r') as f:
                 self.feature_names: List[str] = json.load(f)

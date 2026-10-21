@@ -136,7 +136,7 @@ Health-AI-main/
 
 ## 4. Production Deployment with Docker Compose
 
-The complete production candidate stack is orchestrated via [`docker-compose.yml`](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/docker-compose.yml):
+The complete production candidate stack is orchestrated via [`docker-compose.yml`](../docker-compose.yml):
 
 ```yaml
 version: '3.8'

@@ -50,14 +50,18 @@ STANDARD DISCLAIMER:
 
 def sanitize_user_input(text: str) -> str:
     """
-    Remove or mask potential PII (phone numbers, 12-digit IDs, emails) before sending to LLM.
+    Remove or mask potential PII (patient names, phone numbers, 12-digit IDs, ABHA IDs, emails)
+    before sending to LLM.
     """
     if not text:
         return ""
     # Mask Indian phone numbers (10 digits starting with 6-9, with optional +91 or 0)
     text = re.sub(r'(?:\+91[\s-]?)?[6-9]\d{9}', '[REDACTED_PHONE]', text)
-    # Mask 12-digit Aadhaar-like numbers
+    # Mask 12-digit Aadhaar / ABHA like numbers
     text = re.sub(r'\b\d{4}\s?\d{4}\s?\d{4}\b', '[REDACTED_ID]', text)
+    text = re.sub(r'\b(ABHA|HID|PAT)[\s:-]?\w+\b', '[REDACTED_ID]', text, flags=re.IGNORECASE)
+    # Mask patient name declarations
+    text = re.sub(r'(?i)\b(?:patient(?:\s+name)?|name\s+is|named|mr\.|mrs\.|ms\.)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b', r'patient [REDACTED_NAME]', text)
     # Mask emails
     text = re.sub(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', '[REDACTED_EMAIL]', text)
     return text

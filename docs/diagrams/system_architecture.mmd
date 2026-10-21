@@ -1,0 +1,34 @@
+graph TD
+    subgraph Citizens ["1. Citizen & Patient Layer"]
+        PAT[Patient Web App / PWA] -->|Symptom Check & Hospital Locator| PAT_DASH[Patient Dashboard]
+        PAT_DASH -->|Book Teleconsult| OFFLINE_DB[(Dexie.js IndexedDB)]
+    end
+
+    subgraph Frontline ["2. Frontline Workforce (ASHA / ANM)"]
+        ASHA[Doorstep Tablet / Mobile PWA] -->|Field Screening Stepper| EVAL_TS[TypeScript Evaluator]
+        EVAL_TS -->|Atomic Tx Commit| OUTBOX[(Durable Outbox Queue)]
+    end
+
+    subgraph SyncEngine ["3. Synchronization & Network Boundary"]
+        OUTBOX -->|Auto-Sync Worker with Exponential Backoff| SYNC_API[POST /api/v2/sync/push]
+        SYNC_API --> IDEMP[Idempotency & Replay Protection]
+        SYNC_API --> OCC[OCC Conflict Detection]
+    end
+
+    subgraph CoreBackend ["4. Clinical Core & Backend Services"]
+        IDEMP --> MAIN[FastAPI Application Server]
+        MAIN --> AUTH[auth_service.py - PBKDF2 & JWT]
+        MAIN --> CLIN[ml_engine.py - Python Ruleset Engine]
+        MAIN --> REVIEW[review_service.py - HMAC Attestation]
+        MAIN --> DB[(PostgreSQL 16 / SQLite)]
+    end
+
+    subgraph ClinicalStaff ["5. Professional Clinical Review"]
+        DOC[Doctor Interface / PhcDashboard] -->|Review Queue| REVIEW
+        DOC -->|Clinical Decision Support| CLIN
+    end
+
+    subgraph Analytics ["6. Anonymized Public Health Data Warehouse"]
+        DB -.->|Scheduled ETL Pipeline| SNOW[Snowflake Data Warehouse]
+        SNOW --> POP[Population Health Analytics]
+    end

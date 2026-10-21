@@ -32,7 +32,7 @@ The authoritative production database for RapiDChecK / RuralHealth AI is **Postg
 ```
 
 ### 1.1 Environment-Level Engine Enforcement
-The backend configuration ([`backend/config.py`](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/Health-AI-main/backend/config.py)) strictly enforces database engine compliance:
+The backend configuration ([`backend/config.py`](../Health-AI-main/backend/config.py)) strictly enforces database engine compliance:
 - When `ENVIRONMENT=production`: `DATABASE_URL` must be a valid PostgreSQL connection URI (e.g. `postgresql+psycopg2://...` or `postgresql+psycopg://...`).
 - If `DATABASE_URL` is omitted or points to SQLite while in production mode, application startup immediately terminates with a fatal `RuntimeError`. Silent fallback to SQLite is completely prevented.
 - `init_db()` executes an active database ping (`SELECT 1`) on FastAPI startup. If unreachable, the server fails fast.
@@ -210,8 +210,8 @@ If any step fails (e.g. unique constraint violation, foreign key failure, or net
 
 ## 4. SQLite to PostgreSQL ETL Migration Pipeline
 
-The script [`scripts/migrate_sqlite_to_postgres.py`](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/scripts/migrate_sqlite_to_postgres.py) provides a verifiable data extraction, normalization, and loading pipeline:
+The script [`scripts/migrate_sqlite_to_postgres.py`](../scripts/migrate_sqlite_to_postgres.py) provides a verifiable data extraction, normalization, and loading pipeline:
 1. **Extraction:** Reads source SQLite tables (`patients`, `assessments`, `appointments`, `users`).
 2. **Transformation:** Validates UUID compliance, parses JSON metadata, normalizes timestamps, and tags unknown legacy rulesets with `ruleset_version="UNKNOWN_LEGACY"`.
 3. **Loading:** Inserts records inside an atomic PostgreSQL transaction.
-4. **Validation:** Executes exact row-count matching, foreign-key relationship verification, and produces an execution audit report at [`artifacts/migration-validation/report.json`](file:///c:/Users/ABIR%20SAHA/Downloads/Health-AI-main/artifacts/migration-validation/report.json).
+4. **Validation:** Executes exact row-count matching, foreign-key relationship verification, and produces an execution audit report at [`artifacts/migration-validation/report.json`](../artifacts/migration-validation/report.json).
